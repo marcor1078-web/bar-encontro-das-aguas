@@ -1,0 +1,17 @@
+{
+  "name": "BAR ENCONTRO DAS AGUAS",
+  "short_name": "Encontro Aguas",
+  "description": "Controle de caixa, estoque, vendas, cozinha e fiado para bares.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#0f766e",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
