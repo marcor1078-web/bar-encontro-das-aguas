@@ -494,6 +494,12 @@ let supabaseStatus = {
   ok: false,
   message: supabaseClient ? "Configurado, aguardando teste." : "Supabase ainda nao configurado.",
 };
+let mercadoPagoPointStatus = {
+  checked: false,
+  enabled: false,
+  message: "Mercado Pago Point ainda nao testado.",
+  terminal: "",
+};
 
 function loadState() {
   const saved = localStorage.getItem(STORAGE_KEY);
@@ -744,6 +750,79 @@ async function testSupabaseConnection() {
   }
 
   renderApp();
+}
+
+function isCardPayment(payment) {
+  return payment === "Debito" || payment === "Credito";
+}
+
+async function loadMercadoPagoPointStatus(force = false) {
+  if (mercadoPagoPointStatus.checked && !force) return mercadoPagoPointStatus;
+
+  try {
+    const response = await fetch("/api/mercadopago/config");
+    if (!response.ok) throw new Error("Endpoint da Vercel ainda nao disponivel.");
+    const data = await response.json();
+    mercadoPagoPointStatus = {
+      checked: true,
+      enabled: Boolean(data.enabled),
+      terminal: data.terminal || "",
+      message: data.enabled
+        ? `Point configurado no terminal ${data.terminal || "informado"}.`
+        : "Configure MP_ACCESS_TOKEN e MP_TERMINAL_ID na Vercel para ativar.",
+    };
+  } catch (error) {
+    mercadoPagoPointStatus = {
+      checked: true,
+      enabled: false,
+      terminal: "",
+      message: "Integracao Point indisponivel neste ambiente.",
+    };
+  }
+
+  return mercadoPagoPointStatus;
+}
+
+async function processMercadoPagoPointPayment({ amount, payment, description }) {
+  const config = await loadMercadoPagoPointStatus();
+  if (!config.enabled || !isCardPayment(payment)) return { skipped: true };
+
+  notify("Enviando cobranca para a maquininha Mercado Pago...");
+  const createResponse = await fetch("/api/mercadopago/create-order", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      amount,
+      paymentMethod: payment,
+      description,
+      externalReference: `sale-${Date.now()}`,
+    }),
+  });
+
+  const order = await createResponse.json().catch(() => ({}));
+  if (!createResponse.ok) {
+    return { ok: false, message: order.message || order.error || "Falha ao criar cobranca no Mercado Pago." };
+  }
+
+  notify("Cobranca enviada. Aguarde o pagamento na maquininha.");
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const statusResponse = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(order.id)}`);
+    const statusData = await statusResponse.json().catch(() => ({}));
+    if (!statusResponse.ok) {
+      return { ok: false, message: statusData.error || "Falha ao consultar pagamento Mercado Pago." };
+    }
+
+    if (statusData.status === "processed") return { ok: true, order: statusData };
+    if (["failed", "canceled", "expired"].includes(statusData.status)) {
+      return { ok: false, message: `Pagamento nao aprovado: ${statusData.status_detail || statusData.status}.` };
+    }
+    if (statusData.status === "action_required") {
+      return { ok: false, message: "Confira a maquininha para confirmar se o pagamento foi aprovado." };
+    }
+  }
+
+  return { ok: false, message: "Pagamento ainda nao confirmado. Confira a maquininha antes de tentar novamente." };
 }
 
 function localLogin(username, password) {
@@ -1526,6 +1605,11 @@ function bindViewEvents() {
 
   document.querySelector("[data-finalize-sale]")?.addEventListener("click", finalizeSale);
   document.querySelector("[data-test-supabase]")?.addEventListener("click", testSupabaseConnection);
+  document.querySelector("[data-test-mercadopago]")?.addEventListener("click", async () => {
+    await loadMercadoPagoPointStatus(true);
+    notify(mercadoPagoPointStatus.message);
+    renderApp();
+  });
   document.querySelector("[data-export-backup]")?.addEventListener("click", exportBackup);
   document.querySelector("[data-export-sales]")?.addEventListener("click", exportSalesCsv);
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
@@ -2083,6 +2167,18 @@ async function finalizeSale() {
   }
 
   if (isOnlineSession()) {
+    if (isCardPayment(payment)) {
+      const pointPayment = await processMercadoPagoPointPayment({
+        amount: total,
+        payment,
+        description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
+      });
+      if (!pointPayment.skipped && !pointPayment.ok) {
+        notify(pointPayment.message);
+        return;
+      }
+    }
+
     const checkout = tableCheckout;
     const saleId = await finalizeSaleOnline({
       payment,
@@ -3640,6 +3736,7 @@ function renderOnline() {
       </div>
       <div class="toolbar">
         <button class="btn secondary" type="button" data-test-supabase>Testar conexao Supabase</button>
+        <button class="btn secondary" type="button" data-test-mercadopago>Testar Mercado Pago Point</button>
       </div>
     </div>
     <div class="grid two-col">
@@ -3663,7 +3760,7 @@ function renderOnline() {
       ${onlineCard("Login real", "Perfis, e-mail vinculado, Auth e permissoes online estao ativos.", "Conectado")}
       ${onlineCard("Dados do app", "Produtos, estoque, vendas, clientes, caixa, mesas e despesas estao conectados para teste.", "Conectado")}
       ${onlineCard("Publicacao", "Proxima etapa: publicar os arquivos estaticos na Vercel com HTTPS.", "Proximo")}
-      ${onlineCard("Cartao", "Mercado Pago e Stone entram depois da publicacao, com backend seguro para chaves privadas.", "Depois")}
+      ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
       ${onlineCard("Seguranca", "A chave secreta do Supabase continua fora do navegador. Senhas reais ficam no Supabase Auth.", "Protegido")}
     </div>
   `;
