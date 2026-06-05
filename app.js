@@ -871,7 +871,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description }) 
       return {
         ok: false,
         message:
-          "Mercado Pago: ja existe uma cobranca pendente na maquininha. Cancele pela Point ou use Internet > Cancelar cobranca Point e tente novamente.",
+          "Mercado Pago: ja existe uma cobranca pendente na maquininha. Cancele na Point configurada; se essa cobranca tiver sido criada nesta nova versao, tambem da para usar Internet > Cancelar cobranca Point.",
       };
     }
     return { ok: false, message: `Mercado Pago: ${message}` };

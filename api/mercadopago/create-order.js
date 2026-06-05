@@ -30,7 +30,7 @@ module.exports = async function handler(req, res) {
   const payload = {
     type: "point",
     external_reference: safeReference(body.externalReference),
-    expiration_time: body.expirationTime || "PT10M",
+    expiration_time: body.expirationTime || "PT2M",
     transactions: {
       payments: [{ amount: amount.toFixed(2) }],
     },
