@@ -14,6 +14,13 @@ function safeReference(value) {
     .slice(0, 64);
 }
 
+function paymentType(method) {
+  if (method === "Pix") return "qr";
+  if (method === "Debito") return "debit_card";
+  if (method === "Credito") return "credit_card";
+  return "";
+}
+
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["POST"])) return;
   const env = requireMercadoPagoConfig(res);
@@ -25,6 +32,7 @@ module.exports = async function handler(req, res) {
     json(res, 400, { error: "invalid_amount" });
     return;
   }
+  const terminalId = String(body.terminalId || env.terminalId).trim();
 
   const idempotencyKey = body.idempotencyKey || randomUUID();
   const payload = {
@@ -36,19 +44,22 @@ module.exports = async function handler(req, res) {
     },
     config: {
       point: {
-        terminal_id: env.terminalId,
+        terminal_id: terminalId,
         print_on_terminal: env.printOnTerminal,
       },
     },
     description: body.description || "BAR ENCONTRO DAS AGUAS",
   };
 
-  if (body.paymentMethod === "Credito" && env.defaultInstallments > 1) {
+  const defaultType = paymentType(body.paymentMethod);
+  if (defaultType) {
     payload.config.payment_method = {
-      default_type: "credit_card",
-      default_installments: env.defaultInstallments,
-      installments_cost: "seller",
+      default_type: defaultType,
     };
+    if (defaultType === "credit_card" && env.defaultInstallments > 1) {
+      payload.config.payment_method.default_installments = env.defaultInstallments;
+      payload.config.payment_method.installments_cost = "seller";
+    }
   }
 
   if (env.integratorId || env.platformId || env.sponsorId) {

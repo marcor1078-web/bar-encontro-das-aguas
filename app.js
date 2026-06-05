@@ -1,5 +1,6 @@
 const STORAGE_KEY = "barcontrol:v1";
 const MP_PENDING_ORDER_KEY = "barcontrol:mercadopago-pending-order";
+const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 
 const roles = {
   admin: {
@@ -120,7 +121,7 @@ const categoryMeta = {
   Insumos: { icon: "IN", tone: "stock" },
 };
 
-const paymentMethods = ["Dinheiro", "Pix", "Debito", "Credito", "Fiado"];
+const paymentMethods = ["Pix", "Debito", "Credito", "Dinheiro", "Fiado"];
 
 const defaultState = {
   users: [
@@ -662,6 +663,9 @@ function setView(view) {
   searchTerm = "";
   categoryFilter = "Todos";
   renderApp();
+  if (["pos", "waiter"].includes(view) && isOnlineSession() && !mercadoPagoPointStatus.checked) {
+    loadMercadoPagoPointStatus(true).then(() => renderApp());
+  }
 }
 
 function notify(message) {
@@ -755,8 +759,8 @@ async function testSupabaseConnection() {
   renderApp();
 }
 
-function isCardPayment(payment) {
-  return payment === "Debito" || payment === "Credito";
+function isPointPayment(payment) {
+  return payment === "Pix" || payment === "Debito" || payment === "Credito";
 }
 
 function describeMercadoPagoError(payload) {
@@ -769,6 +773,39 @@ function describeMercadoPagoError(payload) {
   if (details?.message) return details.message;
   if (details?.error) return details.error;
   return JSON.stringify(details).slice(0, 300);
+}
+
+function getSelectedMercadoPagoTerminalId() {
+  return localStorage.getItem(MP_SELECTED_TERMINAL_KEY) || mercadoPagoPointStatus.terminalId || "";
+}
+
+function setSelectedMercadoPagoTerminalId(terminalId) {
+  const cleanTerminalId = String(terminalId || "").trim();
+  if (cleanTerminalId) localStorage.setItem(MP_SELECTED_TERMINAL_KEY, cleanTerminalId);
+}
+
+function mercadoPagoTerminalName(terminal) {
+  const serial = String(terminal.id || "").split("__").pop() || terminal.id || "Terminal";
+  const mode = terminal.operating_mode ? ` - ${terminal.operating_mode}` : "";
+  return `${serial}${mode}`;
+}
+
+function renderMercadoPagoTerminalField() {
+  if (!mercadoPagoPointStatus.enabled || !mercadoPagoPointStatus.terminals.length) return "";
+  const selectedTerminalId = getSelectedMercadoPagoTerminalId();
+  return `
+    <label class="field">
+      <span>Maquininha Mercado Pago</span>
+      <select id="point-terminal-id" data-point-terminal>
+        ${mercadoPagoPointStatus.terminals
+          .map(
+            (terminal) =>
+              `<option value="${terminal.id}" ${terminal.id === selectedTerminalId ? "selected" : ""}>${mercadoPagoTerminalName(terminal)}</option>`,
+          )
+          .join("")}
+      </select>
+    </label>
+  `;
 }
 
 async function loadMercadoPagoPointStatus(force = false) {
@@ -918,7 +955,8 @@ async function cancelMercadoPagoPendingOrder() {
 
 async function processMercadoPagoPointPayment({ amount, payment, description }) {
   const config = await loadMercadoPagoPointStatus();
-  if (!config.enabled || !isCardPayment(payment)) return { skipped: true };
+  if (!config.enabled || !isPointPayment(payment)) return { skipped: true };
+  const terminalId = getSelectedMercadoPagoTerminalId();
 
   notify("Enviando cobranca para a maquininha Mercado Pago...");
   const createResponse = await fetch("/api/mercadopago/create-order", {
@@ -927,6 +965,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description }) 
     body: JSON.stringify({
       amount,
       paymentMethod: payment,
+      terminalId,
       description,
       externalReference: `sale-${Date.now()}`,
     }),
@@ -1757,6 +1796,10 @@ function bindViewEvents() {
     });
   });
 
+  document.querySelector("[data-point-terminal]")?.addEventListener("change", (event) => {
+    setSelectedMercadoPagoTerminalId(event.target.value);
+  });
+
   document.querySelectorAll("[data-cart-minus]").forEach((button) => {
     button.addEventListener("click", () => changeCartQty(button.dataset.cartMinus, -1));
   });
@@ -2043,6 +2086,7 @@ function renderPos() {
               ${paymentMethods.map((method) => `<option>${method}</option>`).join("")}
             </select>
           </label>
+          ${renderMercadoPagoTerminalField()}
           <label class="field">
             <span>Cliente para fiado</span>
             <select id="client-id">
@@ -2197,6 +2241,7 @@ function renderWaiter() {
             <span>Pagamento</span>
             <select id="payment-method">${paymentMethods.map((method) => `<option>${method}</option>`).join("")}</select>
           </label>
+          ${renderMercadoPagoTerminalField()}
           <label class="field">
             <span>Cliente para fiado</span>
             <select id="client-id">${state.clients.map((client) => `<option value="${client.id}">${client.name}</option>`).join("")}</select>
@@ -2338,7 +2383,7 @@ async function finalizeSale() {
   }
 
   if (isOnlineSession()) {
-    if (isCardPayment(payment)) {
+    if (isPointPayment(payment)) {
       const pointPayment = await processMercadoPagoPointPayment({
         amount: total,
         payment,
