@@ -1227,8 +1227,16 @@ tbody tr:hover td {
 
 .table-tile strong,
 .table-tile span,
+.table-tile em,
 .table-tile small {
   display: block;
+}
+
+.table-tile em {
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .table-tile span {
@@ -1257,8 +1265,10 @@ tbody tr:hover td {
 
 .table-tile.aberta span,
 .table-tile.aberta small,
+.table-tile.aberta em,
 .table-tile.fechamento span,
-.table-tile.fechamento small {
+.table-tile.fechamento small,
+.table-tile.fechamento em {
   color: #991b1b;
 }
 
@@ -1291,9 +1301,11 @@ body[data-theme="dark"] .table-tile.livre small {
 body[data-theme="dark"] .table-tile.aberta strong,
 body[data-theme="dark"] .table-tile.aberta span,
 body[data-theme="dark"] .table-tile.aberta small,
+body[data-theme="dark"] .table-tile.aberta em,
 body[data-theme="dark"] .table-tile.fechamento strong,
 body[data-theme="dark"] .table-tile.fechamento span,
-body[data-theme="dark"] .table-tile.fechamento small {
+body[data-theme="dark"] .table-tile.fechamento small,
+body[data-theme="dark"] .table-tile.fechamento em {
   color: #fecaca;
 }
 
@@ -1312,6 +1324,16 @@ body[data-theme="dark"] .table-tile.fechamento small {
   border-radius: 8px;
   background: #f8fafc;
   padding: 12px;
+}
+
+.table-customer {
+  margin: -2px 16px 12px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.table-customer strong {
+  color: var(--ink);
 }
 
 .compact-title {

@@ -132,6 +132,7 @@ create table if not exists kitchen_orders (
 create table if not exists bar_tables (
   id uuid primary key default gen_random_uuid(),
   name text not null,
+  customer_name text,
   status text not null default 'Livre',
   opened_at timestamptz,
   server_id uuid references profiles(id),

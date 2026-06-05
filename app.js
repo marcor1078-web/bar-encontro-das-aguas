@@ -415,6 +415,7 @@ const defaultState = {
   tables: Array.from({ length: 12 }, (_, index) => ({
     id: `table-${index + 1}`,
     name: `Mesa ${index + 1}`,
+    customerName: "",
     status: "Livre",
     openedAt: null,
     serverId: null,
@@ -529,7 +530,10 @@ function migrateState(nextState) {
   nextState.purchases = nextState.purchases || structuredClone(defaultState.purchases);
   nextState.inventoryCounts = nextState.inventoryCounts || structuredClone(defaultState.inventoryCounts);
   nextState.stockLots = nextState.stockLots || structuredClone(defaultState.stockLots);
-  nextState.tables = nextState.tables || structuredClone(defaultState.tables);
+  nextState.tables = (nextState.tables || structuredClone(defaultState.tables)).map((table) => ({
+    customerName: "",
+    ...table,
+  }));
   nextState.cancellations = nextState.cancellations || [];
   nextState.backupHistory = nextState.backupHistory || [];
   nextState.expenses = nextState.expenses || [];
@@ -575,6 +579,15 @@ function dateTime(value) {
     dateStyle: "short",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function id(prefix) {
@@ -1152,6 +1165,7 @@ function mapTableFromDb(row) {
   return {
     id: row.id,
     name: row.name,
+    customerName: row.customer_name || "",
     status: row.status || "Livre",
     openedAt: row.opened_at || null,
     serverId: row.server_id || null,
@@ -1175,7 +1189,7 @@ async function loadOnlineTableData() {
   }
 
   if (!result.data?.length) {
-    const rows = Array.from({ length: 12 }, (_, index) => ({ name: `Mesa ${index + 1}` }));
+    const rows = Array.from({ length: 12 }, (_, index) => ({ name: `Mesa ${index + 1}`, customer_name: "" }));
     const seedResult = await supabaseClient.from("bar_tables").insert(rows);
     if (seedResult.error) {
       notify(`Falha ao criar mesas online: ${seedResult.error.message}`);
@@ -1554,6 +1568,16 @@ function bindViewEvents() {
     button.addEventListener("click", () => closeTable(button.dataset.closeTable));
   });
 
+  document.querySelectorAll("[data-table-customer]").forEach((input) => {
+    input.addEventListener("change", () => saveTableCustomerName(input.dataset.tableCustomer, input.value));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur();
+      }
+    });
+  });
+
   document.querySelectorAll("[data-clear-table]").forEach((button) => {
     button.addEventListener("click", () => clearTable(button.dataset.clearTable));
   });
@@ -1812,6 +1836,7 @@ function renderTables() {
               (table) => `
                 <button class="table-tile ${table.status.toLowerCase()} ${table.id === selectedTable?.id ? "active" : ""}" type="button" data-open-modal="table" data-id="${table.id}">
                   <strong>${table.name}</strong>
+                  ${table.customerName ? `<em>${escapeHtml(table.customerName)}</em>` : ""}
                   <span>${table.status}</span>
                   <small>${money(tableTotalValue(table))}</small>
                 </button>
@@ -1825,6 +1850,7 @@ function renderTables() {
           <h2 class="card-title">${selectedTable?.name || "Mesa"}</h2>
           <span class="status ${selectedTable?.status === "Livre" ? "green" : "amber"}">${selectedTable?.status || "Livre"}</span>
         </div>
+        ${selectedTable?.customerName ? `<div class="table-customer">Cliente: <strong>${escapeHtml(selectedTable.customerName)}</strong></div>` : ""}
         <div class="cart-list">
           ${
             selectedTable?.items?.length
@@ -2124,7 +2150,9 @@ async function finalizeSale() {
 
   if (tableCheckout) {
     state.tables = state.tables.map((entry) =>
-      entry.id === tableCheckout.id ? { ...entry, status: "Livre", openedAt: null, serverId: null, clientId: null, items: [] } : entry,
+      entry.id === tableCheckout.id
+        ? { ...entry, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] }
+        : entry,
     );
     logAudit("Mesa fechada no balcao", `${tableCheckout.name}: ${money(total)}.`);
   }
@@ -2327,7 +2355,7 @@ async function releaseTableAfterCheckout(tableId) {
   if (!isOnlineSession() || !tableId) return;
   const { error } = await supabaseClient
     .from("bar_tables")
-    .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, items: [] })
+    .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, customer_name: "", items: [] })
     .eq("id", tableId);
 
   if (error) {
@@ -2415,6 +2443,27 @@ function tableTotalValue(table) {
 
 function tableServiceFee(subtotal) {
   return subtotal * (Number(state.settings.serviceFee || 0) / 100);
+}
+
+async function saveTableCustomerName(tableId, customerName) {
+  const nextName = customerName.trim();
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient.from("bar_tables").update({ customer_name: nextName }).eq("id", tableId);
+    if (error) {
+      notify(`Erro ao salvar nome do cliente: ${error.message}`);
+      return;
+    }
+    await loadOnlineTableData();
+    logAudit("Nome do cliente na mesa", `${tableId}: ${nextName || "removido"}.`);
+    renderApp();
+    return;
+  }
+
+  state.tables = state.tables.map((table) => (table.id === tableId ? { ...table, customerName: nextName } : table));
+  logAudit("Nome do cliente na mesa", `${tableId}: ${nextName || "removido"}.`);
+  saveState();
+  renderApp();
 }
 
 async function openTable(tableId) {
@@ -2578,7 +2627,7 @@ async function clearTable(tableId) {
   }
 
   state.tables = state.tables.map((table) =>
-    table.id === tableId ? { ...table, status: "Livre", openedAt: null, serverId: null, items: [] } : table,
+    table.id === tableId ? { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] } : table,
   );
   currentModal = null;
   logAudit("Mesa liberada", tableId);
@@ -2601,12 +2650,13 @@ async function transferTable(tableId) {
           status: "Aberta",
           opened_at: target?.openedAt || new Date().toISOString(),
           server_id: target?.serverId || session.id,
+          customer_name: target?.customerName || source.customerName || "",
           items: targetItems,
         })
         .eq("id", targetId),
       supabaseClient
         .from("bar_tables")
-        .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, items: [] })
+        .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, customer_name: "", items: [] })
         .eq("id", tableId),
     ]);
 
@@ -2630,11 +2680,12 @@ async function transferTable(tableId) {
         status: "Aberta",
         openedAt: table.openedAt || new Date().toISOString(),
         serverId: table.serverId || session.id,
+        customerName: table.customerName || source.customerName || "",
         items: combineItems(table.items, source.items),
       };
     }
     if (table.id === tableId) {
-      return { ...table, status: "Livre", openedAt: null, serverId: null, items: [] };
+      return { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] };
     }
     return table;
   });
@@ -4059,6 +4110,10 @@ function renderTableModal() {
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body">
+        <label class="field full">
+          <span>Nome do cliente na mesa (opcional)</span>
+          <input name="customerName" data-table-customer="${table.id}" value="${escapeHtml(table.customerName || "")}" placeholder="Ex.: Joao, familia Silva, aniversario" />
+        </label>
         <div class="table-tools">
           <label class="field">
             <span>Mesa destino</span>
