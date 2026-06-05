@@ -38,7 +38,6 @@ module.exports = async function handler(req, res) {
       point: {
         terminal_id: env.terminalId,
         print_on_terminal: env.printOnTerminal,
-        screen_time: "PT2M",
       },
     },
     description: body.description || "BAR ENCONTRO DAS AGUAS",

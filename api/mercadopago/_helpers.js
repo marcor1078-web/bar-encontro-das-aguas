@@ -36,13 +36,15 @@ function readJson(req) {
 }
 
 function mercadoPagoEnv() {
+  const printOnTerminal = String(process.env.MP_PRINT_ON_TERMINAL || "no_ticket").trim();
+  const allowedPrintModes = ["no_ticket", "seller_ticket", "buyer_ticket"];
   return {
     accessToken: String(process.env.MP_ACCESS_TOKEN || "").trim(),
     terminalId: String(process.env.MP_TERMINAL_ID || "").trim(),
     integratorId: String(process.env.MP_INTEGRATOR_ID || "").trim(),
     platformId: String(process.env.MP_PLATFORM_ID || "").trim(),
     sponsorId: String(process.env.MP_SPONSOR_ID || "").trim(),
-    printOnTerminal: String(process.env.MP_PRINT_ON_TERMINAL || "no_ticket").trim(),
+    printOnTerminal: allowedPrintModes.includes(printOnTerminal) ? printOnTerminal : "no_ticket",
     defaultInstallments: Number(process.env.MP_DEFAULT_INSTALLMENTS || 1),
   };
 }
