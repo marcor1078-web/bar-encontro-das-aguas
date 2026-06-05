@@ -860,8 +860,8 @@ function updateMercadoPagoPendingOrderStatus(statusData) {
 function mercadoPagoStatusLabel(statusData) {
   const status = statusData?.status || "sem status";
   const detail = statusData?.status_detail ? ` (${statusData.status_detail})` : "";
-  if (status === "created") return `created${detail}: criada no Mercado Pago, mas a Point ainda nao puxou a cobranca.`;
-  if (status === "at_terminal") return `at_terminal${detail}: a Point recebeu a cobranca; confira a tela da maquininha.`;
+  if (status === "created") return `created${detail}: criada no Mercado Pago; abra Inserir valor na Point para puxar a cobranca.`;
+  if (status === "at_terminal") return `at_terminal${detail}: a Point recebeu a cobranca; conclua pela tela Inserir valor.`;
   if (status === "processed") return `processed${detail}: pagamento aprovado.`;
   if (status === "canceled") return `canceled${detail}: cobranca cancelada.`;
   if (status === "expired") return `expired${detail}: cobranca expirou.`;
@@ -946,7 +946,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description }) 
   }
 
   saveMercadoPagoPendingOrder(order, { amount, payment, description });
-  notify("Cobranca enviada. Aguarde o pagamento na maquininha.");
+  notify("Cobranca enviada. Na Point, abra Inserir valor para concluir.");
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const statusResponse = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(order.id)}`);
@@ -965,14 +965,14 @@ async function processMercadoPagoPointPayment({ amount, payment, description }) 
       return { ok: false, message: `Pagamento nao aprovado: ${statusData.status_detail || statusData.status}.` };
     }
     if (statusData.status === "action_required") {
-      return { ok: false, message: "Confira a maquininha para confirmar se o pagamento foi aprovado." };
+      return { ok: false, message: "Na Point, abra Inserir valor e confira se o pagamento foi aprovado." };
     }
   }
 
   const pending = getMercadoPagoPendingOrder();
   return {
     ok: false,
-    message: `Pagamento ainda nao confirmado. Ultimo status: ${pending?.status || "created"}. Confira a maquininha antes de tentar novamente.`,
+    message: `Pagamento ainda nao confirmado. Ultimo status: ${pending?.status || "created"}. Na Point, abra Inserir valor antes de tentar novamente.`,
   };
 }
 
@@ -3953,6 +3953,7 @@ function renderOnline() {
       ${onlineCard("Dados do app", "Produtos, estoque, vendas, clientes, caixa, mesas e despesas estao conectados para teste.", "Conectado")}
       ${onlineCard("Publicacao", "Proxima etapa: publicar os arquivos estaticos na Vercel com HTTPS.", "Proximo")}
       ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
+      ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
       ${onlineCard(
         "Fila da Point",
         pendingPointOrder
