@@ -792,7 +792,7 @@ async function loadMercadoPagoPointStatus(force = false) {
       terminalId: data.terminalId || "",
       terminals,
       message: data.enabled
-        ? `Point configurado no terminal ${data.terminal || "informado"}${
+        ? `Point configurado no terminal ${data.terminalId || data.terminal || "informado"}${
             selectedTerminal?.operating_mode ? ` em modo ${selectedTerminal.operating_mode}` : ""
           }.`
         : "Configure MP_ACCESS_TOKEN e MP_TERMINAL_ID na Vercel para ativar.",
