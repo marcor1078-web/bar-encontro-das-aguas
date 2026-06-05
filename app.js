@@ -784,10 +784,10 @@ function setSelectedMercadoPagoTerminalId(terminalId) {
   if (cleanTerminalId) localStorage.setItem(MP_SELECTED_TERMINAL_KEY, cleanTerminalId);
 }
 
-function mercadoPagoTerminalName(terminal) {
+function mercadoPagoTerminalName(terminal, index = 0) {
   const serial = String(terminal.id || "").split("__").pop() || terminal.id || "Terminal";
   const mode = terminal.operating_mode ? ` - ${terminal.operating_mode}` : "";
-  return `${serial}${mode}`;
+  return `Maquininha ${index + 1} - ${serial}${mode}`;
 }
 
 function renderMercadoPagoTerminalField() {
@@ -799,8 +799,8 @@ function renderMercadoPagoTerminalField() {
       <select id="point-terminal-id" data-point-terminal>
         ${mercadoPagoPointStatus.terminals
           .map(
-            (terminal) =>
-              `<option value="${terminal.id}" ${terminal.id === selectedTerminalId ? "selected" : ""}>${mercadoPagoTerminalName(terminal)}</option>`,
+            (terminal, index) =>
+              `<option value="${terminal.id}" ${terminal.id === selectedTerminalId ? "selected" : ""}>${mercadoPagoTerminalName(terminal, index)}</option>`,
           )
           .join("")}
       </select>
