@@ -90,6 +90,19 @@ function publicTerminalInfo(terminalId) {
   return terminalId ? `...${terminalId.slice(-8)}` : "";
 }
 
+function mercadoPagoErrorMessage(data) {
+  const details = data?.details || data || {};
+  const errors = details.errors || details.error || details.message || details.cause || details;
+  if (typeof errors === "string") return errors;
+  if (Array.isArray(errors)) {
+    return errors.map((entry) => entry.message || entry.description || entry.code || JSON.stringify(entry)).join(" | ");
+  }
+  if (errors?.message) return errors.message;
+  if (errors?.description) return errors.description;
+  if (details?.error) return details.error;
+  return JSON.stringify(details).slice(0, 600);
+}
+
 module.exports = {
   json,
   methodAllowed,
@@ -99,4 +112,5 @@ module.exports = {
   requireMercadoPagoAccessToken,
   mercadoPagoFetch,
   publicTerminalInfo,
+  mercadoPagoErrorMessage,
 };

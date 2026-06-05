@@ -756,6 +756,18 @@ function isCardPayment(payment) {
   return payment === "Debito" || payment === "Credito";
 }
 
+function describeMercadoPagoError(payload) {
+  const details = payload?.details || payload || {};
+  const raw = details.errors || details.error || details.message || details.cause || details;
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) return raw.map((entry) => entry.message || entry.description || entry.code || JSON.stringify(entry)).join(" | ");
+  if (raw?.message) return raw.message;
+  if (raw?.description) return raw.description;
+  if (details?.message) return details.message;
+  if (details?.error) return details.error;
+  return JSON.stringify(details).slice(0, 300);
+}
+
 async function loadMercadoPagoPointStatus(force = false) {
   if (mercadoPagoPointStatus.checked && !force) return mercadoPagoPointStatus;
 
@@ -801,7 +813,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description }) 
 
   const order = await createResponse.json().catch(() => ({}));
   if (!createResponse.ok) {
-    return { ok: false, message: order.message || order.error || "Falha ao criar cobranca no Mercado Pago." };
+    return { ok: false, message: `Mercado Pago: ${describeMercadoPagoError(order)}` };
   }
 
   notify("Cobranca enviada. Aguarde o pagamento na maquininha.");
@@ -823,6 +835,23 @@ async function processMercadoPagoPointPayment({ amount, payment, description }) 
   }
 
   return { ok: false, message: "Pagamento ainda nao confirmado. Confira a maquininha antes de tentar novamente." };
+}
+
+async function setMercadoPagoTerminalMode(operatingMode = "PDV") {
+  try {
+    const response = await fetch("/api/mercadopago/set-terminal-mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operatingMode }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(describeMercadoPagoError(data));
+    notify(`Modo da maquininha alterado para ${operatingMode}. Reinicie a Point se ela nao atualizar.`);
+    await loadMercadoPagoPointStatus(true);
+  } catch (error) {
+    notify(`Erro ao alterar modo da Point: ${error.message}`);
+  }
+  renderApp();
 }
 
 function localLogin(username, password) {
@@ -1610,6 +1639,7 @@ function bindViewEvents() {
     notify(mercadoPagoPointStatus.message);
     renderApp();
   });
+  document.querySelector("[data-set-point-pdv]")?.addEventListener("click", () => setMercadoPagoTerminalMode("PDV"));
   document.querySelector("[data-export-backup]")?.addEventListener("click", exportBackup);
   document.querySelector("[data-export-sales]")?.addEventListener("click", exportSalesCsv);
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
@@ -3737,6 +3767,7 @@ function renderOnline() {
       <div class="toolbar">
         <button class="btn secondary" type="button" data-test-supabase>Testar conexao Supabase</button>
         <button class="btn secondary" type="button" data-test-mercadopago>Testar Mercado Pago Point</button>
+        <button class="btn secondary" type="button" data-set-point-pdv>Ativar modo PDV Point</button>
       </div>
     </div>
     <div class="grid two-col">
