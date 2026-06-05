@@ -813,6 +813,7 @@ async function loadMercadoPagoPointStatus(force = false) {
 
 function saveMercadoPagoPendingOrder(order, context = {}) {
   if (!order?.id) return;
+  const previous = getMercadoPagoPendingOrder();
   localStorage.setItem(
     MP_PENDING_ORDER_KEY,
     JSON.stringify({
@@ -821,6 +822,9 @@ function saveMercadoPagoPendingOrder(order, context = {}) {
       payment: context.payment || "",
       description: context.description || "",
       createdAt: new Date().toISOString(),
+      status: order.status || previous?.status || "created",
+      statusDetail: order.status_detail || previous?.statusDetail || "",
+      checkedAt: previous?.checkedAt || "",
     }),
   );
 }
@@ -836,6 +840,55 @@ function getMercadoPagoPendingOrder() {
 function clearMercadoPagoPendingOrder(orderId = "") {
   const pending = getMercadoPagoPendingOrder();
   if (!orderId || pending?.id === orderId) localStorage.removeItem(MP_PENDING_ORDER_KEY);
+}
+
+function updateMercadoPagoPendingOrderStatus(statusData) {
+  if (!statusData?.id) return;
+  const pending = getMercadoPagoPendingOrder();
+  if (!pending || pending.id !== statusData.id) return;
+  localStorage.setItem(
+    MP_PENDING_ORDER_KEY,
+    JSON.stringify({
+      ...pending,
+      status: statusData.status || pending.status || "",
+      statusDetail: statusData.status_detail || pending.statusDetail || "",
+      checkedAt: new Date().toISOString(),
+    }),
+  );
+}
+
+function mercadoPagoStatusLabel(statusData) {
+  const status = statusData?.status || "sem status";
+  const detail = statusData?.status_detail ? ` (${statusData.status_detail})` : "";
+  if (status === "created") return `created${detail}: criada no Mercado Pago, mas a Point ainda nao puxou a cobranca.`;
+  if (status === "at_terminal") return `at_terminal${detail}: a Point recebeu a cobranca; confira a tela da maquininha.`;
+  if (status === "processed") return `processed${detail}: pagamento aprovado.`;
+  if (status === "canceled") return `canceled${detail}: cobranca cancelada.`;
+  if (status === "expired") return `expired${detail}: cobranca expirou.`;
+  if (status === "failed") return `failed${detail}: pagamento recusado ou falhou.`;
+  if (status === "action_required") return `action_required${detail}: confira a maquininha.`;
+  return `${status}${detail}`;
+}
+
+async function checkMercadoPagoPendingOrder() {
+  const pending = getMercadoPagoPendingOrder();
+  if (!pending?.id) {
+    notify("Nao ha cobranca pendente do Mercado Pago salva neste navegador.");
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(pending.id)}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(describeMercadoPagoError(data));
+    updateMercadoPagoPendingOrderStatus(data);
+    if (["processed", "canceled", "expired", "failed"].includes(data.status)) clearMercadoPagoPendingOrder(data.id);
+    notify(`Mercado Pago: ${mercadoPagoStatusLabel(data)}`);
+  } catch (error) {
+    notify(`Erro ao consultar a cobranca Point: ${error.message}`);
+  }
+
+  renderApp();
 }
 
 async function cancelMercadoPagoPendingOrder() {
@@ -902,6 +955,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description }) 
       return { ok: false, message: statusData.error || "Falha ao consultar pagamento Mercado Pago." };
     }
 
+    updateMercadoPagoPendingOrderStatus(statusData);
     if (statusData.status === "processed") {
       clearMercadoPagoPendingOrder(order.id);
       return { ok: true, order: statusData };
@@ -915,7 +969,11 @@ async function processMercadoPagoPointPayment({ amount, payment, description }) 
     }
   }
 
-  return { ok: false, message: "Pagamento ainda nao confirmado. Confira a maquininha antes de tentar novamente." };
+  const pending = getMercadoPagoPendingOrder();
+  return {
+    ok: false,
+    message: `Pagamento ainda nao confirmado. Ultimo status: ${pending?.status || "created"}. Confira a maquininha antes de tentar novamente.`,
+  };
 }
 
 async function setMercadoPagoTerminalMode(operatingMode = "PDV") {
@@ -1721,6 +1779,7 @@ function bindViewEvents() {
     renderApp();
   });
   document.querySelector("[data-set-point-pdv]")?.addEventListener("click", () => setMercadoPagoTerminalMode("PDV"));
+  document.querySelector("[data-check-point-order]")?.addEventListener("click", checkMercadoPagoPendingOrder);
   document.querySelector("[data-cancel-point-order]")?.addEventListener("click", cancelMercadoPagoPendingOrder);
   document.querySelector("[data-export-backup]")?.addEventListener("click", exportBackup);
   document.querySelector("[data-export-sales]")?.addEventListener("click", exportSalesCsv);
@@ -3868,6 +3927,7 @@ function renderOnline() {
         <button class="btn secondary" type="button" data-test-supabase>Testar conexao Supabase</button>
         <button class="btn secondary" type="button" data-test-mercadopago>Testar Mercado Pago Point</button>
         <button class="btn secondary" type="button" data-set-point-pdv>Ativar modo PDV Point</button>
+        <button class="btn secondary" type="button" data-check-point-order>Consultar ultima cobranca Point</button>
         <button class="btn danger" type="button" data-cancel-point-order>Cancelar cobranca Point</button>
       </div>
     </div>
@@ -3896,7 +3956,9 @@ function renderOnline() {
       ${onlineCard(
         "Fila da Point",
         pendingPointOrder
-          ? `Cobranca pendente salva: ${pendingPointOrder.id}. Se a maquininha estiver ocupada, cancele antes de tentar de novo.`
+          ? `Cobranca pendente salva: ${pendingPointOrder.id}. Status: ${pendingPointOrder.status || "created"}${
+              pendingPointOrder.statusDetail ? ` (${pendingPointOrder.statusDetail})` : ""
+            }.`
           : "Nenhuma cobranca pendente salva neste navegador.",
         pendingPointOrder ? "Pendente" : "Livre",
       )}
