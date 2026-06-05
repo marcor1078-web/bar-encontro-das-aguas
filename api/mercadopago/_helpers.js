@@ -59,6 +59,18 @@ function requireMercadoPagoConfig(res) {
   return env;
 }
 
+function requireMercadoPagoAccessToken(res) {
+  const env = mercadoPagoEnv();
+  if (!env.accessToken) {
+    json(res, 501, {
+      error: "mercado_pago_token_not_configured",
+      message: "Configure MP_ACCESS_TOKEN nas variaveis de ambiente da Vercel.",
+    });
+    return null;
+  }
+  return env;
+}
+
 async function mercadoPagoFetch(path, options = {}) {
   const env = mercadoPagoEnv();
   const response = await fetch(`${MP_API_BASE}${path}`, {
@@ -84,6 +96,7 @@ module.exports = {
   readJson,
   mercadoPagoEnv,
   requireMercadoPagoConfig,
+  requireMercadoPagoAccessToken,
   mercadoPagoFetch,
   publicTerminalInfo,
 };

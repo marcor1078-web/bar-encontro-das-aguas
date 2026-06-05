@@ -1,8 +1,8 @@
-const { json, methodAllowed, requireMercadoPagoConfig, mercadoPagoFetch } = require("./_helpers");
+const { json, methodAllowed, requireMercadoPagoAccessToken, mercadoPagoFetch } = require("./_helpers");
 
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["GET"])) return;
-  if (!requireMercadoPagoConfig(res)) return;
+  if (!requireMercadoPagoAccessToken(res)) return;
 
   const result = await mercadoPagoFetch("/terminals/v1/list?limit=50&offset=0");
   if (!result.ok) {
