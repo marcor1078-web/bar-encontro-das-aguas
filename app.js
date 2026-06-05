@@ -473,6 +473,7 @@ let state = loadState();
 let session = null;
 let currentView = "dashboard";
 let cart = [];
+let tableCheckout = null;
 let currentModal = null;
 let searchTerm = "";
 let categoryFilter = "Todos";
@@ -1255,6 +1256,7 @@ async function logout() {
   }
   session = null;
   cart = [];
+  tableCheckout = null;
   currentView = "dashboard";
   renderLogin();
 }
@@ -1504,6 +1506,7 @@ function bindViewEvents() {
 
   document.querySelector("[data-clear-cart]")?.addEventListener("click", () => {
     cart = [];
+    tableCheckout = null;
     renderApp();
   });
 
@@ -1663,7 +1666,9 @@ function metric(label, value, help, icon) {
 
 function renderPos() {
   const products = filteredProducts().filter((product) => product.active);
-  const total = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
+  const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
+  const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
+  const total = subtotal + serviceFee;
   const categories = ["Todos", ...new Set(state.products.map((product) => product.category))];
 
   return `
@@ -1725,9 +1730,10 @@ function renderPos() {
 
       <aside class="card cart">
         <div class="card-head">
-          <h2 class="card-title">Comanda</h2>
+          <h2 class="card-title">${tableCheckout ? `Fechamento - ${tableCheckout.name}` : "Comanda"}</h2>
           <button class="btn compact secondary" type="button" data-clear-cart>Limpar</button>
         </div>
+        ${tableCheckout ? `<div class="notice compact">Conta enviada da mesa. Escolha a forma de pagamento para finalizar no caixa.</div>` : ""}
         <div class="cart-list">
           ${
             cart.length
@@ -1764,10 +1770,9 @@ function renderPos() {
               ${state.clients.map((client) => `<option value="${client.id}">${client.name}</option>`).join("")}
             </select>
           </label>
-          <div class="total-row">
-            <span>Total</span>
-            <strong>${money(total)}</strong>
-          </div>
+          ${tableCheckout ? `<div class="total-row"><span>Subtotal da mesa</span><strong>${money(subtotal)}</strong></div>` : ""}
+          ${tableCheckout ? `<div class="total-row"><span>Servico ${state.settings.serviceFee || 0}%</span><strong>${money(serviceFee)}</strong></div>` : ""}
+          <div class="total-row"><span>Total</span><strong>${money(total)}</strong></div>
           <button class="btn primary" type="button" data-finalize-sale ${cart.length ? "" : "disabled"}>Finalizar venda</button>
         </div>
       </aside>
@@ -1840,7 +1845,7 @@ function renderTables() {
           <div class="total-row"><span>Subtotal</span><strong>${money(tableTotal)}</strong></div>
           <div class="total-row"><span>Servico ${state.settings.serviceFee || 0}%</span><strong>${money(tableServiceFee(tableTotal))}</strong></div>
           <div class="total-row"><span>Total</span><strong>${money(tableTotal + tableServiceFee(tableTotal))}</strong></div>
-          <button class="btn primary" type="button" data-close-table="${selectedTable?.id || ""}" ${selectedTable?.items?.length ? "" : "disabled"}>Fechar mesa</button>
+          <button class="btn primary" type="button" data-close-table="${selectedTable?.id || ""}" ${selectedTable?.items?.length ? "" : "disabled"}>Enviar para balcao</button>
         </div>
       </aside>
     </div>
@@ -2029,7 +2034,9 @@ function changeCartQty(productId, change) {
 async function finalizeSale() {
   if (!cart.length) return;
 
-  const total = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
+  const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
+  const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
+  const total = subtotal + serviceFee;
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
   const payment = document.querySelector("#payment-method")?.value || "Pix";
   const clientId = document.querySelector("#client-id")?.value || "cl-001";
@@ -2050,7 +2057,24 @@ async function finalizeSale() {
   }
 
   if (isOnlineSession()) {
-    await finalizeSaleOnline({ payment, clientId, total, cost });
+    const checkout = tableCheckout;
+    const saleId = await finalizeSaleOnline({
+      payment,
+      clientId,
+      total,
+      cost,
+      serviceFee,
+      tableId: checkout?.id || null,
+      clearCart: false,
+      renderAfter: false,
+    });
+    if (!saleId) return;
+    if (checkout) await releaseTableAfterCheckout(checkout.id);
+    cart = [];
+    tableCheckout = null;
+    await loadOnlineSalesData();
+    notify(checkout ? "Conta da mesa fechada no balcao." : "Venda salva no Supabase.");
+    renderApp();
     return;
   }
 
@@ -2062,8 +2086,9 @@ async function finalizeSale() {
     cashierId: session.id,
     payment,
     clientId: payment === "Fiado" ? clientId : null,
+    tableId: tableCheckout?.id || null,
     status: "Concluida",
-    serviceFee: 0,
+    serviceFee,
     items: structuredClone(cart),
     total,
     cost,
@@ -2097,7 +2122,15 @@ async function finalizeSale() {
 
   logAudit("Venda finalizada", `${money(total)} em ${payment}.`);
 
+  if (tableCheckout) {
+    state.tables = state.tables.map((entry) =>
+      entry.id === tableCheckout.id ? { ...entry, status: "Livre", openedAt: null, serverId: null, clientId: null, items: [] } : entry,
+    );
+    logAudit("Mesa fechada no balcao", `${tableCheckout.name}: ${money(total)}.`);
+  }
+
   cart = [];
+  tableCheckout = null;
   saveState();
   notify("Venda finalizada.");
   renderApp();
@@ -2204,7 +2237,17 @@ async function updateKitchenOrder(orderId, status) {
   renderApp();
 }
 
-async function finalizeSaleOnline({ payment, clientId, total, cost, saleItems = structuredClone(cart), serviceFee = 0, tableId = null, clearCart = true }) {
+async function finalizeSaleOnline({
+  payment,
+  clientId,
+  total,
+  cost,
+  saleItems = structuredClone(cart),
+  serviceFee = 0,
+  tableId = null,
+  clearCart = true,
+  renderAfter = true,
+}) {
   const stockResult = await applyCartStockOnline(saleItems);
   if (!stockResult.ok) {
     notify(stockResult.message);
@@ -2276,8 +2319,23 @@ async function finalizeSaleOnline({ payment, clientId, total, cost, saleItems = 
   await loadOnlineClientsData();
   await loadOnlineSalesData();
   notify("Venda salva no Supabase.");
-  renderApp();
+  if (renderAfter) renderApp();
   return saleId;
+}
+
+async function releaseTableAfterCheckout(tableId) {
+  if (!isOnlineSession() || !tableId) return;
+  const { error } = await supabaseClient
+    .from("bar_tables")
+    .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, items: [] })
+    .eq("id", tableId);
+
+  if (error) {
+    notify(`Venda salva, mas falhou ao liberar mesa: ${error.message}`);
+    return;
+  }
+
+  await loadOnlineTableData();
 }
 
 async function applyCartStockOnline(items) {
@@ -2458,7 +2516,6 @@ async function closeTable(tableId) {
   if (!table || !table.items.length) return;
 
   const subtotal = tableTotalValue(table);
-  const serviceFee = tableServiceFee(subtotal);
   const saleItems = table.items.map((item) => ({ ...item }));
   const check = canFulfillCart(saleItems);
   if (!check.ok) {
@@ -2467,60 +2524,37 @@ async function closeTable(tableId) {
   }
 
   if (isOnlineSession()) {
-    const saleId = await finalizeSaleOnline({
-      payment: "Dinheiro",
-      clientId: table.clientId || null,
-      total: subtotal + serviceFee,
-      cost: saleItems.reduce((sum, item) => sum + item.qty * item.cost, 0),
-      saleItems,
-      serviceFee,
-      tableId: table.id,
-      clearCart: false,
-    });
-
-    if (!saleId) return;
-
     const { error } = await supabaseClient
       .from("bar_tables")
-      .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, items: [] })
+      .update({ status: "Fechamento", server_id: session.id })
       .eq("id", tableId);
 
     if (error) {
-      notify(`Venda salva, mas falhou ao liberar mesa: ${error.message}`);
+      notify(`Erro ao enviar mesa para o balcao: ${error.message}`);
       return;
     }
 
+    cart = structuredClone(saleItems);
+    tableCheckout = { id: table.id, name: table.name };
     currentModal = null;
+    currentView = "pos";
     await loadOnlineTableData();
-    logAudit("Mesa fechada online", `${table.name}: ${money(subtotal + serviceFee)}.`);
-    notify("Mesa fechada no Supabase.");
+    logAudit("Mesa enviada ao balcao", `${table.name}: ${money(subtotal)}.`);
+    notify("Conta enviada para o balcao. Escolha a forma de pagamento para fechar.");
     renderApp();
     return;
   }
 
-  applyCartStock(saleItems);
-  const sale = {
-    id: id("sale"),
-    date: new Date().toISOString(),
-    cashierId: session.id,
-    payment: "Dinheiro",
-    clientId: table.clientId || null,
-    tableId: table.id,
-    status: "Concluida",
-    serviceFee,
-    items: saleItems,
-    total: subtotal + serviceFee,
-    cost: saleItems.reduce((sum, item) => sum + item.qty * item.cost, 0),
-  };
-  state.sales.push(sale);
-  createKitchenOrders(sale);
   state.tables = state.tables.map((entry) =>
-    entry.id === tableId ? { ...entry, status: "Livre", openedAt: null, serverId: null, items: [] } : entry,
+    entry.id === tableId ? { ...entry, status: "Fechamento", serverId: session.id } : entry,
   );
+  cart = structuredClone(saleItems);
+  tableCheckout = { id: table.id, name: table.name };
+  currentView = "pos";
   currentModal = null;
-  logAudit("Mesa fechada", `${table.name}: ${money(sale.total)}.`);
+  logAudit("Mesa enviada ao balcao", `${table.name}: ${money(subtotal)}.`);
   saveState();
-  notify("Mesa fechada.");
+  notify("Conta enviada para o balcao. Escolha a forma de pagamento para fechar.");
   renderApp();
 }
 
@@ -4078,7 +4112,7 @@ function renderTableModal() {
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-clear-table="${table.id}">Liberar</button>
-        <button class="btn primary" type="button" data-close-table="${table.id}" ${table.items.length ? "" : "disabled"}>Fechar conta</button>
+        <button class="btn primary" type="button" data-close-table="${table.id}" ${table.items.length ? "" : "disabled"}>Enviar para balcao</button>
       </div>
     </div>
   `;
