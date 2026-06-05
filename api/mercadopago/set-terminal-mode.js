@@ -1,4 +1,11 @@
-const { json, methodAllowed, readJson, requireMercadoPagoConfig, mercadoPagoFetch } = require("./_helpers");
+const {
+  json,
+  methodAllowed,
+  readJson,
+  requireMercadoPagoConfig,
+  mercadoPagoFetch,
+  mercadoPagoErrorMessage,
+} = require("./_helpers");
 
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["POST"])) return;
@@ -6,7 +13,7 @@ module.exports = async function handler(req, res) {
   if (!env) return;
 
   const body = await readJson(req);
-  const operatingMode = body.operatingMode || "PDV";
+  const operatingMode = String(body.operatingMode || "PDV").trim().toUpperCase();
   if (!["PDV", "STANDALONE"].includes(operatingMode)) {
     json(res, 400, { error: "invalid_operating_mode" });
     return;
@@ -25,7 +32,11 @@ module.exports = async function handler(req, res) {
   });
 
   if (!result.ok) {
-    json(res, result.status, { error: "mercado_pago_terminal_setup_error", details: result.data });
+    json(res, result.status, {
+      error: "mercado_pago_terminal_setup_error",
+      message: mercadoPagoErrorMessage(result.data),
+      details: result.data,
+    });
     return;
   }
 

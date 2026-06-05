@@ -4,12 +4,9 @@ const {
   readJson,
   requireMercadoPagoConfig,
   mercadoPagoFetch,
+  mercadoPagoErrorMessage,
 } = require("./_helpers");
 const { randomUUID } = require("crypto");
-
-function paymentType(method) {
-  return method === "Debito" ? "debit_card" : "credit_card";
-}
 
 function safeReference(value) {
   return String(value || `bar-${Date.now()}`)
@@ -42,14 +39,17 @@ module.exports = async function handler(req, res) {
         terminal_id: env.terminalId,
         print_on_terminal: env.printOnTerminal,
       },
-      payment_method: {
-        default_type: paymentType(body.paymentMethod),
-        default_installments: env.defaultInstallments,
-        installments_cost: "seller",
-      },
     },
     description: body.description || "BAR ENCONTRO DAS AGUAS",
   };
+
+  if (body.paymentMethod === "Credito" && env.defaultInstallments > 1) {
+    payload.config.payment_method = {
+      default_type: "credit_card",
+      default_installments: env.defaultInstallments,
+      installments_cost: "seller",
+    };
+  }
 
   if (env.integratorId || env.platformId || env.sponsorId) {
     payload.integration_data = {};
@@ -65,7 +65,11 @@ module.exports = async function handler(req, res) {
   });
 
   if (!result.ok) {
-    json(res, result.status, { error: "mercado_pago_order_error", details: result.data });
+    json(res, result.status, {
+      error: "mercado_pago_order_error",
+      message: mercadoPagoErrorMessage(result.data),
+      details: result.data,
+    });
     return;
   }
 
