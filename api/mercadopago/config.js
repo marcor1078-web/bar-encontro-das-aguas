@@ -6,6 +6,7 @@ module.exports = async function handler(req, res) {
   const env = mercadoPagoEnv();
   json(res, 200, {
     enabled: Boolean(env.accessToken && env.terminalId),
+    terminalId: env.terminalId,
     terminal: publicTerminalInfo(env.terminalId),
     printOnTerminal: env.printOnTerminal,
     defaultInstallments: env.defaultInstallments,

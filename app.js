@@ -500,6 +500,8 @@ let mercadoPagoPointStatus = {
   enabled: false,
   message: "Mercado Pago Point ainda nao testado.",
   terminal: "",
+  terminalId: "",
+  terminals: [],
 };
 
 function loadState() {
@@ -776,12 +778,23 @@ async function loadMercadoPagoPointStatus(force = false) {
     const response = await fetch("/api/mercadopago/config");
     if (!response.ok) throw new Error("Endpoint da Vercel ainda nao disponivel.");
     const data = await response.json();
+    let terminals = [];
+    if (data.enabled) {
+      const terminalsResponse = await fetch("/api/mercadopago/terminals");
+      const terminalsData = await terminalsResponse.json().catch(() => ({}));
+      if (terminalsResponse.ok) terminals = terminalsData?.data?.terminals || [];
+    }
+    const selectedTerminal = terminals.find((terminal) => terminal.id === data.terminalId);
     mercadoPagoPointStatus = {
       checked: true,
       enabled: Boolean(data.enabled),
       terminal: data.terminal || "",
+      terminalId: data.terminalId || "",
+      terminals,
       message: data.enabled
-        ? `Point configurado no terminal ${data.terminal || "informado"}.`
+        ? `Point configurado no terminal ${data.terminal || "informado"}${
+            selectedTerminal?.operating_mode ? ` em modo ${selectedTerminal.operating_mode}` : ""
+          }.`
         : "Configure MP_ACCESS_TOKEN e MP_TERMINAL_ID na Vercel para ativar.",
     };
   } catch (error) {
@@ -789,6 +802,8 @@ async function loadMercadoPagoPointStatus(force = false) {
       checked: true,
       enabled: false,
       terminal: "",
+      terminalId: "",
+      terminals: [],
       message: "Integracao Point indisponivel neste ambiente.",
     };
   }
@@ -3826,6 +3841,23 @@ function renderOnline() {
     ? `${supabaseConfig.publishableKey.slice(0, 18)}...${supabaseConfig.publishableKey.slice(-6)}`
     : "Nao configurada";
   const pendingPointOrder = getMercadoPagoPendingOrder();
+  const selectedTerminal = mercadoPagoPointStatus.terminals.find(
+    (terminal) => terminal.id === mercadoPagoPointStatus.terminalId,
+  );
+  const terminalRows = mercadoPagoPointStatus.terminals
+    .map((terminal) => {
+      const selected = terminal.id === mercadoPagoPointStatus.terminalId;
+      return `
+        <tr>
+          <td>${selected ? "Selecionada" : "Disponivel"}</td>
+          <td>${terminal.id}</td>
+          <td>${terminal.operating_mode || "Sem modo"}</td>
+          <td>${terminal.store_id || "-"}</td>
+          <td>${terminal.pos_id || "-"}</td>
+        </tr>
+      `;
+    })
+    .join("");
   return `
     <div class="section-title">
       <div>
@@ -3870,6 +3902,37 @@ function renderOnline() {
       )}
       ${onlineCard("Seguranca", "A chave secreta do Supabase continua fora do navegador. Senhas reais ficam no Supabase Auth.", "Protegido")}
     </div>
+    <section class="card" style="margin-top: 16px;">
+      <div class="section-title compact">
+        <div>
+          <h3>Maquininhas Mercado Pago</h3>
+          <p>${
+            selectedTerminal?.operating_mode === "PDV"
+              ? "A maquininha selecionada esta em modo PDV."
+              : "A maquininha selecionada precisa estar em modo PDV e ser reiniciada para receber cobrancas do app."
+          }</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Terminal</th>
+              <th>Modo</th>
+              <th>Loja</th>
+              <th>Caixa</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              terminalRows ||
+              `<tr><td colspan="5">Clique em Testar Mercado Pago Point para carregar as maquininhas.</td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
