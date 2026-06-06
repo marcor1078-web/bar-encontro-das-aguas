@@ -482,6 +482,7 @@ let searchTerm = "";
 let categoryFilter = "Todos";
 let reportFilter = { mode: "24h", start: "", end: "" };
 let suppressBroadcast = false;
+let deferredInstallPrompt = null;
 
 const app = document.querySelector("#app");
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("barcontrol-sync") : null;
@@ -677,6 +678,35 @@ function notify(message) {
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 3200);
+}
+
+function isStandaloneApp() {
+  return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+function isIosDevice() {
+  return /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+}
+
+async function installApp() {
+  if (isStandaloneApp()) {
+    notify("O aplicativo ja esta instalado neste aparelho.");
+    return;
+  }
+
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+    deferredInstallPrompt = null;
+    return;
+  }
+
+  if (isIosDevice()) {
+    notify("No Safari, toque em Compartilhar e depois em Adicionar a Tela de Inicio.");
+    return;
+  }
+
+  notify("Abra o menu do navegador e escolha Instalar aplicativo ou Adicionar a tela inicial.");
 }
 
 function logAudit(action, details = "") {
@@ -1583,6 +1613,11 @@ function renderLogin() {
             <input name="password" type="password" autocomplete="current-password" required />
           </label>
           <button class="btn primary" type="submit">Entrar</button>
+          ${
+            isStandaloneApp()
+              ? ""
+              : `<button class="btn secondary install-app-btn" type="button" data-install-app>${icon("download")} Instalar no celular ou computador</button>`
+          }
         </form>
         ${
           quickUsers.length
@@ -1619,6 +1654,7 @@ function renderLogin() {
       document.querySelector('input[name="password"]').focus();
     });
   });
+  document.querySelector("[data-install-app]")?.addEventListener("click", installApp);
 
 }
 
@@ -1677,6 +1713,11 @@ function renderApp() {
             <p>${topbarSubtitle(currentView)}</p>
           </div>
           <div class="top-actions">
+            ${
+              isStandaloneApp()
+                ? ""
+                : `<button class="btn secondary compact install-topbar" type="button" data-install-app>${icon("download")} Instalar app</button>`
+            }
             <button class="icon-btn" type="button" id="theme-toggle" title="Alternar tema">
               ${icon(state.settings.theme === "dark" ? "sun" : "moon")}
             </button>
@@ -1755,6 +1796,7 @@ function bindAppEvents() {
   document.querySelector("#open-menu")?.addEventListener("click", () => {
     document.querySelector("#sidebar")?.classList.toggle("open");
   });
+  document.querySelector("[data-install-app]")?.addEventListener("click", installApp);
 
   document.querySelectorAll("[data-close-modal]").forEach((button) => {
     button.addEventListener("click", closeModal);
@@ -6252,6 +6294,18 @@ syncChannel?.addEventListener("message", (event) => {
   }
   suppressBroadcast = false;
   renderApp();
+});
+
+window.addEventListener("beforeinstallprompt", (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+});
+
+window.addEventListener("appinstalled", () => {
+  deferredInstallPrompt = null;
+  notify("Aplicativo instalado com sucesso.");
+  if (session) renderApp();
+  else renderLogin();
 });
 
 renderLogin();

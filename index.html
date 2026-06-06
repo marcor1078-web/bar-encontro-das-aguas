@@ -3,20 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#111827" />
+    <meta name="theme-color" content="#0f766e" />
+    <meta name="application-name" content="BAR ENCONTRO DAS AGUAS" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Encontro das Aguas" />
     <title>BAR ENCONTRO DAS AGUAS</title>
-    <link rel="manifest" href="./manifest.json" />
-    <link rel="icon" href="./icon.svg" />
-    <link rel="stylesheet" href="./styles.css?v=20260605-4" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/styles.css?v=20260606-1" />
   </head>
   <body>
     <div id="app"></div>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-    <script src="./supabase-config.js?v=20260605-4"></script>
-    <script src="./app.js?v=20260605-4"></script>
+    <script src="/supabase-config.js?v=20260606-1"></script>
+    <script src="/app.js?v=20260606-1"></script>
     <script>
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+        navigator.serviceWorker.register("/service-worker.js", { scope: "/" }).catch(() => {});
       }
     </script>
   </body>
