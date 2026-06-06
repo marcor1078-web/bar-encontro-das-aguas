@@ -2100,6 +2100,10 @@ function renderPos() {
         </div>
       </aside>
     </div>
+    <div class="mobile-sale-total" aria-live="polite">
+      <span>Total da venda</span>
+      <strong>${money(total)}</strong>
+    </div>
   `;
 }
 
