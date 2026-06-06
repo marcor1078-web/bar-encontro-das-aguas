@@ -1485,11 +1485,14 @@ body[data-theme="dark"] .table-tile.fechamento em {
   display: flex;
   max-height: calc(100vh - 110px);
   flex-direction: column;
+  overflow: hidden;
 }
 
 .cart-list {
   display: grid;
+  flex: 1 1 auto;
   gap: 10px;
+  min-height: 0;
   padding: 14px;
   overflow-y: auto;
 }
@@ -1540,6 +1543,9 @@ body[data-theme="dark"] .table-tile.fechamento em {
 }
 
 .cart-total {
+  position: sticky;
+  z-index: 2;
+  bottom: 0;
   display: grid;
   gap: 10px;
   flex: 0 0 auto;
@@ -1695,10 +1701,16 @@ body[data-theme="dark"] .notice {
   .cart {
     position: static;
     max-height: none;
+    overflow: visible;
   }
 
   .cart-list {
+    min-height: auto;
     overflow: visible;
+  }
+
+  .cart-total {
+    position: static;
   }
 }
 
