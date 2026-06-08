@@ -1710,7 +1710,13 @@ body[data-theme="dark"] .notice {
   }
 
   .cart-total {
-    position: static;
+    position: sticky;
+    bottom: 0;
+    z-index: 7;
+    margin: 0 -1px -1px;
+    border: 1px solid var(--line);
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 -10px 24px rgba(15, 23, 42, 0.08);
   }
 }
 
@@ -1791,31 +1797,7 @@ body[data-theme="dark"] .notice {
   }
 
   .mobile-sale-total {
-    position: fixed;
-    right: 14px;
-    bottom: 14px;
-    left: 14px;
-    z-index: 8;
-    display: flex;
-    min-height: 58px;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--paper);
-    padding: 10px 14px;
-    box-shadow: var(--shadow);
-  }
-
-  .mobile-sale-total span {
-    color: var(--muted);
-    font-size: 0.82rem;
-    font-weight: 800;
-  }
-
-  .mobile-sale-total strong {
-    font-size: 1.35rem;
+    display: none;
   }
 }
 
