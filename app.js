@@ -811,8 +811,8 @@ function paymentTerminalOptions() {
     id: `mp:${terminal.id}`,
     provider: "mercado_pago",
     terminalId: terminal.id,
-    label: `${mercadoPagoTerminalName(terminal, index)}${index === 0 ? "" : " (inativa)"}`,
-    enabled: index === 0,
+    label: `${mercadoPagoTerminalName(terminal, index)}${terminal.operating_mode === "PDV" ? "" : " (ativar PDV)"}`,
+    enabled: terminal.operating_mode === "PDV",
   }));
 
   return [
@@ -1069,12 +1069,12 @@ async function processMercadoPagoPointPayment({ amount, payment, description, te
   };
 }
 
-async function setMercadoPagoTerminalMode(operatingMode = "PDV") {
+async function setMercadoPagoTerminalMode(operatingMode = "PDV", terminalId = "") {
   try {
     const response = await fetch("/api/mercadopago/set-terminal-mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ operatingMode }),
+      body: JSON.stringify({ operatingMode, terminalId }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(describeMercadoPagoError(data));
@@ -1890,6 +1890,9 @@ function bindViewEvents() {
     renderApp();
   });
   document.querySelector("[data-set-point-pdv]")?.addEventListener("click", () => setMercadoPagoTerminalMode("PDV"));
+  document.querySelectorAll("[data-set-point-terminal-pdv]").forEach((button) => {
+    button.addEventListener("click", () => setMercadoPagoTerminalMode("PDV", button.dataset.setPointTerminalPdv));
+  });
   document.querySelector("[data-check-point-order]")?.addEventListener("click", checkMercadoPagoPendingOrder);
   document.querySelector("[data-cancel-point-order]")?.addEventListener("click", cancelMercadoPagoPendingOrder);
   document.querySelector("[data-export-backup]")?.addEventListener("click", exportBackup);
@@ -4034,15 +4037,22 @@ function renderOnline() {
     (terminal) => terminal.id === mercadoPagoPointStatus.terminalId,
   );
   const terminalRows = mercadoPagoPointStatus.terminals
-    .map((terminal) => {
+    .map((terminal, index) => {
       const selected = terminal.id === mercadoPagoPointStatus.terminalId;
       return `
         <tr>
-          <td>${selected ? "Selecionada" : "Disponivel"}</td>
+          <td>Maquininha ${index + 1}${selected ? " / Principal" : ""}</td>
           <td>${terminal.id}</td>
           <td>${terminal.operating_mode || "Sem modo"}</td>
           <td>${terminal.store_id || "-"}</td>
           <td>${terminal.pos_id || "-"}</td>
+          <td>
+            ${
+              terminal.operating_mode === "PDV"
+                ? '<span class="status green">Ativa</span>'
+                : `<button class="btn compact secondary" type="button" data-set-point-terminal-pdv="${terminal.id}">Ativar PDV</button>`
+            }
+          </td>
         </tr>
       `;
     })
@@ -4116,12 +4126,13 @@ function renderOnline() {
               <th>Modo</th>
               <th>Loja</th>
               <th>Caixa</th>
+              <th>Acoes</th>
             </tr>
           </thead>
           <tbody>
             ${
               terminalRows ||
-              `<tr><td colspan="5">Clique em Testar Mercado Pago Point para carregar as maquininhas.</td></tr>`
+              `<tr><td colspan="6">Clique em Testar Mercado Pago Point para carregar as maquininhas.</td></tr>`
             }
           </tbody>
         </table>
