@@ -1856,7 +1856,9 @@ function bindViewEvents() {
     renderApp();
   });
 
-  document.querySelector("[data-finalize-sale]")?.addEventListener("click", finalizeSale);
+  document.querySelectorAll("[data-finalize-sale]").forEach((button) => {
+    button.addEventListener("click", finalizeSale);
+  });
   document.querySelector("[data-test-supabase]")?.addEventListener("click", testSupabaseConnection);
   document.querySelector("[data-test-mercadopago]")?.addEventListener("click", async () => {
     await loadMercadoPagoPointStatus(true);
@@ -2141,6 +2143,13 @@ function renderPos() {
           <button class="btn primary" type="button" data-finalize-sale ${cart.length ? "" : "disabled"}>Finalizar venda</button>
         </div>
       </aside>
+    </div>
+    <div class="checkout-dock" aria-live="polite">
+      <div>
+        <span>Total da venda</span>
+        <strong>${money(total)}</strong>
+      </div>
+      <button class="btn primary" type="button" data-finalize-sale ${cart.length ? "" : "disabled"}>Finalizar venda</button>
     </div>
   `;
 }
