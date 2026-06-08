@@ -811,8 +811,8 @@ function paymentTerminalOptions() {
     id: `mp:${terminal.id}`,
     provider: "mercado_pago",
     terminalId: terminal.id,
-    label: mercadoPagoTerminalName(terminal, index),
-    enabled: true,
+    label: `${mercadoPagoTerminalName(terminal, index)}${index === 0 ? "" : " (inativa)"}`,
+    enabled: index === 0,
   }));
 
   return [
@@ -825,7 +825,7 @@ function paymentTerminalOptions() {
 function getSelectedPaymentTerminal() {
   const terminals = paymentTerminalOptions();
   const saved = localStorage.getItem(PAYMENT_TERMINAL_KEY);
-  return terminals.find((terminal) => terminal.id === saved) || terminals.find((terminal) => terminal.enabled) || null;
+  return terminals.find((terminal) => terminal.id === saved && terminal.enabled) || terminals.find((terminal) => terminal.enabled) || null;
 }
 
 function setSelectedPaymentTerminal(terminalKey) {
@@ -854,7 +854,7 @@ function renderPaymentTerminalField() {
         ${terminals
           .map(
             (terminal) =>
-              `<option value="${terminal.id}" ${terminal.id === selectedTerminal?.id ? "selected" : ""}>${terminal.label}</option>`,
+              `<option value="${terminal.id}" ${terminal.id === selectedTerminal?.id ? "selected" : ""} ${terminal.enabled ? "" : "disabled"}>${terminal.label}</option>`,
           )
           .join("")}
       </select>
@@ -2460,6 +2460,10 @@ async function finalizeSale() {
   if (isOnlineSession()) {
     if (isPointPayment(payment)) {
       const selectedTerminal = getSelectedPaymentTerminal();
+      if (!selectedTerminal?.enabled) {
+        notify("Selecione uma maquininha ativa antes de finalizar.");
+        return;
+      }
       if (selectedTerminal?.provider === "stone") {
         notify(`${selectedTerminal.label} ainda nao esta configurada. Use uma Mercado Pago ou configure a Stone primeiro.`);
         return;
