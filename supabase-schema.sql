@@ -20,6 +20,7 @@ create table if not exists products (
   stock numeric(12,3) not null default 0,
   min_stock numeric(12,3) not null default 0,
   critical_stock numeric(12,3) not null default 0,
+  expires_at date,
   favorite boolean not null default false,
   active boolean not null default true,
   created_at timestamptz not null default now()

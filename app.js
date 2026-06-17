@@ -1289,12 +1289,30 @@ function mapProductFromDb(row, recipes = []) {
     stock: Number(row.stock || 0),
     minStock: Number(row.min_stock || 0),
     criticalStock: Number(row.critical_stock || 0),
+    expiresAt: row.expires_at || "",
     favorite: Boolean(row.favorite),
     active: row.active !== false,
     recipe: recipes
       .filter((recipe) => recipe.product_id === row.id)
       .map((recipe) => ({ ingredientId: recipe.ingredient_id, qty: Number(recipe.qty || 0) })),
   };
+}
+
+function productExpiryStatus(product) {
+  if (!product.expiresAt) return { label: "Sem validade", className: "muted", days: null };
+  const today = startOfToday();
+  const expires = new Date(`${product.expiresAt}T00:00:00`);
+  const days = Math.ceil((expires - today) / 86400000);
+  if (days < 0) return { label: "Vencido", className: "red", days };
+  if (days === 0) return { label: "Vence hoje", className: "red", days };
+  if (days <= 7) return { label: `${days} dias`, className: "red", days };
+  if (days <= 30) return { label: `${days} dias`, className: "amber", days };
+  return { label: "Ok", className: "green", days };
+}
+
+function formatDateBr(value) {
+  if (!value) return "-";
+  return new Date(`${value}T00:00:00`).toLocaleDateString("pt-BR");
 }
 
 function mapIngredientFromDb(row) {
@@ -3553,6 +3571,7 @@ function renderStock() {
               <th>Saldo</th>
               <th>Minimo</th>
               <th>Critico</th>
+              <th>Validade</th>
               <th>Status</th>
               <th>Acoes</th>
             </tr>
@@ -3570,6 +3589,7 @@ function renderStock() {
                     <td>${product.stock}</td>
                     <td>${product.minStock}</td>
                     <td>${product.criticalStock}</td>
+                    <td>${product.expiresAt ? `${formatDateBr(product.expiresAt)} <span class="status ${productExpiryStatus(product).className}">${productExpiryStatus(product).label}</span>` : "-"}</td>
                     <td><span class="status ${stockStatus(product).className}">${stockStatus(product).label}</span></td>
                     <td>
                       <div class="toolbar">
@@ -4461,6 +4481,10 @@ function renderProductModal() {
             <span>Estoque critico</span>
             <input name="criticalStock" type="number" min="0" step="1" required value="${product?.criticalStock ?? 0}" />
           </label>
+          <label class="field">
+            <span>Data de validade</span>
+            <input name="expiresAt" type="date" value="${product?.expiresAt || ""}" />
+          </label>
           <label class="field full">
             <span>Ficha tecnica</span>
             <textarea name="recipeText" placeholder="Ex.: Cachaca:60, Limao:1">${recipeToText(product?.recipe || [])}</textarea>
@@ -5002,6 +5026,7 @@ async function saveProduct(event) {
     stock: Number(form.get("stock")),
     minStock: Number(form.get("minStock")),
     criticalStock: Number(form.get("criticalStock")),
+    expiresAt: form.get("expiresAt") || "",
     station: form.get("station"),
     recipe: parseRecipeText(form.get("recipeText")),
     favorite: form.get("favorite") === "true",
@@ -5038,13 +5063,24 @@ async function saveProductOnline(payload) {
     stock: payload.stock,
     min_stock: payload.minStock,
     critical_stock: payload.criticalStock,
+    expires_at: payload.expiresAt || null,
     favorite: payload.favorite,
     active: payload.active,
   };
 
-  const result = currentModal.id
+  let result = currentModal.id
     ? await supabaseClient.from("products").update(dbPayload).eq("id", currentModal.id).select("*").single()
     : await supabaseClient.from("products").insert(dbPayload).select("*").single();
+
+  if (result.error && String(result.error.message || "").includes("expires_at")) {
+    const { expires_at, ...fallbackPayload } = dbPayload;
+    result = currentModal.id
+      ? await supabaseClient.from("products").update(fallbackPayload).eq("id", currentModal.id).select("*").single()
+      : await supabaseClient.from("products").insert(fallbackPayload).select("*").single();
+    if (!result.error) {
+      notify("Produto salvo. Para gravar validade online, rode a migracao da coluna expires_at no Supabase.");
+    }
+  }
 
   if (result.error) {
     notify(`Erro ao salvar produto online: ${result.error.message}`);
@@ -5900,10 +5936,13 @@ function stockAlerts() {
   const ingredientAlerts = state.ingredients
     .filter((ingredient) => ingredient.stock <= ingredient.minStock)
     .map((ingredient) => ({ type: "Insumo baixo", name: ingredient.name, stock: ingredient.stock, minStock: ingredient.minStock }));
+  const productExpiryAlerts = state.products
+    .filter((product) => product.active && product.expiresAt && productExpiryStatus(product).className !== "green")
+    .map((product) => ({ type: "Validade produto", name: product.name, stock: productExpiryStatus(product).label, minStock: "" }));
   const lotAlerts = state.stockLots
     .filter((lot) => lotStatus(lot).className !== "green")
     .map((lot) => ({ type: "Validade", name: `${inventoryItemName(lot)} (${lot.batch})`, stock: lotStatus(lot).label, minStock: "" }));
-  return [...productAlerts, ...ingredientAlerts, ...lotAlerts];
+  return [...productAlerts, ...ingredientAlerts, ...productExpiryAlerts, ...lotAlerts];
 }
 
 function alertsList() {
@@ -5959,7 +5998,7 @@ function lotStatus(lot) {
   const days = Math.ceil((expires - today) / 86400000);
   if (days < 0) return { label: "Vencido", className: "red" };
   if (days <= 7) return { label: `${days} dias`, className: "red" };
-  if (days <= 15) return { label: `${days} dias`, className: "amber" };
+  if (days <= 30) return { label: `${days} dias`, className: "amber" };
   return { label: "Ok", className: "green" };
 }
 
