@@ -838,6 +838,13 @@ function getSelectedPaymentTerminal() {
   return terminals.find((terminal) => terminal.id === saved && terminal.enabled) || terminals.find((terminal) => terminal.enabled) || null;
 }
 
+function ticketTerminalLabel(terminal) {
+  if (!terminal) return "";
+  return String(terminal.label || "")
+    .replace(" (ativar PDV)", "")
+    .replace(/\s+-\s+(PDV|STANDALONE)$/i, "");
+}
+
 function setSelectedPaymentTerminal(terminalKey) {
   const terminal = paymentTerminalOptions().find((entry) => entry.id === terminalKey);
   if (!terminal) return;
@@ -2521,6 +2528,12 @@ async function finalizeSale() {
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
   const payment = document.querySelector("#payment-method")?.value || "Pix";
   const clientId = document.querySelector("#client-id")?.value || "cl-001";
+  const selectedTerminal = isPointPayment(payment) ? getSelectedPaymentTerminal() : null;
+  const printDetails = {
+    tableName: tableCheckout?.name || "",
+    customerName: tableCheckout?.customerName || "",
+    terminalLabel: ticketTerminalLabel(selectedTerminal),
+  };
 
   if (payment === "Fiado") {
     const client = state.clients.find((entry) => entry.id === clientId);
@@ -2539,7 +2552,6 @@ async function finalizeSale() {
 
   if (isOnlineSession()) {
     if (isPointPayment(payment)) {
-      const selectedTerminal = getSelectedPaymentTerminal();
       if (!selectedTerminal?.enabled) {
         notify("Selecione uma maquininha ativa antes de finalizar.");
         return;
@@ -2577,6 +2589,7 @@ async function finalizeSale() {
     cart = [];
     tableCheckout = null;
     await loadOnlineSalesData();
+    attachSalePrintDetails(saleId, printDetails);
     lastSaleForTicketsId = saleId;
     currentModal = { type: "printTickets", id: saleId };
     notify(checkout ? "Conta da mesa fechada no balcao." : "Venda salva no Supabase.");
@@ -2593,6 +2606,9 @@ async function finalizeSale() {
     payment,
     clientId: payment === "Fiado" ? clientId : null,
     tableId: tableCheckout?.id || null,
+    tableName: printDetails.tableName,
+    customerName: printDetails.customerName,
+    terminalLabel: printDetails.terminalLabel,
     status: "Concluida",
     serviceFee,
     items: structuredClone(cart),
@@ -3066,7 +3082,7 @@ async function closeTable(tableId) {
     }
 
     cart = structuredClone(saleItems);
-    tableCheckout = { id: table.id, name: table.name };
+    tableCheckout = { id: table.id, name: table.name, customerName: table.customerName || "" };
     currentModal = null;
     currentView = "pos";
     await loadOnlineTableData();
@@ -3080,7 +3096,7 @@ async function closeTable(tableId) {
     entry.id === tableId ? { ...entry, status: "Fechamento", serverId: session.id } : entry,
   );
   cart = structuredClone(saleItems);
-  tableCheckout = { id: table.id, name: table.name };
+  tableCheckout = { id: table.id, name: table.name, customerName: table.customerName || "" };
   currentView = "pos";
   currentModal = null;
   logAudit("Mesa enviada ao balcao", `${table.name}: ${money(subtotal)}.`);
@@ -6167,17 +6183,37 @@ function ticketUnitList(sale) {
   );
 }
 
+function attachSalePrintDetails(saleId, details = {}) {
+  state.sales = state.sales.map((sale) =>
+    sale.id === saleId
+      ? {
+          ...sale,
+          tableName: details.tableName || sale.tableName || "",
+          customerName: details.customerName || sale.customerName || "",
+          terminalLabel: details.terminalLabel || sale.terminalLabel || "",
+        }
+      : sale,
+  );
+  saveState();
+}
+
 function printSaleTicketsIndividual(saleId) {
   const sale = state.sales.find((entry) => entry.id === saleId);
   if (!sale) return;
   const units = ticketUnitList(sale);
   if (!units.length) return;
+  const optionalRows = [
+    sale.tableName ? ["Mesa", sale.tableName] : null,
+    sale.customerName ? ["Cliente", sale.customerName] : null,
+    sale.terminalLabel ? ["Maquininha", sale.terminalLabel] : null,
+  ].filter(Boolean);
   const tickets = units
     .map(
       (item, index) => `
         <section class="ticket">
           <h1>${escapeHtml(state.settings.barName || "BAR ENCONTRO DAS AGUAS")}</h1>
-          <h2>FICHA</h2>
+          ${state.settings.cnpj ? `<div class="cnpj">CNPJ: ${escapeHtml(state.settings.cnpj)}</div>` : ""}
+          <h2>FICHA ${index + 1} DE ${units.length}</h2>
           <div class="line"></div>
           <div class="item-name">${escapeHtml(item.name)}</div>
           <div class="item-meta">Unidade ${item.unitIndex} de ${item.qty}</div>
@@ -6187,9 +6223,11 @@ function printSaleTicketsIndividual(saleId) {
             <span>Data</span><strong>${dateTime(sale.date)}</strong>
             <span>Operador</span><strong>${escapeHtml(userName(sale.cashierId))}</strong>
             <span>Pagamento</span><strong>${escapeHtml(sale.payment)}</strong>
+            ${optionalRows.map(([label, value]) => `<span>${label}</span><strong>${escapeHtml(value)}</strong>`).join("")}
           </div>
           <div class="price">${money(item.unitTotal)}</div>
           <div class="footer">ENTREGAR MEDIANTE ESTA FICHA</div>
+          <div class="fiscal-note">Ficha sem valor fiscal</div>
           <div class="count">Ficha ${index + 1} de ${units.length}</div>
         </section>
       `,
@@ -6205,18 +6243,20 @@ function printSaleTicketsIndividual(saleId) {
           * { box-sizing: border-box; }
           @page { size: 58mm auto; margin: 0; }
           body { width: 58mm; margin: 0; background: #fff; color: #000; font-family: Arial, sans-serif; }
-          .ticket { width: 58mm; min-height: 72mm; padding: 4mm 3mm; page-break-after: always; break-after: page; }
+          .ticket { width: 58mm; min-height: 82mm; padding: 4mm 3mm; page-break-after: always; break-after: page; }
           .ticket:last-child { page-break-after: auto; break-after: auto; }
           h1 { margin: 0 0 2mm; text-align: center; font-size: 13px; font-weight: 800; }
-          h2 { margin: 0 0 3mm; text-align: center; font-size: 18px; letter-spacing: 1px; }
+          .cnpj { margin: 0 0 2mm; text-align: center; font-size: 10px; font-weight: 700; }
+          h2 { margin: 0 0 3mm; text-align: center; font-size: 16px; letter-spacing: 1px; }
           .line { border-top: 1px dashed #000; margin: 3mm 0; }
           .item-name { text-align: center; font-size: 18px; font-weight: 900; text-transform: uppercase; line-height: 1.15; }
           .item-meta { margin-top: 2mm; text-align: center; font-size: 12px; font-weight: 700; }
-          .meta { display: grid; grid-template-columns: 18mm 1fr; gap: 1mm; font-size: 10px; }
+          .meta { display: grid; grid-template-columns: 19mm 1fr; gap: 1mm; font-size: 10px; }
           .meta strong { text-align: right; }
           .price { margin-top: 4mm; text-align: center; font-size: 18px; font-weight: 900; }
           .footer { margin-top: 5mm; text-align: center; font-size: 10px; font-weight: 800; }
-          .count { margin-top: 3mm; text-align: center; font-size: 9px; }
+          .fiscal-note { margin-top: 2mm; text-align: center; font-size: 9px; font-weight: 700; }
+          .count { margin-top: 2mm; text-align: center; font-size: 9px; }
           @media print {
             body { width: 58mm; }
           }
