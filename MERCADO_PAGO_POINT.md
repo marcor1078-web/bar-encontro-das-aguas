@@ -46,4 +46,5 @@ Depois de salvar as variaveis, faca um novo deploy na Vercel.
 - Nunca coloque `MP_ACCESS_TOKEN` dentro de `app.js`, `supabase-config.js` ou qualquer arquivo publico.
 - Tokens e chaves privadas ficam apenas nas variaveis de ambiente da Vercel.
 - `MP_PRINT_ON_TERMINAL=seller_ticket` imprime a via do vendedor na maquininha depois do pagamento.
+- A ficha personalizada e enviada pela rota `/api/mercadopago/print-ticket` apos o status `processed`.
 - Se o pagamento ficar pendente, confira a maquininha antes de tentar novamente.

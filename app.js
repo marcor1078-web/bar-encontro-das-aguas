@@ -602,6 +602,15 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+function printSafeText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[{}]/g, "")
+    .replace(/[^\x20-\x7E]/g, "")
+    .trim();
+}
+
 function id(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -1007,7 +1016,49 @@ async function cancelMercadoPagoPendingOrder() {
   renderApp();
 }
 
-async function processMercadoPagoPointPayment({ amount, payment, description, terminalId }) {
+function buildMercadoPagoCustomTicket({ amount, payment, description, items }) {
+  const barName = printSafeText(state.settings.barName || "BAR ENCONTRO DAS AGUAS").slice(0, 32);
+  const orderDescription = printSafeText(description || "Venda balcao").slice(0, 32);
+  const operator = printSafeText(session?.name || "Operador").slice(0, 24);
+  const lines = [
+    "{br}",
+    "--------------------------------",
+    `{center}{w}${barName}{/w}{/center}`,
+    "{center}{b}FICHA DE CONSUMO{/b}{/center}",
+    "--------------------------------",
+    `{s}Data: ${printSafeText(dateTime(new Date()))}{/s}`,
+    `{s}Operador: ${operator}{/s}`,
+    `{s}Origem: ${orderDescription}{/s}`,
+    `{s}Pagamento: ${printSafeText(payment)}{/s}`,
+    "--------------------------------",
+    "{b}ITENS{/b}",
+    ...items.map((item) => `{s}${item.qty}x ${printSafeText(item.name).slice(0, 28)} - ${money(item.qty * item.price)}{/s}`),
+    "--------------------------------",
+    `{center}{w}TOTAL ${money(amount)}{/w}{/center}`,
+    "{br}",
+    "{center}ENTREGAR MEDIANTE ESTA FICHA{/center}",
+    "{br}",
+  ];
+  const content = lines.join("{br}");
+  return content.length < 100 ? `${content}{br}${"-".repeat(100 - content.length)}` : content.slice(0, 4096);
+}
+
+async function printMercadoPagoCustomTicket({ terminalId, amount, payment, description, items, orderId }) {
+  const response = await fetch("/api/mercadopago/print-ticket", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      terminalId,
+      externalReference: `ticket-${orderId || Date.now()}`,
+      content: buildMercadoPagoCustomTicket({ amount, payment, description, items }),
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(describeMercadoPagoError(data));
+  return data;
+}
+
+async function processMercadoPagoPointPayment({ amount, payment, description, terminalId, items = [] }) {
   const config = await loadMercadoPagoPointStatus();
   if (!config.enabled || !isPointPayment(payment)) return { skipped: true };
   const selectedTerminalId = terminalId || getSelectedPaymentTerminal()?.terminalId || "";
@@ -1051,6 +1102,19 @@ async function processMercadoPagoPointPayment({ amount, payment, description, te
     updateMercadoPagoPendingOrderStatus(statusData);
     if (statusData.status === "processed") {
       clearMercadoPagoPendingOrder(order.id);
+      try {
+        await printMercadoPagoCustomTicket({
+          terminalId: selectedTerminalId,
+          amount,
+          payment,
+          description,
+          items,
+          orderId: order.id,
+        });
+        notify("Pagamento aprovado. Ficha personalizada enviada para impressao.");
+      } catch (error) {
+        notify(`Pagamento aprovado, mas a ficha nao imprimiu: ${error.message}`);
+      }
       return { ok: true, order: statusData };
     }
     if (["failed", "canceled", "expired"].includes(statusData.status)) {
@@ -2475,6 +2539,7 @@ async function finalizeSale() {
         amount: total,
         payment,
         terminalId: selectedTerminal?.terminalId,
+        items: structuredClone(cart),
         description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
       });
       if (!pointPayment.skipped && !pointPayment.ok) {
@@ -4094,7 +4159,7 @@ function renderOnline() {
       ${onlineCard("Publicacao", "Proxima etapa: publicar os arquivos estaticos na Vercel com HTTPS.", "Proximo")}
       ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
       ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
-      ${onlineCard("Impressao Point", "A via do vendedor sera impressa automaticamente na maquininha apos pagamento aprovado.", "Ativa")}
+      ${onlineCard("Impressao Point", "Apos pagamento aprovado, a Point imprime a via do vendedor e uma ficha personalizada da venda.", "Ativa")}
       ${onlineCard("Stone", "Maquininha 3 e 4 reservadas. Para ativar, precisamos habilitar Connect 2.0/Pagar.me e obter as credenciais da Stone.", "A configurar")}
       ${onlineCard(
         "Fila da Point",
