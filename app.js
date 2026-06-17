@@ -4094,6 +4094,7 @@ function renderOnline() {
       ${onlineCard("Publicacao", "Proxima etapa: publicar os arquivos estaticos na Vercel com HTTPS.", "Proximo")}
       ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
       ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
+      ${onlineCard("Impressao Point", "A via do vendedor sera impressa automaticamente na maquininha apos pagamento aprovado.", "Ativa")}
       ${onlineCard("Stone", "Maquininha 3 e 4 reservadas. Para ativar, precisamos habilitar Connect 2.0/Pagar.me e obter as credenciais da Stone.", "A configurar")}
       ${onlineCard(
         "Fila da Point",

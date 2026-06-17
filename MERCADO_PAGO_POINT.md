@@ -18,7 +18,7 @@ Em `Vercel > Project > Settings > Environment Variables`, crie:
 ```text
 MP_ACCESS_TOKEN=seu_access_token_do_mercado_pago
 MP_TERMINAL_ID=id_do_terminal_point
-MP_PRINT_ON_TERMINAL=no_ticket
+MP_PRINT_ON_TERMINAL=seller_ticket
 MP_DEFAULT_INSTALLMENTS=1
 ```
 
@@ -45,4 +45,5 @@ Depois de salvar as variaveis, faca um novo deploy na Vercel.
 
 - Nunca coloque `MP_ACCESS_TOKEN` dentro de `app.js`, `supabase-config.js` ou qualquer arquivo publico.
 - Tokens e chaves privadas ficam apenas nas variaveis de ambiente da Vercel.
+- `MP_PRINT_ON_TERMINAL=seller_ticket` imprime a via do vendedor na maquininha depois do pagamento.
 - Se o pagamento ficar pendente, confira a maquininha antes de tentar novamente.

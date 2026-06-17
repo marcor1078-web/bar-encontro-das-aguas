@@ -45,7 +45,7 @@ module.exports = async function handler(req, res) {
     config: {
       point: {
         terminal_id: terminalId,
-        print_on_terminal: env.printOnTerminal,
+        print_on_terminal: body.printOnTerminal || env.printOnTerminal || "seller_ticket",
       },
     },
     description: body.description || "BAR ENCONTRO DAS AGUAS",
