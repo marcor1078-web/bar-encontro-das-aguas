@@ -198,6 +198,37 @@ body[data-theme="dark"] .status.blue {
   color: #bfdbfe;
 }
 
+body[data-theme="dark"] .stock-card {
+  background: #07131f;
+  border-color: #14b8a6;
+  box-shadow: 0 18px 40px rgba(20, 184, 166, 0.16);
+}
+
+body[data-theme="dark"] .stock-card .card-head,
+body[data-theme="dark"] .stock-table th {
+  background: linear-gradient(90deg, #0f766e 0%, #16a34a 100%);
+  color: #ffffff;
+}
+
+body[data-theme="dark"] .stock-table tbody tr:hover td {
+  background: #102033;
+}
+
+body[data-theme="dark"] .stock-table .status.green {
+  background: #22c55e;
+  color: #052e16;
+}
+
+body[data-theme="dark"] .stock-table .status.amber {
+  background: #fbbf24;
+  color: #451a03;
+}
+
+body[data-theme="dark"] .stock-table .status.red {
+  background: #f87171;
+  color: #450a0a;
+}
+
 button,
 input,
 select {
@@ -999,6 +1030,63 @@ tbody tr:hover td {
 .status.blue {
   background: #dbeafe;
   color: #1d4ed8;
+}
+
+.stock-card {
+  border: 1px solid #99f6e4;
+  box-shadow: 0 18px 38px rgba(13, 148, 136, 0.14);
+}
+
+.stock-card .card-head {
+  background: linear-gradient(90deg, #0f766e 0%, #047857 48%, #166534 100%);
+  border-bottom: 0;
+}
+
+.stock-card .card-title {
+  color: #ffffff;
+}
+
+.stock-table th {
+  background: #0f766e;
+  color: #ffffff;
+}
+
+.stock-table tbody tr td:first-child {
+  border-left: 6px solid transparent;
+  font-weight: 800;
+}
+
+.stock-table .stock-row.green td:first-child {
+  border-left-color: #16a34a;
+}
+
+.stock-table .stock-row.amber td:first-child,
+.stock-table .stock-row.expiry-amber td:first-child {
+  border-left-color: #f59e0b;
+}
+
+.stock-table .stock-row.red td:first-child,
+.stock-table .stock-row.expiry-red td:first-child {
+  border-left-color: #ef4444;
+}
+
+.stock-table .status.green {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.stock-table .status.amber {
+  background: #f59e0b;
+  color: #111827;
+}
+
+.stock-table .status.red {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.stock-table .status {
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
 }
 
 .permission-summary {

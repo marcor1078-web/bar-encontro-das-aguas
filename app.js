@@ -3555,11 +3555,11 @@ function renderStock() {
         <button class="btn secondary" type="button" data-open-modal="inventory">Nova contagem</button>
       </div>
     </div>
-    <section class="card">
+    <section class="card stock-card">
       <div class="card-head">
         <h2 class="card-title">Produtos, precos e saldos</h2>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap stock-table">
         <table>
           <thead>
             <tr>
@@ -3580,7 +3580,7 @@ function renderStock() {
             ${products
               .map(
                 (product) => `
-                  <tr>
+                  <tr class="stock-row ${stockStatus(product).className} expiry-${productExpiryStatus(product).className}">
                     <td>${product.name}</td>
                     <td>${product.category}</td>
                     <td>${money(product.price)}</td>
@@ -3606,19 +3606,19 @@ function renderStock() {
         </table>
       </div>
     </section>
-    <section class="card" style="margin-top: 16px;">
+    <section class="card stock-card" style="margin-top: 16px;">
       <div class="card-head">
         <h2 class="card-title">Lotes e validade</h2>
         <button class="btn compact secondary" type="button" data-open-modal="lot">Adicionar lote</button>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap stock-table">
         <table>
           <thead><tr><th>Item</th><th>Lote</th><th>Qtd.</th><th>Validade</th><th>Fornecedor</th><th>Status</th></tr></thead>
           <tbody>
             ${state.stockLots
               .map(
                 (lot) => `
-                  <tr>
+                  <tr class="stock-row ${lotStatus(lot).className}">
                     <td>${inventoryItemName(lot)}</td>
                     <td>${lot.batch}</td>
                     <td>${lot.qty}</td>
@@ -3633,18 +3633,18 @@ function renderStock() {
         </table>
       </div>
     </section>
-    <section class="card" style="margin-top: 16px;">
+    <section class="card stock-card" style="margin-top: 16px;">
       <div class="card-head">
         <h2 class="card-title">Insumos de ficha tecnica</h2>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap stock-table">
         <table>
           <thead><tr><th>Insumo</th><th>Unidade</th><th>Saldo</th><th>Minimo</th><th>Custo unit.</th><th>Status</th></tr></thead>
           <tbody>
             ${state.ingredients
               .map(
                 (ingredient) => `
-                  <tr>
+                  <tr class="stock-row ${ingredient.stock <= ingredient.minStock ? "amber" : "green"}">
                     <td>${ingredient.name}</td>
                     <td>${ingredient.unit}</td>
                     <td>${ingredient.stock}</td>
@@ -3659,19 +3659,19 @@ function renderStock() {
         </table>
       </div>
     </section>
-    <section class="card" style="margin-top: 16px;">
+    <section class="card stock-card" style="margin-top: 16px;">
       <div class="card-head">
         <h2 class="card-title">Inventario e divergencias</h2>
         <button class="btn compact secondary" type="button" data-open-modal="inventory">Nova contagem</button>
       </div>
-      <div class="table-wrap">
+      <div class="table-wrap stock-table">
         <table>
           <thead><tr><th>Data</th><th>Item</th><th>Esperado</th><th>Contado</th><th>Diferenca</th><th>Usuario</th><th>Obs.</th></tr></thead>
           <tbody>
             ${state.inventoryCounts
               .map(
                 (count) => `
-                  <tr>
+                  <tr class="stock-row ${count.difference === 0 ? "green" : "amber"}">
                     <td>${dateTime(count.date)}</td>
                     <td>${inventoryItemName(count)}</td>
                     <td>${count.expected}</td>
