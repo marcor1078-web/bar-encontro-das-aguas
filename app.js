@@ -1970,6 +1970,9 @@ function bindViewEvents() {
   document.querySelectorAll("[data-print-sale]").forEach((button) => {
     button.addEventListener("click", () => printSale(button.dataset.printSale));
   });
+  document.querySelectorAll("[data-print-ticket]").forEach((button) => {
+    button.addEventListener("click", () => printSaleTicket(button.dataset.printTicket));
+  });
 
   document.querySelectorAll("[data-order-status]").forEach((button) => {
     button.addEventListener("click", () => updateKitchenOrder(button.dataset.orderStatus, button.dataset.status));
@@ -3242,6 +3245,7 @@ function salesTable(sales) {
                   <td>
                     <div class="toolbar">
                       <button class="btn compact secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
+                      <button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>
                       ${
                         sale.status === "Cancelada"
                           ? ""
@@ -4159,7 +4163,7 @@ function renderOnline() {
       ${onlineCard("Publicacao", "Proxima etapa: publicar os arquivos estaticos na Vercel com HTTPS.", "Proximo")}
       ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
       ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
-      ${onlineCard("Impressao Point", "Apos pagamento aprovado, a Point imprime a via do vendedor e uma ficha personalizada da venda.", "Ativa")}
+      ${onlineCard("Impressao", "A Point tenta imprimir a via do cliente. A ficha personalizada tambem pode ser impressa em Vendas > Ficha.", "Ativa")}
       ${onlineCard("Stone", "Maquininha 3 e 4 reservadas. Para ativar, precisamos habilitar Connect 2.0/Pagar.me e obter as credenciais da Stone.", "A configurar")}
       ${onlineCard(
         "Fila da Point",
@@ -6100,6 +6104,75 @@ function printSale(saleId) {
   win.document.write(`<pre style="font: 14px monospace; white-space: pre-wrap;">${receipt}</pre>`);
   win.document.close();
   win.print();
+}
+
+function printSaleTicket(saleId) {
+  const sale = state.sales.find((entry) => entry.id === saleId);
+  if (!sale) return;
+  const rows = sale.items
+    .map(
+      (item) => `
+        <tr>
+          <td>${escapeHtml(item.name)}</td>
+          <td>${item.qty}</td>
+          <td>${money(item.qty * item.price)}</td>
+        </tr>
+      `,
+    )
+    .join("");
+  const html = `
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>Ficha ${escapeHtml(sale.id)}</title>
+        <style>
+          * { box-sizing: border-box; }
+          body { margin: 0; padding: 16px; font-family: Arial, sans-serif; color: #111827; }
+          .ticket { max-width: 360px; margin: 0 auto; border: 2px solid #111827; padding: 14px; }
+          h1 { margin: 0 0 8px; text-align: center; font-size: 22px; }
+          h2 { margin: 0 0 14px; text-align: center; font-size: 16px; letter-spacing: 1px; }
+          .meta { display: grid; gap: 4px; margin-bottom: 12px; font-size: 13px; }
+          table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+          th, td { border-bottom: 1px solid #d1d5db; padding: 6px 0; text-align: left; }
+          th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: right; }
+          .total { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 18px; font-weight: 800; }
+          .footer { margin-top: 16px; text-align: center; font-size: 13px; font-weight: 700; }
+          @media print {
+            body { padding: 0; }
+            .ticket { border-color: #000; }
+          }
+        </style>
+      </head>
+      <body>
+        <section class="ticket">
+          <h1>${escapeHtml(state.settings.barName || "BAR ENCONTRO DAS AGUAS")}</h1>
+          <h2>FICHA DE CONSUMO</h2>
+          <div class="meta">
+            <span><strong>Venda:</strong> ${escapeHtml(sale.id)}</span>
+            <span><strong>Data:</strong> ${dateTime(sale.date)}</span>
+            <span><strong>Operador:</strong> ${escapeHtml(userName(sale.cashierId))}</span>
+            <span><strong>Pagamento:</strong> ${escapeHtml(sale.payment)}</span>
+          </div>
+          <table>
+            <thead><tr><th>Item</th><th>Qtd</th><th>Total</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <div class="total"><span>Total</span><strong>${money(sale.total)}</strong></div>
+          <div class="footer">ENTREGAR MEDIANTE ESTA FICHA</div>
+        </section>
+      </body>
+    </html>
+  `;
+  const win = window.open("", "_blank", "width=420,height=720");
+  if (!win) {
+    notify("Nao foi possivel abrir a janela de impressao da ficha.");
+    return;
+  }
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 250);
 }
 
 function printReport(type = "complete") {
