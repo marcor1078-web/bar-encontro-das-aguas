@@ -478,6 +478,7 @@ let session = null;
 let currentView = "dashboard";
 let cart = [];
 let tableCheckout = null;
+let lastSaleForTicketsId = null;
 let currentModal = null;
 let searchTerm = "";
 let categoryFilter = "Todos";
@@ -1971,7 +1972,10 @@ function bindViewEvents() {
     button.addEventListener("click", () => printSale(button.dataset.printSale));
   });
   document.querySelectorAll("[data-print-ticket]").forEach((button) => {
-    button.addEventListener("click", () => printSaleTicket(button.dataset.printTicket));
+    button.addEventListener("click", () => printSaleTicketsIndividual(button.dataset.printTicket));
+  });
+  document.querySelectorAll("[data-print-last-tickets]").forEach((button) => {
+    button.addEventListener("click", () => printSaleTicketsIndividual(button.dataset.printLastTickets));
   });
 
   document.querySelectorAll("[data-order-status]").forEach((button) => {
@@ -2130,6 +2134,7 @@ function renderPos() {
   const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
   const total = subtotal + serviceFee;
   const categories = ["Todos", ...new Set(state.products.map((product) => product.category))];
+  const lastSaleForTickets = lastSaleForTicketsId ? state.sales.find((sale) => sale.id === lastSaleForTicketsId) : null;
 
   return `
     <div class="section-title">
@@ -2141,6 +2146,17 @@ function renderPos() {
         <input class="field-input search" data-search type="search" placeholder="Buscar produto" />
       </div>
     </div>
+    ${
+      lastSaleForTickets
+        ? `<section class="card pad post-sale-ticket">
+            <div>
+              <strong>Venda finalizada: ${money(lastSaleForTickets.total)}</strong>
+              <span>${lastSaleForTickets.items.reduce((sum, item) => sum + item.qty, 0)} ficha(s) individuais disponiveis para impressao.</span>
+            </div>
+            <button class="btn primary" type="button" data-print-last-tickets="${lastSaleForTickets.id}">${icon("print")} Imprimir fichas</button>
+          </section>`
+        : ""
+    }
 
     <div class="pos-layout">
       <section class="card pad">
@@ -2240,10 +2256,16 @@ function renderPos() {
     </div>
     <div class="checkout-dock" aria-live="polite">
       <div>
-        <span>Total da venda</span>
-        <strong>${money(total)}</strong>
+        <span>${cart.length ? "Total da venda" : lastSaleForTickets ? "Ultima venda" : "Total da venda"}</span>
+        <strong>${cart.length ? money(total) : lastSaleForTickets ? money(lastSaleForTickets.total) : money(0)}</strong>
       </div>
-      <button class="btn primary" type="button" data-finalize-sale ${cart.length ? "" : "disabled"}>Finalizar venda</button>
+      ${
+        cart.length
+          ? `<button class="btn primary" type="button" data-finalize-sale>Finalizar venda</button>`
+          : lastSaleForTickets
+            ? `<button class="btn primary" type="button" data-print-last-tickets="${lastSaleForTickets.id}">Imprimir fichas</button>`
+            : `<button class="btn primary" type="button" data-finalize-sale disabled>Finalizar venda</button>`
+      }
     </div>
   `;
 }
@@ -2567,6 +2589,7 @@ async function finalizeSale() {
     cart = [];
     tableCheckout = null;
     await loadOnlineSalesData();
+    lastSaleForTicketsId = saleId;
     notify(checkout ? "Conta da mesa fechada no balcao." : "Venda salva no Supabase.");
     renderApp();
     return;
@@ -2627,6 +2650,7 @@ async function finalizeSale() {
 
   cart = [];
   tableCheckout = null;
+  lastSaleForTicketsId = sale.id;
   saveState();
   notify("Venda finalizada.");
   renderApp();
@@ -6106,17 +6130,41 @@ function printSale(saleId) {
   win.print();
 }
 
-function printSaleTicket(saleId) {
+function ticketUnitList(sale) {
+  return sale.items.flatMap((item) =>
+    Array.from({ length: Number(item.qty || 0) }, (_, index) => ({
+      ...item,
+      unitIndex: index + 1,
+      unitTotal: Number(item.price || 0),
+    })),
+  );
+}
+
+function printSaleTicketsIndividual(saleId) {
   const sale = state.sales.find((entry) => entry.id === saleId);
   if (!sale) return;
-  const rows = sale.items
+  const units = ticketUnitList(sale);
+  if (!units.length) return;
+  const tickets = units
     .map(
-      (item) => `
-        <tr>
-          <td>${escapeHtml(item.name)}</td>
-          <td>${item.qty}</td>
-          <td>${money(item.qty * item.price)}</td>
-        </tr>
+      (item, index) => `
+        <section class="ticket">
+          <h1>${escapeHtml(state.settings.barName || "BAR ENCONTRO DAS AGUAS")}</h1>
+          <h2>FICHA</h2>
+          <div class="line"></div>
+          <div class="item-name">${escapeHtml(item.name)}</div>
+          <div class="item-meta">Unidade ${item.unitIndex} de ${item.qty}</div>
+          <div class="line"></div>
+          <div class="meta">
+            <span>Venda</span><strong>${escapeHtml(sale.id.slice(-8))}</strong>
+            <span>Data</span><strong>${dateTime(sale.date)}</strong>
+            <span>Operador</span><strong>${escapeHtml(userName(sale.cashierId))}</strong>
+            <span>Pagamento</span><strong>${escapeHtml(sale.payment)}</strong>
+          </div>
+          <div class="price">${money(item.unitTotal)}</div>
+          <div class="footer">ENTREGAR MEDIANTE ESTA FICHA</div>
+          <div class="count">Ficha ${index + 1} de ${units.length}</div>
+        </section>
       `,
     )
     .join("");
@@ -6128,43 +6176,31 @@ function printSaleTicket(saleId) {
         <title>Ficha ${escapeHtml(sale.id)}</title>
         <style>
           * { box-sizing: border-box; }
-          body { margin: 0; padding: 16px; font-family: Arial, sans-serif; color: #111827; }
-          .ticket { max-width: 360px; margin: 0 auto; border: 2px solid #111827; padding: 14px; }
-          h1 { margin: 0 0 8px; text-align: center; font-size: 22px; }
-          h2 { margin: 0 0 14px; text-align: center; font-size: 16px; letter-spacing: 1px; }
-          .meta { display: grid; gap: 4px; margin-bottom: 12px; font-size: 13px; }
-          table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
-          th, td { border-bottom: 1px solid #d1d5db; padding: 6px 0; text-align: left; }
-          th:nth-child(2), td:nth-child(2), th:nth-child(3), td:nth-child(3) { text-align: right; }
-          .total { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 18px; font-weight: 800; }
-          .footer { margin-top: 16px; text-align: center; font-size: 13px; font-weight: 700; }
+          @page { size: 58mm auto; margin: 0; }
+          body { width: 58mm; margin: 0; background: #fff; color: #000; font-family: Arial, sans-serif; }
+          .ticket { width: 58mm; min-height: 72mm; padding: 4mm 3mm; page-break-after: always; break-after: page; }
+          .ticket:last-child { page-break-after: auto; break-after: auto; }
+          h1 { margin: 0 0 2mm; text-align: center; font-size: 13px; font-weight: 800; }
+          h2 { margin: 0 0 3mm; text-align: center; font-size: 18px; letter-spacing: 1px; }
+          .line { border-top: 1px dashed #000; margin: 3mm 0; }
+          .item-name { text-align: center; font-size: 18px; font-weight: 900; text-transform: uppercase; line-height: 1.15; }
+          .item-meta { margin-top: 2mm; text-align: center; font-size: 12px; font-weight: 700; }
+          .meta { display: grid; grid-template-columns: 18mm 1fr; gap: 1mm; font-size: 10px; }
+          .meta strong { text-align: right; }
+          .price { margin-top: 4mm; text-align: center; font-size: 18px; font-weight: 900; }
+          .footer { margin-top: 5mm; text-align: center; font-size: 10px; font-weight: 800; }
+          .count { margin-top: 3mm; text-align: center; font-size: 9px; }
           @media print {
-            body { padding: 0; }
-            .ticket { border-color: #000; }
+            body { width: 58mm; }
           }
         </style>
       </head>
       <body>
-        <section class="ticket">
-          <h1>${escapeHtml(state.settings.barName || "BAR ENCONTRO DAS AGUAS")}</h1>
-          <h2>FICHA DE CONSUMO</h2>
-          <div class="meta">
-            <span><strong>Venda:</strong> ${escapeHtml(sale.id)}</span>
-            <span><strong>Data:</strong> ${dateTime(sale.date)}</span>
-            <span><strong>Operador:</strong> ${escapeHtml(userName(sale.cashierId))}</span>
-            <span><strong>Pagamento:</strong> ${escapeHtml(sale.payment)}</span>
-          </div>
-          <table>
-            <thead><tr><th>Item</th><th>Qtd</th><th>Total</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-          <div class="total"><span>Total</span><strong>${money(sale.total)}</strong></div>
-          <div class="footer">ENTREGAR MEDIANTE ESTA FICHA</div>
-        </section>
+        ${tickets}
       </body>
     </html>
   `;
-  const win = window.open("", "_blank", "width=420,height=720");
+  const win = window.open("", "_blank", "width=320,height=720");
   if (!win) {
     notify("Nao foi possivel abrir a janela de impressao da ficha.");
     return;
