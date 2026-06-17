@@ -1103,19 +1103,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description, te
     updateMercadoPagoPendingOrderStatus(statusData);
     if (statusData.status === "processed") {
       clearMercadoPagoPendingOrder(order.id);
-      try {
-        await printMercadoPagoCustomTicket({
-          terminalId: selectedTerminalId,
-          amount,
-          payment,
-          description,
-          items,
-          orderId: order.id,
-        });
-        notify("Pagamento aprovado. Ficha personalizada enviada para impressao.");
-      } catch (error) {
-        notify(`Pagamento aprovado, mas a ficha nao imprimiu: ${error.message}`);
-      }
+      notify("Pagamento aprovado.");
       return { ok: true, order: statusData };
     }
     if (["failed", "canceled", "expired"].includes(statusData.status)) {
@@ -2590,6 +2578,7 @@ async function finalizeSale() {
     tableCheckout = null;
     await loadOnlineSalesData();
     lastSaleForTicketsId = saleId;
+    currentModal = { type: "printTickets", id: saleId };
     notify(checkout ? "Conta da mesa fechada no balcao." : "Venda salva no Supabase.");
     renderApp();
     return;
@@ -2651,6 +2640,7 @@ async function finalizeSale() {
   cart = [];
   tableCheckout = null;
   lastSaleForTicketsId = sale.id;
+  currentModal = { type: "printTickets", id: sale.id };
   saveState();
   notify("Venda finalizada.");
   renderApp();
@@ -4187,7 +4177,7 @@ function renderOnline() {
       ${onlineCard("Publicacao", "Proxima etapa: publicar os arquivos estaticos na Vercel com HTTPS.", "Proximo")}
       ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
       ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
-      ${onlineCard("Impressao", "A Point tenta imprimir a via do cliente. A ficha personalizada tambem pode ser impressa em Vendas > Ficha.", "Ativa")}
+      ${onlineCard("Impressao", "A Point imprime comprovante simples. As fichas individuais saem pelo app no Balcao ou em Vendas > Ficha.", "Ativa")}
       ${onlineCard("Stone", "Maquininha 3 e 4 reservadas. Para ativar, precisamos habilitar Connect 2.0/Pagar.me e obter as credenciais da Stone.", "A configurar")}
       ${onlineCard(
         "Fila da Point",
@@ -4304,12 +4294,49 @@ function renderModal() {
     user: renderUserModal,
     movement: renderMovementModal,
     order: renderOrderModal,
+    printTickets: renderPrintTicketsModal,
   };
   return `
     <div class="modal-backdrop">
       <section class="modal">
         ${renderers[currentModal.type]()}
       </section>
+    </div>
+  `;
+}
+
+function renderPrintTicketsModal() {
+  const sale = state.sales.find((item) => item.id === currentModal.id);
+  if (!sale) {
+    return `
+      <div class="modal-head">
+        <h2>Fichas da venda</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body"><p>Venda nao encontrada para impressao.</p></div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Fechar</button>
+      </div>
+    `;
+  }
+  const ticketCount = ticketUnitList(sale).length;
+  return `
+    <div class="modal-head">
+      <h2>Imprimir fichas</h2>
+      <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+    </div>
+    <div class="modal-body">
+      <div class="summary-list">
+        <div class="summary-row"><span>Venda</span><strong>${sale.id.slice(-8)}</strong></div>
+        <div class="summary-row"><span>Total</span><strong>${money(sale.total)}</strong></div>
+        <div class="summary-row"><span>Pagamento</span><strong>${sale.payment}</strong></div>
+        <div class="summary-row total"><span>Fichas</span><strong>${ticketCount}</strong></div>
+      </div>
+      <p>As fichas saem pelo navegador, uma impressao por unidade vendida, no tamanho de bobina 58mm.</p>
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" type="button" data-close-modal>Fechar</button>
+      <button class="btn primary" type="button" data-print-last-tickets="${sale.id}">${icon("print")} Imprimir fichas</button>
     </div>
   `;
 }

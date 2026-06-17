@@ -18,7 +18,7 @@ Em `Vercel > Project > Settings > Environment Variables`, crie:
 ```text
 MP_ACCESS_TOKEN=seu_access_token_do_mercado_pago
 MP_TERMINAL_ID=id_do_terminal_point
-MP_PRINT_ON_TERMINAL=buyer_ticket
+MP_PRINT_ON_TERMINAL=seller_ticket
 MP_DEFAULT_INSTALLMENTS=1
 ```
 
@@ -45,6 +45,6 @@ Depois de salvar as variaveis, faca um novo deploy na Vercel.
 
 - Nunca coloque `MP_ACCESS_TOKEN` dentro de `app.js`, `supabase-config.js` ou qualquer arquivo publico.
 - Tokens e chaves privadas ficam apenas nas variaveis de ambiente da Vercel.
-- `MP_PRINT_ON_TERMINAL=buyer_ticket` imprime a via do cliente na maquininha depois do pagamento.
-- A ficha personalizada e enviada pela rota `/api/mercadopago/print-ticket` apos o status `processed`.
+- `MP_PRINT_ON_TERMINAL=seller_ticket` imprime o comprovante simples do vendedor na maquininha depois do pagamento. As fichas personalizadas ficam no app, em formato de bobina.
+- A ficha personalizada deve ser impressa pelo app depois da venda. A rota `/api/mercadopago/print-ticket` fica reservada para testes futuros de impressao direta na Point.
 - Se o pagamento ficar pendente, confira a maquininha antes de tentar novamente.

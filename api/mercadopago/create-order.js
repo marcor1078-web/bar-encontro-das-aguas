@@ -33,6 +33,8 @@ module.exports = async function handler(req, res) {
     return;
   }
   const terminalId = String(body.terminalId || env.terminalId).trim();
+  const requestedPrintMode = body.printOnTerminal || env.printOnTerminal || "seller_ticket";
+  const printOnTerminal = requestedPrintMode === "buyer_ticket" ? "seller_ticket" : requestedPrintMode;
 
   const idempotencyKey = body.idempotencyKey || randomUUID();
   const payload = {
@@ -45,7 +47,7 @@ module.exports = async function handler(req, res) {
     config: {
       point: {
         terminal_id: terminalId,
-        print_on_terminal: body.printOnTerminal || env.printOnTerminal || "seller_ticket",
+        print_on_terminal: printOnTerminal,
       },
     },
     description: body.description || "BAR ENCONTRO DAS AGUAS",
