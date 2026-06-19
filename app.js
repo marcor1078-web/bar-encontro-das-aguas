@@ -485,6 +485,7 @@ let categoryFilter = "Todos";
 let reportFilter = { mode: "24h", start: "", end: "" };
 let suppressBroadcast = false;
 let deferredInstallPrompt = null;
+let searchRenderTimer = null;
 
 const app = document.querySelector("#app");
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("barcontrol-sync") : null;
@@ -1911,7 +1912,16 @@ function bindViewEvents() {
     search.value = searchTerm;
     search.addEventListener("input", (event) => {
       searchTerm = event.target.value;
-      renderApp();
+      const cursor = event.target.selectionStart || searchTerm.length;
+      clearTimeout(searchRenderTimer);
+      searchRenderTimer = setTimeout(() => {
+        renderApp();
+        const nextSearch = document.querySelector("[data-search]");
+        if (nextSearch) {
+          nextSearch.focus();
+          nextSearch.setSelectionRange(cursor, cursor);
+        }
+      }, 120);
     });
   }
 
