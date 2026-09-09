@@ -4911,6 +4911,7 @@ function renderUserModal() {
   const selectedRole = user?.role || "cashier";
   const selectedPermissions = user ? getUserPermissions(user) : roles[selectedRole].permissions;
   const isAdminRole = selectedRole === "admin";
+  const canResetOnlinePassword = isOnlineSession() && session?.role === "admin" && user && isUuid(user.id);
   return `
     <form id="user-form">
       <div class="modal-head">
@@ -4929,11 +4930,11 @@ function renderUserModal() {
           </label>
           ${
             isOnlineSession()
-              ? `<label class="field">
-                  <span>Senha</span>
-                  <input name="password" type="password" disabled placeholder="Alterar no Supabase Auth" />
+              ? `<label class="field full">
+                  <span>Nova senha online</span>
+                  <input name="password" type="password" minlength="6" ${canResetOnlinePassword ? "" : "disabled"} placeholder="${canResetOnlinePassword ? "Deixe em branco para manter a senha atual" : "Disponivel apenas para usuario online existente"}" />
                   <small>
-                    A senha real fica no Supabase Auth.
+                    A senha real fica no Supabase Auth. Preencha aqui apenas quando quiser trocar.
                     <a href="${supabaseAuthUsersUrl()}" target="_blank" rel="noopener noreferrer">Abrir usuarios do Supabase</a>
                   </small>
                 </label>`
@@ -5790,6 +5791,25 @@ function bindUserPermissionControls() {
   applyButton?.addEventListener("click", applyRoleDefaults);
 }
 
+async function resetOnlineUserPassword(userId, password) {
+  const { data } = await supabaseClient.auth.getSession();
+  const accessToken = data?.session?.access_token;
+  if (!accessToken) throw new Error("Sessao expirada. Entre novamente no app.");
+
+  const response = await fetch("/api/supabase/reset-user-password", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ userId, password }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result.message || result.error || "Nao foi possivel trocar a senha online.");
+  }
+}
+
 async function saveUser(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -5852,10 +5872,19 @@ async function saveUser(event) {
       return;
     }
 
+    if (payload.password) {
+      try {
+        await resetOnlineUserPassword(currentModal.id, payload.password);
+      } catch (passwordError) {
+        notify(`Usuario salvo, mas a senha nao foi alterada: ${passwordError.message}`);
+        return;
+      }
+    }
+
     currentModal = null;
     await loadOnlineProfilesData();
     logAudit("Usuario salvo online", `${payload.name} - ${payload.role}.`);
-    notify("Usuario salvo no Supabase.");
+    notify(payload.password ? "Usuario salvo e senha online alterada." : "Usuario salvo no Supabase.");
     renderApp();
     return;
   }
