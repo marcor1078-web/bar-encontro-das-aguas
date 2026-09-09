@@ -4,7 +4,7 @@ const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
 const APP_DISPLAY_NAME = "DISTRIBUIDORA AMÉRICA BJ";
 const LEGACY_APP_NAMES = ["BarControl", "BAR ENCONTRO DAS AGUAS"];
-const LOCAL_PASSWORD_RESET_VERSION = 1;
+const LOCAL_PASSWORD_RESET_VERSION = 2;
 const DEFAULT_LOCAL_PASSWORDS = {
   "u-admin": "admin123",
   "u-manager": "gerente123",
@@ -1166,11 +1166,21 @@ async function setMercadoPagoTerminalMode(operatingMode = "PDV", terminalId = ""
   renderApp();
 }
 
-function localLogin(username, password) {
+function usernameMatchesUser(user, normalizedUsername) {
+  const names = [user.name, user.email];
+  if (user.id === "u-admin") names.push("admin", "administrador");
+  return names.some((name) => String(name || "").trim().toLowerCase() === normalizedUsername);
+}
+
+function findLocalUser(username, password) {
   const normalizedUsername = username.trim().toLowerCase();
-  const user = state.users.find(
-    (item) => item.name.trim().toLowerCase() === normalizedUsername && item.password === password && item.active,
+  return state.users.find(
+    (item) => !isUuid(item.id) && usernameMatchesUser(item, normalizedUsername) && item.password === password && item.active,
   );
+}
+
+function localLogin(username, password) {
+  const user = findLocalUser(username, password);
 
   if (!user) {
     notify("Nome de usuario ou senha incorretos.");
@@ -1186,6 +1196,12 @@ function localLogin(username, password) {
 }
 
 async function login(username, password) {
+  const localUser = findLocalUser(username, password);
+  if (localUser?.id === "u-admin") {
+    localLogin(username, password);
+    return;
+  }
+
   if (isSupabaseReady()) {
     const onlineLoginDone = await loginWithSupabase(username, password);
     if (onlineLoginDone) return;
