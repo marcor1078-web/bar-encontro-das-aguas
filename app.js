@@ -4,6 +4,13 @@ const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
 const APP_DISPLAY_NAME = "DISTRIBUIDORA AMÉRICA BJ";
 const LEGACY_APP_NAMES = ["BarControl", "BAR ENCONTRO DAS AGUAS"];
+const LOCAL_PASSWORD_RESET_VERSION = 1;
+const DEFAULT_LOCAL_PASSWORDS = {
+  "u-admin": "admin123",
+  "u-manager": "gerente123",
+  "u-cashier": "caixa123",
+  "u-stock": "estoque123",
+};
 
 const roles = {
   admin: {
@@ -571,6 +578,12 @@ function migrateState(nextState) {
     ...user,
     permissions: getUserPermissions(user),
   }));
+  if (Number(nextState.localPasswordResetVersion || 0) < LOCAL_PASSWORD_RESET_VERSION) {
+    nextState.users = nextState.users.map((user) =>
+      DEFAULT_LOCAL_PASSWORDS[user.id] ? { ...user, password: DEFAULT_LOCAL_PASSWORDS[user.id] } : user,
+    );
+    nextState.localPasswordResetVersion = LOCAL_PASSWORD_RESET_VERSION;
+  }
   return nextState;
 }
 
