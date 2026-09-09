@@ -18,4 +18,4 @@ if (-not $listener) {
 }
 
 Start-Process $Url
-Write-Host "BarControl aberto em $Url"
+Write-Host "DISTRIBUIDORA AMÉRICA BJ aberta em $Url"

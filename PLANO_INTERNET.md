@@ -1,4 +1,4 @@
-# Plano para transformar o BarControl em app online
+# Plano para transformar a DISTRIBUIDORA AMÉRICA BJ em app online
 
 ## Versao atual
 

@@ -13,7 +13,7 @@ create unique index if not exists profiles_email_unique_idx
 
 create table if not exists app_settings (
   id text primary key default 'main',
-  bar_name text not null default 'BAR ENCONTRO DAS AGUAS',
+  bar_name text not null default 'DISTRIBUIDORA AMÉRICA BJ',
   cnpj text,
   address text,
   service_fee numeric(5,2) not null default 10,
@@ -41,7 +41,7 @@ insert into app_settings (
   shift_start_view
 ) values (
   'main',
-  'BAR ENCONTRO DAS AGUAS',
+  'DISTRIBUIDORA AMÉRICA BJ',
   10,
   'Obrigado pela preferencia.',
   true,

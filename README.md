@@ -1,4 +1,4 @@
-# BAR ENCONTRO DAS AGUAS
+# DISTRIBUIDORA AMÉRICA BJ
 
 Sistema para bar com operacao local e integracao online via Supabase:
 

@@ -4,7 +4,7 @@ module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["GET"])) return;
   if (!requireMercadoPagoConfig(res)) return;
 
-  const url = new URL(req.url, "https://bar-encontro-das-aguas.local");
+  const url = new URL(req.url, "https://distribuidora-america-bj.local");
   const orderId = url.searchParams.get("id");
   if (!orderId) {
     json(res, 400, { error: "missing_order_id" });

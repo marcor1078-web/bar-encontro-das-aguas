@@ -2,6 +2,8 @@ const STORAGE_KEY = "barcontrol:v1";
 const MP_PENDING_ORDER_KEY = "barcontrol:mercadopago-pending-order";
 const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
+const APP_DISPLAY_NAME = "DISTRIBUIDORA AMÉRICA BJ";
+const LEGACY_APP_NAMES = ["BarControl", "BAR ENCONTRO DAS AGUAS"];
 
 const roles = {
   admin: {
@@ -455,7 +457,7 @@ const defaultState = {
     theme: "light",
     pwaEnabled: true,
     syncMode: "local",
-    barName: "BAR ENCONTRO DAS AGUAS",
+    barName: APP_DISPLAY_NAME,
     cnpj: "",
     address: "",
     serviceFee: 10,
@@ -559,9 +561,7 @@ function migrateState(nextState) {
   }));
   nextState.auditLog = nextState.auditLog || structuredClone(defaultState.auditLog);
   nextState.settings = { ...structuredClone(defaultState.settings), ...(nextState.settings || {}) };
-  if (nextState.settings.barName === "BarControl") {
-    nextState.settings.barName = "BAR ENCONTRO DAS AGUAS";
-  }
+  nextState.settings.barName = normalizeBarName(nextState.settings.barName);
   nextState.settings.shiftStartView = {
     ...structuredClone(defaultState.settings.shiftStartView),
     ...(nextState.settings.shiftStartView || {}),
@@ -593,6 +593,12 @@ function dateTime(value) {
     dateStyle: "short",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function normalizeBarName(value) {
+  const name = String(value || "").trim();
+  if (!name || LEGACY_APP_NAMES.includes(name)) return APP_DISPLAY_NAME;
+  return name;
 }
 
 function escapeHtml(value) {
@@ -786,7 +792,7 @@ async function testSupabaseConnection() {
     supabaseStatus = {
       checked: true,
       ok: true,
-      message: `Conectado ao banco: ${data.bar_name || "BAR ENCONTRO DAS AGUAS"}.`,
+      message: `Conectado ao banco: ${normalizeBarName(data.bar_name)}.`,
     };
     notify("Conexao com Supabase funcionando.");
   } catch (error) {
@@ -1026,7 +1032,7 @@ async function cancelMercadoPagoPendingOrder() {
 }
 
 function buildMercadoPagoCustomTicket({ amount, payment, description, items }) {
-  const barName = printSafeText(state.settings.barName || "BAR ENCONTRO DAS AGUAS").slice(0, 32);
+  const barName = printSafeText(state.settings.barName || APP_DISPLAY_NAME).slice(0, 32);
   const orderDescription = printSafeText(description || "Venda balcao").slice(0, 32);
   const operator = printSafeText(session?.name || "Operador").slice(0, 24);
   const lines = [
@@ -1257,7 +1263,7 @@ async function loadOnlineSettings() {
   state.settings = {
     ...state.settings,
     syncMode: "supabase",
-    barName: data.bar_name || state.settings.barName,
+    barName: normalizeBarName(data.bar_name || state.settings.barName),
     cnpj: data.cnpj || "",
     address: data.address || "",
     serviceFee: Number(data.service_fee || 0),
@@ -1700,7 +1706,7 @@ function renderLogin() {
   app.innerHTML = `
     <main class="login-shell">
       <section class="login-brand">
-        <h1>${state.settings.barName || "BAR ENCONTRO DAS AGUAS"}</h1>
+        <h1>${state.settings.barName || APP_DISPLAY_NAME}</h1>
         <p>Caixa, estoque, vendas e equipe em uma operacao unica para bares.</p>
       </section>
       <section class="login-panel">
@@ -1782,7 +1788,7 @@ function renderApp() {
       <aside class="sidebar" id="sidebar">
         <div class="brand-block">
           <div class="brand-mark">B</div>
-          <strong>${state.settings.barName || "BAR ENCONTRO DAS AGUAS"}</strong>
+          <strong>${state.settings.barName || APP_DISPLAY_NAME}</strong>
           <span>${roles[session.role].label}</span>
         </div>
         <nav class="nav">
@@ -6198,7 +6204,7 @@ function printSale(saleId) {
   const sale = state.sales.find((entry) => entry.id === saleId);
   if (!sale) return;
   const receipt = [
-    state.settings.barName || "BAR ENCONTRO DAS AGUAS",
+    state.settings.barName || APP_DISPLAY_NAME,
     state.settings.cnpj ? `CNPJ: ${state.settings.cnpj}` : "",
     state.settings.address || "",
     `Venda: ${sale.id}`,
@@ -6260,7 +6266,7 @@ function printSaleTicketsIndividual(saleId) {
     .map(
       (item, index) => `
         <section class="ticket">
-          <h1>${escapeHtml(state.settings.barName || "BAR ENCONTRO DAS AGUAS")}</h1>
+          <h1>${escapeHtml(state.settings.barName || APP_DISPLAY_NAME)}</h1>
           ${state.settings.cnpj ? `<div class="cnpj">CNPJ: ${escapeHtml(state.settings.cnpj)}</div>` : ""}
           <h2>FICHA ${index + 1} DE ${units.length}</h2>
           <div class="line"></div>
@@ -6361,7 +6367,7 @@ function buildReportHtml(type, title) {
     <html lang="pt-BR">
       <head>
         <meta charset="utf-8" />
-        <title>${title} - ${state.settings.barName || "BAR ENCONTRO DAS AGUAS"}</title>
+        <title>${title} - ${state.settings.barName || APP_DISPLAY_NAME}</title>
         <style>
           * { box-sizing: border-box; }
           body { font-family: Arial, sans-serif; color: #111827; margin: 28px; }
@@ -6384,7 +6390,7 @@ function buildReportHtml(type, title) {
       </head>
       <body>
         <header>
-          <h1>${state.settings.barName || "BAR ENCONTRO DAS AGUAS"} - ${title}</h1>
+          <h1>${state.settings.barName || APP_DISPLAY_NAME} - ${title}</h1>
           ${state.settings.cnpj ? `<p>CNPJ: ${state.settings.cnpj}</p>` : ""}
           ${state.settings.address ? `<p>${state.settings.address}</p>` : ""}
           <p>Periodo: ${reportPeriodLabel()}</p>
@@ -6533,7 +6539,7 @@ async function exportBackup() {
     });
   }
 
-  downloadFile(`bar-encontro-das-aguas-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(state, null, 2), "application/json");
+  downloadFile(`distribuidora-america-bj-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(state, null, 2), "application/json");
   logAudit("Backup exportado", "Arquivo JSON gerado.");
   saveState();
 }
@@ -6551,7 +6557,7 @@ function exportSalesCsv() {
       sale.total - sale.cost,
     ]),
   ];
-  downloadFile("bar-encontro-das-aguas-vendas.csv", rows.map((row) => row.join(";")).join("\n"), "text/csv");
+  downloadFile("distribuidora-america-bj-vendas.csv", rows.map((row) => row.join(";")).join("\n"), "text/csv");
   logAudit("CSV exportado", "Relatorio de vendas gerado.");
   saveState();
 }

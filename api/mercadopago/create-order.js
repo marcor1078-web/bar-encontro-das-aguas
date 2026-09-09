@@ -50,7 +50,7 @@ module.exports = async function handler(req, res) {
         print_on_terminal: printOnTerminal,
       },
     },
-    description: body.description || "BAR ENCONTRO DAS AGUAS",
+    description: body.description || "DISTRIBUIDORA AMÉRICA BJ",
   };
 
   const defaultType = paymentType(body.paymentMethod);

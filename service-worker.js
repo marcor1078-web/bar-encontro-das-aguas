@@ -1,4 +1,4 @@
-const CACHE_NAME = "bar-encontro-das-aguas-v21";
+const CACHE_NAME = "distribuidora-america-bj-v1";
 const APP_ASSETS = [
   "/",
   "/index.html",
