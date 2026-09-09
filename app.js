@@ -535,6 +535,7 @@ function migrateState(nextState) {
   nextState.products = (nextState.products || []).map((product) => {
     const base = defaultState.products.find((item) => item.id === product.id) || {};
     return {
+      productCode: "",
       station: "Bar",
       recipe: [],
       criticalStock: Math.max(1, Math.floor(Number(product.minStock || base.minStock || 1) / 2)),
@@ -1318,6 +1319,7 @@ function mapProductFromDb(row, recipes = []) {
   return {
     id: row.id,
     name: row.name,
+    productCode: row.product_code || "",
     category: row.category,
     station: row.station || "Bar",
     price: Number(row.price || 0),
@@ -2333,7 +2335,7 @@ function filteredProducts() {
   return state.products.filter((product) => {
     if (categoryFilter !== "Todos" && product.category !== categoryFilter) return false;
     if (!term) return true;
-    return `${product.name} ${product.category}`.toLowerCase().includes(term);
+    return `${product.name} ${product.productCode || ""} ${product.category}`.toLowerCase().includes(term);
   });
 }
 
@@ -2413,7 +2415,7 @@ function renderWaiter() {
         <p>Fluxo compacto para celular: selecionar item, revisar comanda e enviar.</p>
       </div>
       <div class="toolbar">
-        <input class="field-input search" data-search type="search" placeholder="Buscar item" />
+        <input class="field-input search" data-search type="search" placeholder="Buscar item por nome ou codigo" />
         <button class="btn secondary" type="button" data-open-modal="lot">Novo lote</button>
       </div>
     </div>
@@ -3609,6 +3611,7 @@ function renderStock() {
           <thead>
             <tr>
               <th>Produto</th>
+              <th>Codigo</th>
               <th>Categoria</th>
               <th>Preco</th>
               <th>Custo</th>
@@ -3627,6 +3630,7 @@ function renderStock() {
                 (product) => `
                   <tr class="stock-row ${stockStatus(product).className} expiry-${productExpiryStatus(product).className}">
                     <td>${product.name}</td>
+                    <td>${product.productCode || "-"}</td>
                     <td>${product.category}</td>
                     <td>${money(product.price)}</td>
                     <td>${money(product.cost)}</td>
@@ -3789,7 +3793,7 @@ function renderProducts() {
         <p>Preco, custo, categoria e disponibilidade.</p>
       </div>
       <div class="toolbar">
-        <input class="field-input search" data-search type="search" placeholder="Buscar produto" />
+        <input class="field-input search" data-search type="search" placeholder="Buscar produto por nome ou codigo" />
         <button class="btn secondary" type="button" data-open-modal="product">Novo produto</button>
       </div>
     </div>
@@ -3799,6 +3803,7 @@ function renderProducts() {
           <thead>
             <tr>
               <th>Produto</th>
+              <th>Codigo</th>
               <th>Categoria</th>
               <th>Preco</th>
               <th>Custo</th>
@@ -3816,6 +3821,7 @@ function renderProducts() {
                 (product) => `
                   <tr>
                     <td>${product.name}</td>
+                    <td>${product.productCode || "-"}</td>
                     <td>${product.category}</td>
                     <td>${money(product.price)}</td>
                     <td>${money(product.cost)}</td>
@@ -4482,6 +4488,10 @@ function renderProductModal() {
             <input name="name" required value="${product?.name || ""}" />
           </label>
           <label class="field">
+            <span>Codigo do produto</span>
+            <input name="productCode" value="${product?.productCode || ""}" placeholder="Ex.: 789123 ou LT600" />
+          </label>
+          <label class="field">
             <span>Categoria</span>
             <input name="category" required value="${product?.category || ""}" />
           </label>
@@ -5066,6 +5076,7 @@ async function saveProduct(event) {
   const form = new FormData(event.currentTarget);
   const payload = {
     name: form.get("name").trim(),
+    productCode: form.get("productCode").trim(),
     category: form.get("category").trim(),
     price: Number(form.get("price")),
     cost: Number(form.get("cost")),
@@ -5102,6 +5113,7 @@ async function saveProduct(event) {
 async function saveProductOnline(payload) {
   const dbPayload = {
     name: payload.name,
+    product_code: payload.productCode || null,
     category: payload.category,
     station: payload.station,
     price: payload.price,
@@ -5118,14 +5130,20 @@ async function saveProductOnline(payload) {
     ? await supabaseClient.from("products").update(dbPayload).eq("id", currentModal.id).select("*").single()
     : await supabaseClient.from("products").insert(dbPayload).select("*").single();
 
-  if (result.error && String(result.error.message || "").includes("expires_at")) {
-    const { expires_at, ...fallbackPayload } = dbPayload;
+  const fallbackPayload = { ...dbPayload };
+  const removedOptionalColumns = [];
+  for (const column of ["product_code", "expires_at"]) {
+    if (!result.error || !String(result.error.message || "").includes(column)) continue;
+    delete fallbackPayload[column];
+    removedOptionalColumns.push(column);
     result = currentModal.id
       ? await supabaseClient.from("products").update(fallbackPayload).eq("id", currentModal.id).select("*").single()
       : await supabaseClient.from("products").insert(fallbackPayload).select("*").single();
-    if (!result.error) {
-      notify("Produto salvo. Para gravar validade online, rode a migracao da coluna expires_at no Supabase.");
-    }
+  }
+
+  if (!result.error && removedOptionalColumns.length) {
+    const labels = removedOptionalColumns.map((column) => (column === "product_code" ? "codigo" : "validade"));
+    notify(`Produto salvo. Para gravar ${labels.join(" e ")} online, rode a migracao no Supabase.`);
   }
 
   if (result.error) {

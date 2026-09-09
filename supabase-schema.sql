@@ -13,6 +13,7 @@ create table if not exists profiles (
 create table if not exists products (
   id uuid primary key default gen_random_uuid(),
   name text not null,
+  product_code text,
   category text not null,
   station text not null default 'Bar',
   price numeric(12,2) not null,
