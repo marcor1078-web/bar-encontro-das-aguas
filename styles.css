@@ -1051,6 +1051,45 @@ tbody tr:hover td {
   color: #ffffff;
 }
 
+.stock-table {
+  overflow-x: hidden;
+}
+
+.stock-table table {
+  min-width: 0;
+  table-layout: fixed;
+  font-size: 0.82rem;
+}
+
+.stock-table th,
+.stock-table td {
+  padding: 8px 7px;
+  overflow-wrap: anywhere;
+}
+
+.stock-products-table th:first-child {
+  width: 18%;
+}
+
+.stock-products-table th:nth-child(2) {
+  width: 9%;
+}
+
+.stock-products-table th:nth-child(3) {
+  width: 18%;
+}
+
+.stock-table .stock-actions {
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.stock-table .stock-actions .btn.compact {
+  min-height: 28px;
+  padding: 4px 7px;
+  font-size: 0.75rem;
+}
+
 .stock-table tbody tr td:first-child {
   border-left: 6px solid transparent;
   font-weight: 800;
@@ -1928,6 +1967,54 @@ body[data-theme="dark"] .notice {
   .toolbar select,
   .toolbar input {
     width: 100%;
+  }
+
+  .stock-products-table table,
+  .stock-products-table thead,
+  .stock-products-table tbody,
+  .stock-products-table tr,
+  .stock-products-table th,
+  .stock-products-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .stock-products-table thead {
+    display: none;
+  }
+
+  .stock-products-table tbody tr {
+    border-bottom: 1px solid var(--line);
+    padding: 10px 0;
+  }
+
+  .stock-products-table td {
+    display: grid;
+    grid-template-columns: 94px minmax(0, 1fr);
+    gap: 10px;
+    padding: 7px 10px;
+    border-bottom: 0;
+  }
+
+  .stock-products-table td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 900;
+    text-transform: uppercase;
+  }
+
+  .stock-products-table tbody tr td:first-child {
+    border-left-width: 4px;
+  }
+
+  .stock-products-table .stock-actions {
+    width: 100%;
+  }
+
+  .stock-products-table .stock-actions .btn.compact {
+    width: auto;
+    flex: 1 1 72px;
   }
 
   .install-topbar {

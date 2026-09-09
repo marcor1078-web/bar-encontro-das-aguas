@@ -3606,12 +3606,13 @@ function renderStock() {
       <div class="card-head">
         <h2 class="card-title">Produtos, precos e saldos</h2>
       </div>
-      <div class="table-wrap stock-table">
+      <div class="table-wrap stock-table stock-products-table">
         <table>
           <thead>
             <tr>
               <th>Produto</th>
               <th>Codigo</th>
+              <th>Acoes</th>
               <th>Categoria</th>
               <th>Preco</th>
               <th>Custo</th>
@@ -3621,7 +3622,6 @@ function renderStock() {
               <th>Critico</th>
               <th>Validade</th>
               <th>Status</th>
-              <th>Acoes</th>
             </tr>
           </thead>
           <tbody>
@@ -3629,24 +3629,24 @@ function renderStock() {
               .map(
                 (product) => `
                   <tr class="stock-row ${stockStatus(product).className} expiry-${productExpiryStatus(product).className}">
-                    <td>${product.name}</td>
-                    <td>${product.productCode || "-"}</td>
-                    <td>${product.category}</td>
-                    <td>${money(product.price)}</td>
-                    <td>${money(product.cost)}</td>
-                    <td>${product.station || "Bar"}</td>
-                    <td>${product.stock}</td>
-                    <td>${product.minStock}</td>
-                    <td>${product.criticalStock}</td>
-                    <td>${product.expiresAt ? `${formatDateBr(product.expiresAt)} <span class="status ${productExpiryStatus(product).className}">${productExpiryStatus(product).label}</span>` : "-"}</td>
-                    <td><span class="status ${stockStatus(product).className}">${stockStatus(product).label}</span></td>
-                    <td>
-                      <div class="toolbar">
+                    <td data-label="Produto">${product.name}</td>
+                    <td data-label="Codigo">${product.productCode || "-"}</td>
+                    <td data-label="Acoes">
+                      <div class="toolbar stock-actions">
                         <button class="btn compact secondary" type="button" data-open-modal="product" data-id="${product.id}">Editar</button>
                         <button class="btn compact secondary" type="button" data-open-modal="stock" data-id="${product.id}">Ajustar</button>
                         <button class="btn compact danger" type="button" data-remove-product="${product.id}">Remover</button>
                       </div>
                     </td>
+                    <td data-label="Categoria">${product.category}</td>
+                    <td data-label="Preco">${money(product.price)}</td>
+                    <td data-label="Custo">${money(product.cost)}</td>
+                    <td data-label="Praca">${product.station || "Bar"}</td>
+                    <td data-label="Saldo">${product.stock}</td>
+                    <td data-label="Minimo">${product.minStock}</td>
+                    <td data-label="Critico">${product.criticalStock}</td>
+                    <td data-label="Validade">${product.expiresAt ? `${formatDateBr(product.expiresAt)} <span class="status ${productExpiryStatus(product).className}">${productExpiryStatus(product).label}</span>` : "-"}</td>
+                    <td data-label="Status"><span class="status ${stockStatus(product).className}">${stockStatus(product).label}</span></td>
                   </tr>
                 `,
               )
