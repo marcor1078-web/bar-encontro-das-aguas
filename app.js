@@ -536,6 +536,7 @@ function migrateState(nextState) {
     const base = defaultState.products.find((item) => item.id === product.id) || {};
     return {
       productCode: "",
+      barcodeCodes: [],
       station: "Bar",
       recipe: [],
       criticalStock: Math.max(1, Math.floor(Number(product.minStock || base.minStock || 1) / 2)),
@@ -1320,6 +1321,7 @@ function mapProductFromDb(row, recipes = []) {
     id: row.id,
     name: row.name,
     productCode: row.product_code || "",
+    barcodeCodes: Array.isArray(row.barcode_codes) ? row.barcode_codes.filter(Boolean) : [],
     category: row.category,
     station: row.station || "Bar",
     price: Number(row.price || 0),
@@ -1334,6 +1336,33 @@ function mapProductFromDb(row, recipes = []) {
       .filter((recipe) => recipe.product_id === row.id)
       .map((recipe) => ({ ingredientId: recipe.ingredient_id, qty: Number(recipe.qty || 0) })),
   };
+}
+
+function normalizeBarcodeCodes(primaryCode, codes = []) {
+  const normalizedPrimary = String(primaryCode || "").trim().toLowerCase();
+  const seen = new Set(normalizedPrimary ? [normalizedPrimary] : []);
+  return codes
+    .map((code) => String(code || "").trim())
+    .filter((code) => {
+      const key = code.toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 5);
+}
+
+function productBarcodeCodes(product) {
+  return Array.isArray(product?.barcodeCodes) ? product.barcodeCodes.filter(Boolean) : [];
+}
+
+function productCodeDisplay(product) {
+  const extraCodes = productBarcodeCodes(product);
+  if (!product.productCode && !extraCodes.length) return "-";
+  return `
+    <strong class="product-code-main">${product.productCode || "-"}</strong>
+    ${extraCodes.length ? `<small class="product-code-extra">${extraCodes.join(", ")}</small>` : ""}
+  `;
 }
 
 function productExpiryStatus(product) {
@@ -2335,7 +2364,9 @@ function filteredProducts() {
   return state.products.filter((product) => {
     if (categoryFilter !== "Todos" && product.category !== categoryFilter) return false;
     if (!term) return true;
-    return `${product.name} ${product.productCode || ""} ${product.category}`.toLowerCase().includes(term);
+    return `${product.name} ${product.productCode || ""} ${productBarcodeCodes(product).join(" ")} ${product.category}`
+      .toLowerCase()
+      .includes(term);
   });
 }
 
@@ -3630,7 +3661,7 @@ function renderStock() {
                 (product) => `
                   <tr class="stock-row ${stockStatus(product).className} expiry-${productExpiryStatus(product).className}">
                     <td data-label="Produto">${product.name}</td>
-                    <td data-label="Codigo">${product.productCode || "-"}</td>
+                    <td data-label="Codigo">${productCodeDisplay(product)}</td>
                     <td data-label="Acoes">
                       <div class="toolbar stock-actions">
                         <button class="btn compact secondary" type="button" data-open-modal="product" data-id="${product.id}">Editar</button>
@@ -3821,7 +3852,7 @@ function renderProducts() {
                 (product) => `
                   <tr>
                     <td>${product.name}</td>
-                    <td>${product.productCode || "-"}</td>
+                    <td>${productCodeDisplay(product)}</td>
                     <td>${product.category}</td>
                     <td>${money(product.price)}</td>
                     <td>${money(product.cost)}</td>
@@ -4491,6 +4522,15 @@ function renderProductModal() {
             <span>Codigo do produto</span>
             <input name="productCode" value="${product?.productCode || ""}" placeholder="Ex.: 789123 ou LT600" />
           </label>
+          ${Array.from({ length: 5 }, (_, index) => {
+            const code = productBarcodeCodes(product)[index] || "";
+            return `
+              <label class="field">
+                <span>Codigo de barras ${index + 1}</span>
+                <input name="barcodeCode${index + 1}" value="${code}" placeholder="Opcional" />
+              </label>
+            `;
+          }).join("")}
           <label class="field">
             <span>Categoria</span>
             <input name="category" required value="${product?.category || ""}" />
@@ -5077,6 +5117,10 @@ async function saveProduct(event) {
   const payload = {
     name: form.get("name").trim(),
     productCode: form.get("productCode").trim(),
+    barcodeCodes: normalizeBarcodeCodes(
+      form.get("productCode"),
+      Array.from({ length: 5 }, (_, index) => form.get(`barcodeCode${index + 1}`)),
+    ),
     category: form.get("category").trim(),
     price: Number(form.get("price")),
     cost: Number(form.get("cost")),
@@ -5114,6 +5158,7 @@ async function saveProductOnline(payload) {
   const dbPayload = {
     name: payload.name,
     product_code: payload.productCode || null,
+    barcode_codes: payload.barcodeCodes,
     category: payload.category,
     station: payload.station,
     price: payload.price,
@@ -5132,7 +5177,7 @@ async function saveProductOnline(payload) {
 
   const fallbackPayload = { ...dbPayload };
   const removedOptionalColumns = [];
-  for (const column of ["product_code", "expires_at"]) {
+  for (const column of ["product_code", "barcode_codes", "expires_at"]) {
     if (!result.error || !String(result.error.message || "").includes(column)) continue;
     delete fallbackPayload[column];
     removedOptionalColumns.push(column);
@@ -5142,7 +5187,11 @@ async function saveProductOnline(payload) {
   }
 
   if (!result.error && removedOptionalColumns.length) {
-    const labels = removedOptionalColumns.map((column) => (column === "product_code" ? "codigo" : "validade"));
+    const labels = removedOptionalColumns.map((column) => {
+      if (column === "product_code") return "codigo";
+      if (column === "barcode_codes") return "codigos de barras";
+      return "validade";
+    });
     notify(`Produto salvo. Para gravar ${labels.join(" e ")} online, rode a migracao no Supabase.`);
   }
 

@@ -1090,6 +1090,19 @@ tbody tr:hover td {
   font-size: 0.75rem;
 }
 
+.product-code-main,
+.product-code-extra {
+  display: block;
+}
+
+.product-code-extra {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
 .stock-table tbody tr td:first-child {
   border-left: 6px solid transparent;
   font-weight: 800;
