@@ -2059,7 +2059,7 @@ function bindViewEvents() {
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
   document.querySelector("[data-print-cash-report]")?.addEventListener("click", () => printReport("cash"));
   document.querySelector("[data-print-stock-report]")?.addEventListener("click", () => printReport("stock"));
-  document.querySelector("[data-print-inventory-report]")?.addEventListener("click", () => printReport("inventory"));
+  document.querySelector("[data-print-inventory-report]")?.addEventListener("click", downloadInventoryPdf);
   document.querySelector("[data-print-clients-report]")?.addEventListener("click", () => printReport("clients"));
   document.querySelector("#report-filter-form")?.addEventListener("submit", applyReportFilter);
 
@@ -6718,6 +6718,192 @@ function reportFullInventorySection() {
       )}
     </section>
   `;
+}
+
+function safeFileName(value) {
+  return String(value || "arquivo")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function addInventoryPdfTable(doc, title, headers, rows, startY) {
+  let y = startY;
+  if (y > doc.internal.pageSize.getHeight() - 90) {
+    doc.addPage();
+    y = 40;
+  }
+  doc.setFontSize(12);
+  doc.setTextColor(17, 24, 39);
+  doc.text(title, 40, y);
+  doc.autoTable({
+    head: [headers],
+    body: rows.length ? rows : [["Nenhum dado para exibir."]],
+    startY: y + 8,
+    margin: { left: 40, right: 40 },
+    theme: "grid",
+    styles: {
+      fontSize: 7,
+      cellPadding: 3,
+      overflow: "linebreak",
+      valign: "middle",
+    },
+    headStyles: {
+      fillColor: [15, 118, 110],
+      textColor: [255, 255, 255],
+      fontStyle: "bold",
+    },
+    alternateRowStyles: {
+      fillColor: [248, 250, 252],
+    },
+  });
+  return (doc.lastAutoTable?.finalY || y) + 22;
+}
+
+function downloadInventoryPdf() {
+  const { jsPDF } = window.jspdf || {};
+  if (!jsPDF) {
+    notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
+    return;
+  }
+
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  if (typeof doc.autoTable !== "function") {
+    notify("Tabela do PDF ainda nao carregou. Atualize a pagina e tente novamente.");
+    return;
+  }
+
+  const summary = stockInventorySummary();
+  const title = "Relatorio completo de inventario";
+  const businessName = state.settings.barName || APP_DISPLAY_NAME;
+  const generatedAt = dateTime(new Date().toISOString());
+
+  doc.setProperties({
+    title: `${businessName} - ${title}`,
+    subject: "Inventario de estoque",
+    author: session?.name || "Usuario",
+  });
+
+  doc.setFontSize(18);
+  doc.setTextColor(17, 24, 39);
+  doc.text(businessName, 40, 42);
+  doc.setFontSize(12);
+  doc.text(title, 40, 62);
+  doc.setFontSize(8);
+  doc.setTextColor(75, 85, 99);
+  const headerLines = [
+    state.settings.cnpj ? `CNPJ: ${state.settings.cnpj}` : "",
+    state.settings.address || "",
+    `Gerado em ${generatedAt} por ${session?.name || "Usuario"}`,
+  ].filter(Boolean);
+  headerLines.forEach((line, index) => doc.text(line, 40, 80 + index * 12));
+
+  doc.autoTable({
+    body: [
+      ["Produtos ativos", summary.activeProducts.length, "Unidades em estoque", qty(summary.productUnits)],
+      ["Custo estimado", money(summary.productCostValue + summary.ingredientCostValue), "Valor de venda", money(summary.productSaleValue)],
+      ["Alertas do estoque", summary.alerts.length, "Contagens registradas", state.inventoryCounts.length],
+    ],
+    startY: 122,
+    margin: { left: 40, right: 40 },
+    theme: "grid",
+    styles: { fontSize: 9, cellPadding: 5 },
+    columnStyles: {
+      0: { fontStyle: "bold", fillColor: [241, 245, 249] },
+      2: { fontStyle: "bold", fillColor: [241, 245, 249] },
+    },
+  });
+
+  let y = (doc.lastAutoTable?.finalY || 122) + 24;
+  y = addInventoryPdfTable(
+    doc,
+    "Produtos cadastrados",
+    ["Produto", "Codigos", "Categoria", "Praca", "Saldo", "Min.", "Crit.", "Custo un.", "Valor custo", "Valor venda", "Validade", "Status"],
+    state.products
+      .filter((product) => product.active !== false)
+      .map((product) => [
+        product.name,
+        productInventoryCodesText(product),
+        product.category,
+        product.station || "Bar",
+        qty(product.stock),
+        qty(product.minStock),
+        qty(product.criticalStock),
+        money(product.cost),
+        money(Number(product.stock || 0) * Number(product.cost || 0)),
+        money(Number(product.stock || 0) * Number(product.price || 0)),
+        product.expiresAt ? `${formatDateBr(product.expiresAt)} - ${productExpiryStatus(product).label}` : "-",
+        stockStatus(product).label,
+      ]),
+    y,
+  );
+  y = addInventoryPdfTable(
+    doc,
+    "Insumos de ficha tecnica",
+    ["Insumo", "Unidade", "Saldo", "Minimo", "Custo unit.", "Valor custo", "Status"],
+    state.ingredients.map((ingredient) => [
+      ingredient.name,
+      ingredient.unit,
+      qty(ingredient.stock),
+      qty(ingredient.minStock),
+      money(ingredient.costPerUnit),
+      money(Number(ingredient.stock || 0) * Number(ingredient.costPerUnit || 0)),
+      ingredient.stock <= ingredient.minStock ? "Baixo" : "Ok",
+    ]),
+    y,
+  );
+  y = addInventoryPdfTable(
+    doc,
+    "Lotes e validade",
+    ["Item", "Lote", "Qtd.", "Validade", "Fornecedor", "Status"],
+    state.stockLots.map((lot) => [
+      inventoryItemName(lot),
+      lot.batch,
+      qty(lot.qty),
+      new Date(lot.expiresAt).toLocaleDateString("pt-BR"),
+      supplierName(lot.supplierId),
+      lotStatus(lot).label,
+    ]),
+    y,
+  );
+  y = addInventoryPdfTable(
+    doc,
+    "Ultimas contagens fisicas",
+    ["Data", "Item", "Esperado", "Contado", "Diferenca", "Usuario", "Observacao"],
+    state.inventoryCounts.slice(0, 80).map((count) => [
+      dateTime(count.date),
+      inventoryItemName(count),
+      qty(count.expected),
+      qty(count.counted),
+      qty(count.difference),
+      userName(count.userId),
+      count.notes || "",
+    ]),
+    y,
+  );
+  addInventoryPdfTable(
+    doc,
+    "Alertas do estoque",
+    ["Tipo", "Item", "Saldo/Status", "Minimo"],
+    stockAlerts().map((entry) => [entry.type, entry.name, entry.stock, entry.minStock || "-"]),
+    y,
+  );
+
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let page = 1; page <= pageCount; page += 1) {
+    doc.setPage(page);
+    doc.setFontSize(8);
+    doc.setTextColor(107, 114, 128);
+    doc.text(`Pagina ${page} de ${pageCount}`, doc.internal.pageSize.getWidth() - 88, doc.internal.pageSize.getHeight() - 24);
+  }
+
+  const date = new Date().toISOString().slice(0, 10);
+  doc.save(`inventario-${safeFileName(businessName)}-${date}.pdf`);
+  logAudit("PDF de inventario baixado", title);
+  saveState();
+  notify("PDF do inventario baixado.");
 }
 
 function reportProfitabilitySection() {
