@@ -5285,6 +5285,22 @@ async function removeProduct(productId) {
     await supabaseClient.from("product_recipes").delete().eq("product_id", productId);
     const { error } = await supabaseClient.from("products").delete().eq("id", productId);
     if (error) {
+      if (isProductLinkedToSalesError(error)) {
+        const archiveResult = await supabaseClient
+          .from("products")
+          .update({ active: false, favorite: false, stock: 0 })
+          .eq("id", productId);
+        if (archiveResult.error) {
+          notify(`Erro ao desativar produto online: ${archiveResult.error.message}`);
+          return;
+        }
+        cart = cart.filter((item) => item.productId !== productId);
+        await loadOnlineStockData();
+        logAudit("Produto desativado online", `${product.name} ja tinha historico de vendas.`);
+        notify("Produto tinha vendas vinculadas, entao foi desativado e removido do menu/estoque.");
+        renderApp();
+        return;
+      }
       notify(`Erro ao remover produto online: ${error.message}`);
       return;
     }
@@ -5304,6 +5320,11 @@ async function removeProduct(productId) {
   saveState();
   notify("Produto removido do cadastro.");
   renderApp();
+}
+
+function isProductLinkedToSalesError(error) {
+  const message = `${error?.code || ""} ${error?.message || ""} ${error?.details || ""}`.toLowerCase();
+  return message.includes("23503") || message.includes("sale_items") || message.includes("foreign key");
 }
 
 async function saveOrder(event) {
