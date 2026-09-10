@@ -2039,9 +2039,11 @@ function bindViewEvents() {
     });
   });
 
-  document.querySelector("[data-stock-sort]")?.addEventListener("click", () => {
-    stockSortMode = stockSortMode === "stock-asc" ? "default" : "stock-asc";
-    renderApp();
+  document.querySelectorAll("[data-stock-sort]").forEach((button) => {
+    button.addEventListener("click", () => {
+      stockSortMode = button.dataset.stockSort;
+      renderApp();
+    });
   });
 
   document.querySelector("[data-payment-terminal]")?.addEventListener("change", (event) => {
@@ -3662,9 +3664,8 @@ function renderStock() {
         <button class="btn secondary" type="button" data-open-modal="product">Novo produto</button>
         <button class="btn secondary" type="button" data-open-modal="ingredient">Novo insumo</button>
         <button class="btn secondary" type="button" data-open-modal="inventory">Nova contagem</button>
-        <button class="btn secondary" type="button" data-stock-sort>
-          ${stockSortMode === "stock-asc" ? "Ordem normal" : "Saldo crescente"}
-        </button>
+        <button class="btn secondary ${stockSortMode === "stock-asc" ? "active" : ""}" type="button" data-stock-sort="stock-asc">Menor saldo primeiro</button>
+        <button class="btn secondary ${stockSortMode === "default" ? "active" : ""}" type="button" data-stock-sort="default">Ordem normal</button>
       </div>
     </div>
     ${renderStockReportPanel()}
@@ -3809,7 +3810,12 @@ function stockSortedProducts(products) {
   if (stockSortMode !== "stock-asc") return products;
   return products
     .slice()
-    .sort((a, b) => productAvailableStock(a) - productAvailableStock(b) || a.name.localeCompare(b.name, "pt-BR"));
+    .sort(
+      (a, b) =>
+        productAvailableStock(a) - productAvailableStock(b) ||
+        Number(a.minStock || 0) - Number(b.minStock || 0) ||
+        a.name.localeCompare(b.name, "pt-BR"),
+    );
 }
 
 function stockInventorySummary() {

@@ -429,6 +429,13 @@ button:disabled {
   box-shadow: var(--shadow-soft);
 }
 
+.btn.secondary.active {
+  border-color: #0f766e;
+  background: #ccfbf1;
+  color: #115e59;
+  box-shadow: 0 10px 24px rgba(13, 148, 136, 0.16);
+}
+
 .btn.warning {
   background: #fef3c7;
   color: #92400e;
