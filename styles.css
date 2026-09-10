@@ -722,6 +722,11 @@ button:disabled {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.metrics {
+  display: grid;
+  gap: 16px;
+}
+
 .two-col {
   grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.75fr);
   align-items: start;
@@ -1035,6 +1040,24 @@ tbody tr:hover td {
 .stock-card {
   border: 1px solid #99f6e4;
   box-shadow: 0 18px 38px rgba(13, 148, 136, 0.14);
+}
+
+.stock-report-panel {
+  margin-bottom: 16px;
+  border: 1px solid #99f6e4;
+}
+
+.inline-card-head {
+  margin: -16px -16px 14px;
+}
+
+.inline-card-head p {
+  margin: 5px 0 0;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.compact-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .stock-card .card-head {
@@ -1920,6 +1943,10 @@ body[data-theme="dark"] .notice {
     right: 14px;
     left: 14px;
   }
+
+  .compact-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
@@ -1980,6 +2007,15 @@ body[data-theme="dark"] .notice {
   .toolbar select,
   .toolbar input {
     width: 100%;
+  }
+
+  .inline-card-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .compact-metrics {
+    grid-template-columns: 1fr;
   }
 
   .stock-products-table table,

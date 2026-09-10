@@ -603,6 +603,11 @@ function money(value) {
   }).format(Number(value || 0));
 }
 
+function qty(value) {
+  const number = Number(value || 0);
+  return Number.isInteger(number) ? String(number) : number.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+}
+
 function dateTime(value) {
   return new Intl.DateTimeFormat("pt-BR", {
     dateStyle: "short",
@@ -2054,6 +2059,7 @@ function bindViewEvents() {
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
   document.querySelector("[data-print-cash-report]")?.addEventListener("click", () => printReport("cash"));
   document.querySelector("[data-print-stock-report]")?.addEventListener("click", () => printReport("stock"));
+  document.querySelector("[data-print-inventory-report]")?.addEventListener("click", () => printReport("inventory"));
   document.querySelector("[data-print-clients-report]")?.addEventListener("click", () => printReport("clients"));
   document.querySelector("#report-filter-form")?.addEventListener("submit", applyReportFilter);
 
@@ -3633,6 +3639,7 @@ function renderStock() {
         <button class="btn secondary" type="button" data-open-modal="inventory">Nova contagem</button>
       </div>
     </div>
+    ${renderStockReportPanel()}
     <section class="card stock-card">
       <div class="card-head">
         <h2 class="card-title">Produtos, precos e saldos</h2>
@@ -3765,6 +3772,46 @@ function renderStock() {
               .join("")}
           </tbody>
         </table>
+      </div>
+    </section>
+  `;
+}
+
+function stockInventorySummary() {
+  const activeProducts = state.products.filter((product) => product.active !== false);
+  const productUnits = activeProducts.reduce((sum, product) => sum + Number(product.stock || 0), 0);
+  const productCostValue = activeProducts.reduce((sum, product) => sum + Number(product.stock || 0) * Number(product.cost || 0), 0);
+  const productSaleValue = activeProducts.reduce((sum, product) => sum + Number(product.stock || 0) * Number(product.price || 0), 0);
+  const ingredientCostValue = state.ingredients.reduce(
+    (sum, ingredient) => sum + Number(ingredient.stock || 0) * Number(ingredient.costPerUnit || 0),
+    0,
+  );
+  return {
+    activeProducts,
+    productUnits,
+    productCostValue,
+    productSaleValue,
+    ingredientCostValue,
+    alerts: stockAlerts(),
+  };
+}
+
+function renderStockReportPanel() {
+  const summary = stockInventorySummary();
+  return `
+    <section class="card pad stock-report-panel">
+      <div class="card-head inline-card-head">
+        <div>
+          <h2 class="card-title">Relatorio de inventario</h2>
+          <p>Visao completa para conferir saldos, codigos, validade, lotes e divergencias.</p>
+        </div>
+        <button class="btn secondary" type="button" data-print-inventory-report>${icon("print")} Salvar PDF do inventario</button>
+      </div>
+      <div class="metrics compact-metrics">
+        <div class="metric"><span>Produtos ativos</span><strong>${summary.activeProducts.length}</strong></div>
+        <div class="metric"><span>Unidades em estoque</span><strong>${qty(summary.productUnits)}</strong></div>
+        <div class="metric"><span>Custo estimado</span><strong>${money(summary.productCostValue + summary.ingredientCostValue)}</strong></div>
+        <div class="metric"><span>Alertas</span><strong>${summary.alerts.length}</strong></div>
       </div>
     </section>
   `;
@@ -6463,6 +6510,7 @@ function printReport(type = "complete") {
     complete: "Relatorio geral",
     cash: "Relatorio de caixa e operadores",
     stock: "Relatorio de estoque e lucratividade",
+    inventory: "Relatorio completo de inventario",
     clients: "Relatorio de clientes e fiado",
   };
   const html = buildReportHtml(type, titleMap[type] || titleMap.complete);
@@ -6484,8 +6532,10 @@ function buildReportHtml(type, title) {
   const sections = [];
   if (type === "complete" || type === "cash") sections.push(reportCashSection(), reportOperatorSection());
   if (type === "complete" || type === "stock") sections.push(reportStockSection(), reportProfitabilitySection());
+  if (type === "inventory") sections.push(reportFullInventorySection());
   if (type === "complete" || type === "clients") sections.push(reportClientsSection());
   if (type === "complete") sections.push(reportSalesSection(), reportAuditSection());
+  const metrics = type === "inventory" ? reportInventoryPrintMetrics() : reportMetrics();
 
   return `
     <!doctype html>
@@ -6507,6 +6557,7 @@ function buildReportHtml(type, title) {
           .metric { border: 1px solid #d1d5db; padding: 10px; }
           .metric span { display: block; color: #6b7280; font-size: 11px; }
           .metric strong { display: block; margin-top: 4px; font-size: 18px; }
+          .muted { color: #6b7280; font-size: 11px; }
           @media print {
             body { margin: 12mm; }
             button { display: none; }
@@ -6521,10 +6572,22 @@ function buildReportHtml(type, title) {
           <p>Periodo: ${reportPeriodLabel()}</p>
           <p>Gerado em ${generatedAt} por ${session?.name || "Usuario"}</p>
         </header>
-        ${reportMetrics()}
+        ${metrics}
         ${sections.join("")}
       </body>
     </html>
+  `;
+}
+
+function reportInventoryPrintMetrics() {
+  const summary = stockInventorySummary();
+  return `
+    <section class="metrics">
+      <div class="metric"><span>Produtos ativos</span><strong>${summary.activeProducts.length}</strong></div>
+      <div class="metric"><span>Unidades em estoque</span><strong>${qty(summary.productUnits)}</strong></div>
+      <div class="metric"><span>Custo estimado</span><strong>${money(summary.productCostValue + summary.ingredientCostValue)}</strong></div>
+      <div class="metric"><span>Valor de venda</span><strong>${money(summary.productSaleValue)}</strong></div>
+    </section>
   `;
 }
 
@@ -6578,6 +6641,80 @@ function reportStockSection() {
       ${simpleTable(
         ["Item", "Lote", "Qtd.", "Validade", "Status"],
         state.stockLots.map((lot) => [inventoryItemName(lot), lot.batch, lot.qty, new Date(lot.expiresAt).toLocaleDateString("pt-BR"), lotStatus(lot).label]),
+      )}
+    </section>
+  `;
+}
+
+function productInventoryCodesText(product) {
+  return [product.productCode, ...productBarcodeCodes(product)].filter(Boolean).join(" / ") || "-";
+}
+
+function reportFullInventorySection() {
+  return `
+    <section>
+      <h2>Produtos cadastrados</h2>
+      ${simpleTable(
+        ["Produto", "Codigos", "Categoria", "Praca", "Saldo", "Minimo", "Critico", "Custo un.", "Valor custo", "Valor venda", "Validade", "Status"],
+        state.products
+          .filter((product) => product.active !== false)
+          .map((product) => [
+            product.name,
+            productInventoryCodesText(product),
+            product.category,
+            product.station || "Bar",
+            qty(product.stock),
+            qty(product.minStock),
+            qty(product.criticalStock),
+            money(product.cost),
+            money(Number(product.stock || 0) * Number(product.cost || 0)),
+            money(Number(product.stock || 0) * Number(product.price || 0)),
+            product.expiresAt ? `${formatDateBr(product.expiresAt)} - ${productExpiryStatus(product).label}` : "-",
+            stockStatus(product).label,
+          ]),
+      )}
+      <h2>Insumos de ficha tecnica</h2>
+      ${simpleTable(
+        ["Insumo", "Unidade", "Saldo", "Minimo", "Custo unit.", "Valor custo", "Status"],
+        state.ingredients.map((ingredient) => [
+          ingredient.name,
+          ingredient.unit,
+          qty(ingredient.stock),
+          qty(ingredient.minStock),
+          money(ingredient.costPerUnit),
+          money(Number(ingredient.stock || 0) * Number(ingredient.costPerUnit || 0)),
+          ingredient.stock <= ingredient.minStock ? "Baixo" : "Ok",
+        ]),
+      )}
+      <h2>Lotes e validade</h2>
+      ${simpleTable(
+        ["Item", "Lote", "Qtd.", "Validade", "Fornecedor", "Status"],
+        state.stockLots.map((lot) => [
+          inventoryItemName(lot),
+          lot.batch,
+          qty(lot.qty),
+          new Date(lot.expiresAt).toLocaleDateString("pt-BR"),
+          supplierName(lot.supplierId),
+          lotStatus(lot).label,
+        ]),
+      )}
+      <h2>Ultimas contagens fisicas</h2>
+      ${simpleTable(
+        ["Data", "Item", "Esperado", "Contado", "Diferenca", "Usuario", "Observacao"],
+        state.inventoryCounts.slice(0, 80).map((count) => [
+          dateTime(count.date),
+          inventoryItemName(count),
+          qty(count.expected),
+          qty(count.counted),
+          qty(count.difference),
+          userName(count.userId),
+          count.notes || "",
+        ]),
+      )}
+      <h2>Alertas do estoque</h2>
+      ${simpleTable(
+        ["Tipo", "Item", "Saldo/Status", "Minimo"],
+        stockAlerts().map((entry) => [entry.type, entry.name, entry.stock, entry.minStock || "-"]),
       )}
     </section>
   `;
