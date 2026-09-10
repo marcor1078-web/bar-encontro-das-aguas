@@ -491,6 +491,7 @@ let lastSaleForTicketsId = null;
 let currentModal = null;
 let searchTerm = "";
 let categoryFilter = "Todos";
+let stockSortMode = "default";
 let reportFilter = { mode: "24h", start: "", end: "" };
 let suppressBroadcast = false;
 let deferredInstallPrompt = null;
@@ -701,6 +702,7 @@ function setView(view) {
   currentView = view;
   searchTerm = "";
   categoryFilter = "Todos";
+  if (view !== "stock") stockSortMode = "default";
   renderApp();
   if (["pos", "waiter"].includes(view) && isOnlineSession() && !mercadoPagoPointStatus.checked) {
     loadMercadoPagoPointStatus(true).then(() => renderApp());
@@ -2035,6 +2037,11 @@ function bindViewEvents() {
       categoryFilter = button.dataset.category;
       renderApp();
     });
+  });
+
+  document.querySelector("[data-stock-sort]")?.addEventListener("click", () => {
+    stockSortMode = stockSortMode === "stock-asc" ? "default" : "stock-asc";
+    renderApp();
   });
 
   document.querySelector("[data-payment-terminal]")?.addEventListener("change", (event) => {
@@ -3643,7 +3650,7 @@ function bindCashForm() {
 }
 
 function renderStock() {
-  const products = filteredProducts().filter((product) => product.active !== false);
+  const products = stockSortedProducts(filteredProducts().filter((product) => product.active !== false));
   return `
     <div class="section-title">
       <div>
@@ -3655,6 +3662,9 @@ function renderStock() {
         <button class="btn secondary" type="button" data-open-modal="product">Novo produto</button>
         <button class="btn secondary" type="button" data-open-modal="ingredient">Novo insumo</button>
         <button class="btn secondary" type="button" data-open-modal="inventory">Nova contagem</button>
+        <button class="btn secondary" type="button" data-stock-sort>
+          ${stockSortMode === "stock-asc" ? "Ordem normal" : "Saldo crescente"}
+        </button>
       </div>
     </div>
     ${renderStockReportPanel()}
@@ -3669,11 +3679,11 @@ function renderStock() {
               <th>Produto</th>
               <th>Codigo</th>
               <th>Acoes</th>
+              <th>Saldo</th>
               <th>Categoria</th>
               <th>Preco</th>
               <th>Custo</th>
               <th>Praca</th>
-              <th>Saldo</th>
               <th>Minimo</th>
               <th>Critico</th>
               <th>Validade</th>
@@ -3694,11 +3704,11 @@ function renderStock() {
                         <button class="btn compact danger" type="button" data-remove-product="${product.id}">Remover</button>
                       </div>
                     </td>
+                    <td data-label="Saldo">${productStockText(product)}</td>
                     <td data-label="Categoria">${product.category}</td>
                     <td data-label="Preco">${money(product.price)}</td>
                     <td data-label="Custo">${money(product.cost)}</td>
                     <td data-label="Praca">${product.station || "Bar"}</td>
-                    <td data-label="Saldo">${productStockText(product)}</td>
                     <td data-label="Minimo">${product.minStock}</td>
                     <td data-label="Critico">${product.criticalStock}</td>
                     <td data-label="Validade">${product.expiresAt ? `${formatDateBr(product.expiresAt)} <span class="status ${productExpiryStatus(product).className}">${productExpiryStatus(product).label}</span>` : "-"}</td>
@@ -3793,6 +3803,13 @@ function renderStock() {
       </div>
     </section>
   `;
+}
+
+function stockSortedProducts(products) {
+  if (stockSortMode !== "stock-asc") return products;
+  return products
+    .slice()
+    .sort((a, b) => productAvailableStock(a) - productAvailableStock(b) || a.name.localeCompare(b.name, "pt-BR"));
 }
 
 function stockInventorySummary() {
