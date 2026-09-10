@@ -1370,6 +1370,22 @@ function productCodeDisplay(product) {
   `;
 }
 
+function productAvailableStock(product) {
+  if (!product?.recipe?.length) return Number(product?.stock || 0);
+  const availableByIngredient = product.recipe.map((recipeItem) => {
+    const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
+    const required = Number(recipeItem.qty || 0);
+    if (!ingredient || required <= 0) return 0;
+    return Math.floor(Number(ingredient.stock || 0) / required);
+  });
+  return Math.max(0, Math.min(...availableByIngredient));
+}
+
+function productStockText(product) {
+  const available = productAvailableStock(product);
+  return `${qty(available)} un.${product?.recipe?.length ? " por ficha" : ""}`;
+}
+
 function productExpiryStatus(product) {
   if (!product.expiresAt) return { label: "Sem validade", className: "muted", days: null };
   const today = startOfToday();
@@ -2280,11 +2296,11 @@ function renderPos() {
               ? products
                   .map(
                     (product) => `
-                      <button class="product-tile ${categoryMeta[product.category]?.tone || ""}" type="button" data-add-product="${product.id}" ${product.stock <= 0 ? "disabled" : ""}>
+                      <button class="product-tile ${categoryMeta[product.category]?.tone || ""}" type="button" data-add-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
                         <span class="category-badge">${categoryMeta[product.category]?.icon || "IT"}</span>
                         <div>
                           <strong>${product.name}</strong>
-                          <span>${product.category} - ${product.station || "Bar"} - ${product.stock} un.</span>
+                          <span>${product.category} - ${product.station || "Bar"} - ${productStockText(product)}</span>
                         </div>
                         <div class="tile-bottom">
                           <span class="status ${stockStatus(product).className}">${stockStatus(product).label}</span>
@@ -2462,11 +2478,11 @@ function renderWaiter() {
           ${products
             .map(
               (product) => `
-                <button class="mobile-product" type="button" data-add-product="${product.id}">
+                <button class="mobile-product" type="button" data-add-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
                   <span class="category-badge">${categoryMeta[product.category]?.icon || "IT"}</span>
                   <span>
                     <strong>${product.name}</strong>
-                    <small>${product.category} - ${money(product.price)}</small>
+                    <small>${product.category} - ${money(product.price)} - ${productStockText(product)}</small>
                   </span>
                   <span>+</span>
                 </button>
@@ -2576,7 +2592,8 @@ function renderKitchen() {
 
 function addToCart(productId) {
   const product = state.products.find((item) => item.id === productId);
-  if (!product || product.stock <= 0) {
+  const availableStock = productAvailableStock(product);
+  if (!product || availableStock <= 0) {
     notify("Produto sem estoque disponivel.");
     return;
   }
@@ -2584,7 +2601,7 @@ function addToCart(productId) {
   const existing = cart.find((item) => item.productId === productId);
   const currentQty = existing ? existing.qty : 0;
 
-  if (currentQty + 1 > product.stock) {
+  if (currentQty + 1 > availableStock) {
     notify("Quantidade maior que o estoque disponivel.");
     return;
   }
@@ -2609,10 +2626,11 @@ function changeCartQty(productId, change) {
   const product = state.products.find((entry) => entry.id === productId);
   if (!item || !product) return;
 
+  const availableStock = productAvailableStock(product);
   const next = item.qty + change;
   if (next <= 0) {
     cart = cart.filter((entry) => entry.productId !== productId);
-  } else if (next <= product.stock) {
+  } else if (next <= availableStock) {
     item.qty = next;
   } else {
     notify("Quantidade maior que o estoque disponivel.");
@@ -3108,25 +3126,25 @@ async function addProductToTable(tableId, productId) {
     price: product.price,
     cost: product.cost,
   };
-  const check = canFulfillCart([item]);
+  const nextItems = structuredClone(table.items || []);
+  const existingNextItem = nextItems.find((cartItem) => cartItem.productId === productId);
+  if (existingNextItem) existingNextItem.qty += 1;
+  else nextItems.push(item);
+
+  const check = canFulfillCart(nextItems);
   if (!check.ok) {
     notify(check.message);
     return;
   }
 
   if (isOnlineSession()) {
-    const items = structuredClone(table.items || []);
-    const existing = items.find((cartItem) => cartItem.productId === productId);
-    if (existing) existing.qty += 1;
-    else items.push(item);
-
     const { error } = await supabaseClient
       .from("bar_tables")
       .update({
         status: "Aberta",
         opened_at: table.openedAt || new Date().toISOString(),
         server_id: table.serverId || session.id,
-        items,
+        items: nextItems,
       })
       .eq("id", tableId);
 
@@ -3680,7 +3698,7 @@ function renderStock() {
                     <td data-label="Preco">${money(product.price)}</td>
                     <td data-label="Custo">${money(product.cost)}</td>
                     <td data-label="Praca">${product.station || "Bar"}</td>
-                    <td data-label="Saldo">${product.stock}</td>
+                    <td data-label="Saldo">${productStockText(product)}</td>
                     <td data-label="Minimo">${product.minStock}</td>
                     <td data-label="Critico">${product.criticalStock}</td>
                     <td data-label="Validade">${product.expiresAt ? `${formatDateBr(product.expiresAt)} <span class="status ${productExpiryStatus(product).className}">${productExpiryStatus(product).label}</span>` : "-"}</td>
@@ -3779,9 +3797,9 @@ function renderStock() {
 
 function stockInventorySummary() {
   const activeProducts = state.products.filter((product) => product.active !== false);
-  const productUnits = activeProducts.reduce((sum, product) => sum + Number(product.stock || 0), 0);
-  const productCostValue = activeProducts.reduce((sum, product) => sum + Number(product.stock || 0) * Number(product.cost || 0), 0);
-  const productSaleValue = activeProducts.reduce((sum, product) => sum + Number(product.stock || 0) * Number(product.price || 0), 0);
+  const productUnits = activeProducts.reduce((sum, product) => sum + productAvailableStock(product), 0);
+  const productCostValue = activeProducts.reduce((sum, product) => sum + productAvailableStock(product) * Number(product.cost || 0), 0);
+  const productSaleValue = activeProducts.reduce((sum, product) => sum + productAvailableStock(product) * Number(product.price || 0), 0);
   const ingredientCostValue = state.ingredients.reduce(
     (sum, ingredient) => sum + Number(ingredient.stock || 0) * Number(ingredient.costPerUnit || 0),
     0,
@@ -3818,9 +3836,10 @@ function renderStockReportPanel() {
 }
 
 function stockStatus(product) {
-  if (product.stock <= 0) return { label: "Zerado", className: "red" };
-  if (product.stock <= Number(product.criticalStock || 0)) return { label: "Critico", className: "red" };
-  if (product.stock <= product.minStock) return { label: "Baixo", className: "amber" };
+  const availableStock = productAvailableStock(product);
+  if (availableStock <= 0) return { label: "Zerado", className: "red" };
+  if (availableStock <= Number(product.criticalStock || 0)) return { label: "Critico", className: "red" };
+  if (availableStock <= product.minStock) return { label: "Baixo", className: "amber" };
   return { label: "Ok", className: "green" };
 }
 
@@ -4630,6 +4649,7 @@ function renderProductModal() {
           <label class="field full">
             <span>Ficha tecnica</span>
             <textarea name="recipeText" placeholder="Ex.: Cachaca:60, Limao:1">${recipeToText(product?.recipe || [])}</textarea>
+            <small class="hint">Para venda fracionada, cadastre o estoque real como insumo e informe o consumo por venda. Ex.: Cigarro Marlboro:1 ou Whisky 1L:50.</small>
           </label>
         </div>
       </div>
@@ -6135,11 +6155,11 @@ async function saveSettings(event) {
 
 function stockAlerts() {
   const productAlerts = state.products
-    .filter((product) => product.active && product.stock <= product.minStock)
+    .filter((product) => product.active && productAvailableStock(product) <= product.minStock)
     .map((product) => ({
-      type: product.stock <= Number(product.criticalStock || 0) ? "Produto critico" : "Produto baixo",
+      type: productAvailableStock(product) <= Number(product.criticalStock || 0) ? "Produto critico" : "Produto baixo",
       name: product.name,
-      stock: product.stock,
+      stock: productStockText(product),
       minStock: product.minStock,
     }));
   const ingredientAlerts = state.ingredients
@@ -6684,12 +6704,12 @@ function reportFullInventorySection() {
             productInventoryCodesText(product),
             product.category,
             product.station || "Bar",
-            qty(product.stock),
+            productStockText(product),
             qty(product.minStock),
             qty(product.criticalStock),
             money(product.cost),
-            money(Number(product.stock || 0) * Number(product.cost || 0)),
-            money(Number(product.stock || 0) * Number(product.price || 0)),
+            money(productAvailableStock(product) * Number(product.cost || 0)),
+            money(productAvailableStock(product) * Number(product.price || 0)),
             product.expiresAt ? `${formatDateBr(product.expiresAt)} - ${productExpiryStatus(product).label}` : "-",
             stockStatus(product).label,
           ]),
@@ -6849,12 +6869,12 @@ function downloadInventoryPdf() {
         productInventoryCodesText(product),
         product.category,
         product.station || "Bar",
-        qty(product.stock),
+        productStockText(product),
         qty(product.minStock),
         qty(product.criticalStock),
         money(product.cost),
-        money(Number(product.stock || 0) * Number(product.cost || 0)),
-        money(Number(product.stock || 0) * Number(product.price || 0)),
+        money(productAvailableStock(product) * Number(product.cost || 0)),
+        money(productAvailableStock(product) * Number(product.price || 0)),
         product.expiresAt ? `${formatDateBr(product.expiresAt)} - ${productExpiryStatus(product).label}` : "-",
         stockStatus(product).label,
       ]),
