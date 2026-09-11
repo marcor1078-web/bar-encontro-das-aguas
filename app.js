@@ -2107,6 +2107,9 @@ function bindViewEvents() {
   });
 
   document.querySelector("[data-clear-sales]")?.addEventListener("click", clearSales);
+  document.querySelectorAll("[data-close-cash-sales-report]").forEach((button) => {
+    button.addEventListener("click", () => closeCashAndDownloadSalesReport(button.dataset.closeCashSalesReport === "form"));
+  });
 
   document.querySelectorAll("[data-remove-product]").forEach((button) => {
     button.addEventListener("click", () => removeProduct(button.dataset.removeProduct));
@@ -3344,6 +3347,7 @@ function renderSales() {
   const activeSales = sales.filter((sale) => sale.status !== "Cancelada");
   const total = activeSales.reduce((sum, sale) => sum + sale.total, 0);
   const profit = activeSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
+  const openCash = getOpenCash();
 
   return `
     <div class="section-title">
@@ -3363,6 +3367,11 @@ function renderSales() {
         <h2 class="card-title">Historico de vendas</h2>
         <div class="toolbar">
           <button class="btn compact secondary" type="button" data-print-report>${icon("print")} Gerar relatorio</button>
+          ${
+            openCash && hasPermission("cash")
+              ? `<button class="btn compact secondary" type="button" data-close-cash-sales-report="auto">${icon("print")} Fechar caixa + relatorio</button>`
+              : ""
+          }
           <button class="btn compact danger" type="button" data-clear-sales>Limpar vendas</button>
         </div>
       </div>
@@ -3484,7 +3493,7 @@ function renderCash() {
                       (method) => `
                         <label class="field">
                           <span>${method} contado</span>
-                          <input name="counted-${method}" type="number" min="0" step="0.01" value="${summary.payments[method] || 0}" />
+                          <input name="counted-${method}" type="number" min="0" step="0.01" value="${cashCountedValueForMethod(openCash, summary, method)}" />
                         </label>
                       `,
                     )
@@ -3506,6 +3515,11 @@ function renderCash() {
                 </div>`
           }
           <button class="btn primary" type="submit">${openCash ? "Fechar caixa" : "Abrir caixa"}</button>
+          ${
+            openCash
+              ? `<button class="btn secondary" style="width: 100%; margin-top: 10px;" type="button" data-close-cash-sales-report="form">${icon("print")} Fechar caixa e baixar relatorio de vendas</button>`
+              : ""
+          }
         </form>
       </section>
 
@@ -3563,7 +3577,223 @@ function renderCash() {
   `;
 }
 
-function bindCashForm() {
+function countedFromCashForm(form) {
+  return Object.fromEntries(paymentMethods.map((method) => [method, Number(form.get(`counted-${method}`) || 0)]));
+}
+
+function expectedCountedForCash(openCash) {
+  const summary = cashSummary(openCash);
+  return Object.fromEntries(paymentMethods.map((method) => [method, cashCountedValueForMethod(openCash, summary, method)]));
+}
+
+function cashCountedValueForMethod(openCash, summary, method) {
+  const paymentValue = Number(summary.payments[method] || 0);
+  if (method !== "Dinheiro") return paymentValue;
+  return paymentValue + Number(openCash?.openingAmount || 0) + Number(summary.movements || 0);
+}
+
+async function closeOpenCash({ counted, notes = "" } = {}) {
+  const openCash = getOpenCash();
+  if (!openCash) {
+    notify("Nao ha caixa aberto para fechar.");
+    return null;
+  }
+
+  const finalCounted = counted || expectedCountedForCash(openCash);
+  const closingAmount = Object.values(finalCounted).reduce((sum, value) => sum + Number(value || 0), 0);
+  const summary = cashSummary(openCash);
+  const closedAt = new Date().toISOString();
+  const closedCash = {
+    ...openCash,
+    closedAt,
+    closingAmount,
+    closingBreakdown: finalCounted,
+    expectedAmount: summary.expected,
+    difference: closingAmount - summary.expected,
+    notes,
+  };
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient
+      .from("cash_sessions")
+      .update({
+        closed_at: closedAt,
+        closing_amount: closingAmount,
+        closing_breakdown: finalCounted,
+        expected_amount: summary.expected,
+        difference: closedCash.difference,
+        notes,
+      })
+      .eq("id", openCash.id);
+
+    if (error) {
+      notify(`Erro ao fechar caixa online: ${error.message}`);
+      return null;
+    }
+
+    await loadOnlineCashData();
+    logAudit("Caixa fechado online", `Diferenca: ${money(closedCash.difference)}.`);
+    notify("Caixa fechado no Supabase.");
+    return closedCash;
+  }
+
+  Object.assign(openCash, closedCash);
+  logAudit("Caixa fechado", `Diferenca: ${money(openCash.difference)}.`);
+  saveState();
+  notify("Caixa fechado.");
+  return closedCash;
+}
+
+function salesForCashPeriod(cash) {
+  if (!cash?.openedAt) return [];
+  const start = new Date(cash.openedAt).getTime();
+  const end = cash.closedAt ? new Date(cash.closedAt).getTime() : Date.now();
+  return state.sales.filter((sale) => {
+    const date = new Date(sale.date).getTime();
+    return sale.status !== "Cancelada" && date >= start && date <= end;
+  });
+}
+
+function cashSalesPaymentTotals(sales) {
+  const totals = Object.fromEntries(paymentMethods.map((method) => [method, 0]));
+  sales.forEach((sale) => {
+    const key = sale.payment === "Cartao" ? "Credito" : sale.payment;
+    totals[key] = Number(totals[key] || 0) + Number(sale.total || 0);
+  });
+  return totals;
+}
+
+async function closeCashAndDownloadSalesReport(useFormValues = false) {
+  const openCash = getOpenCash();
+  if (!openCash) {
+    notify("Nao ha caixa aberto para fechar.");
+    return;
+  }
+  if (!confirm("Fechar o caixa agora e baixar o relatorio de vendas?")) return;
+
+  const formElement = document.querySelector("#cash-form");
+  const form = formElement ? new FormData(formElement) : null;
+  const counted = useFormValues && form ? countedFromCashForm(form) : expectedCountedForCash(openCash);
+  const notes =
+    useFormValues && form
+      ? form.get("notes").trim()
+      : "Fechamento automatico com relatorio de vendas gerado pelo app.";
+  const closedCash = await closeOpenCash({ counted, notes });
+  if (!closedCash) return;
+
+  downloadSalesReportPdf(closedCash);
+  renderApp();
+}
+
+function downloadSalesReportPdf(cash) {
+  const { jsPDF } = window.jspdf || {};
+  if (!jsPDF) {
+    notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
+    return;
+  }
+
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  if (typeof doc.autoTable !== "function") {
+    notify("Tabela do PDF ainda nao carregou. Atualize a pagina e tente novamente.");
+    return;
+  }
+
+  const sales = salesForCashPeriod(cash);
+  const activeSales = sales.filter((sale) => sale.status !== "Cancelada");
+  const total = activeSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+  const profit = activeSales.reduce((sum, sale) => sum + Number(sale.total || 0) - Number(sale.cost || 0), 0);
+  const paymentTotals = cashSalesPaymentTotals(activeSales);
+  const businessName = state.settings.barName || APP_DISPLAY_NAME;
+  const generatedAt = dateTime(new Date().toISOString());
+  const title = "Relatorio de vendas do caixa";
+
+  doc.setProperties({
+    title: `${businessName} - ${title}`,
+    subject: "Fechamento de caixa e vendas",
+    author: session?.name || "Usuario",
+  });
+
+  doc.setFontSize(18);
+  doc.setTextColor(17, 24, 39);
+  doc.text(businessName, 40, 42);
+  doc.setFontSize(12);
+  doc.text(title, 40, 62);
+  doc.setFontSize(8);
+  doc.setTextColor(75, 85, 99);
+  [
+    state.settings.cnpj ? `CNPJ: ${state.settings.cnpj}` : "",
+    state.settings.address || "",
+    `Caixa: ${dateTime(cash.openedAt)} ate ${dateTime(cash.closedAt || new Date().toISOString())}`,
+    `Operador: ${userName(cash.userId)} | Gerado em ${generatedAt} por ${session?.name || "Usuario"}`,
+  ]
+    .filter(Boolean)
+    .forEach((line, index) => doc.text(line, 40, 80 + index * 12));
+
+  doc.autoTable({
+    body: [
+      ["Total vendido", money(total), "Lucro estimado", money(profit)],
+      ["Vendas concluidas", activeSales.length, "Valor esperado", money(cash.expectedAmount)],
+      ["Valor contado", money(cash.closingAmount), "Diferenca", money(cash.difference)],
+    ],
+    startY: 138,
+    margin: { left: 40, right: 40 },
+    theme: "grid",
+    styles: { fontSize: 9, cellPadding: 5 },
+    columnStyles: {
+      0: { fontStyle: "bold", fillColor: [241, 245, 249] },
+      2: { fontStyle: "bold", fillColor: [241, 245, 249] },
+    },
+  });
+
+  doc.autoTable({
+    head: [["Forma de pagamento", "Total"]],
+    body: paymentMethods.map((method) => [method, money(paymentTotals[method] || 0)]),
+    startY: (doc.lastAutoTable?.finalY || 138) + 18,
+    margin: { left: 40, right: 520 },
+    theme: "grid",
+    styles: { fontSize: 8, cellPadding: 4 },
+    headStyles: { fillColor: [15, 118, 110], textColor: [255, 255, 255] },
+  });
+
+  doc.autoTable({
+    head: [["Data", "Itens", "Pagamento", "Operador", "Total", "Lucro"]],
+    body: activeSales.length
+      ? activeSales.map((sale) => [
+          dateTime(sale.date),
+          sale.items.map((item) => `${item.qty}x ${item.name}`).join(", "),
+          sale.payment,
+          userName(sale.cashierId),
+          money(sale.total),
+          money(Number(sale.total || 0) - Number(sale.cost || 0)),
+        ])
+      : [["Nenhuma venda concluida no periodo.", "", "", "", "", ""]],
+    startY: (doc.lastAutoTable?.finalY || 190) + 24,
+    margin: { left: 40, right: 40 },
+    theme: "grid",
+    styles: { fontSize: 7, cellPadding: 3, overflow: "linebreak", valign: "middle" },
+    headStyles: { fillColor: [15, 118, 110], textColor: [255, 255, 255] },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: {
+      1: { cellWidth: 285 },
+    },
+  });
+
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let page = 1; page <= pageCount; page += 1) {
+    doc.setPage(page);
+    doc.setFontSize(8);
+    doc.setTextColor(107, 114, 128);
+    doc.text(`Pagina ${page} de ${pageCount}`, doc.internal.pageSize.getWidth() - 88, doc.internal.pageSize.getHeight() - 24);
+  }
+
+  const date = new Date().toISOString().slice(0, 10);
+  doc.save(`vendas-caixa-${safeFileName(businessName)}-${date}.pdf`);
+  logAudit("Relatorio de vendas baixado", `Caixa fechado em ${dateTime(cash.closedAt || new Date().toISOString())}.`);
+  saveState();
+  notify("Caixa fechado e relatorio de vendas baixado.");
+}
+
+async function bindCashForm() {
   document.querySelector("#cash-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -3572,44 +3802,8 @@ function bindCashForm() {
     const openCash = getOpenCash();
 
     if (openCash) {
-      const counted = Object.fromEntries(paymentMethods.map((method) => [method, Number(form.get(`counted-${method}`) || 0)]));
-      const closingAmount = Object.values(counted).reduce((sum, value) => sum + value, 0);
-      const summary = cashSummary(openCash);
-
-      if (isOnlineSession()) {
-        const difference = closingAmount - summary.expected;
-        const { error } = await supabaseClient
-          .from("cash_sessions")
-          .update({
-            closed_at: new Date().toISOString(),
-            closing_amount: closingAmount,
-            closing_breakdown: counted,
-            expected_amount: summary.expected,
-            difference,
-            notes,
-          })
-          .eq("id", openCash.id);
-
-        if (error) {
-          notify(`Erro ao fechar caixa online: ${error.message}`);
-          return;
-        }
-
-        await loadOnlineCashData();
-        logAudit("Caixa fechado online", `Diferenca: ${money(difference)}.`);
-        notify("Caixa fechado no Supabase.");
-        renderApp();
-        return;
-      }
-
-      openCash.closedAt = new Date().toISOString();
-      openCash.closingAmount = closingAmount;
-      openCash.closingBreakdown = counted;
-      openCash.expectedAmount = summary.expected;
-      openCash.difference = closingAmount - summary.expected;
-      openCash.notes = notes;
-      logAudit("Caixa fechado", `Diferenca: ${money(openCash.difference)}.`);
-      notify("Caixa fechado.");
+      const closedCash = await closeOpenCash({ counted: countedFromCashForm(form), notes });
+      if (closedCash) renderApp();
     } else {
       if (isOnlineSession()) {
         const { error } = await supabaseClient.from("cash_sessions").insert({
@@ -3644,10 +3838,9 @@ function bindCashForm() {
       });
       logAudit("Caixa aberto", `Abertura com ${money(amount)}.`);
       notify("Caixa aberto.");
+      saveState();
+      renderApp();
     }
-
-    saveState();
-    renderApp();
   });
 }
 
