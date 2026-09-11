@@ -704,7 +704,7 @@ function setView(view) {
   categoryFilter = "Todos";
   if (view !== "stock") stockSortMode = "default";
   renderApp();
-  if (["pos", "waiter"].includes(view) && !mercadoPagoPointStatus.checked) {
+  if (["pos", "waiter", "sales", "cash"].includes(view) && !mercadoPagoPointStatus.checked) {
     loadMercadoPagoPointStatus(true).then(() => renderApp());
   }
 }
@@ -2057,6 +2057,9 @@ function bindViewEvents() {
         id: button.dataset.id || null,
       };
       renderApp();
+      if (button.dataset.openModal === "externalPayment" && !mercadoPagoPointStatus.checked) {
+        loadMercadoPagoPointStatus(true).then(() => renderApp());
+      }
     });
   });
 
@@ -3391,6 +3394,7 @@ function renderSales() {
         <h2 class="card-title">Historico de vendas</h2>
         <div class="toolbar">
           <button class="btn compact secondary" type="button" data-print-report>${icon("print")} Gerar relatorio</button>
+          <button class="btn compact secondary" type="button" data-open-modal="externalPayment">Registrar pagamento externo</button>
           ${
             openCash && hasPermission("cash")
               ? `<button class="btn compact secondary" type="button" data-close-cash-sales-report="auto">${icon("print")} Fechar caixa + relatorio</button>`
@@ -3428,16 +3432,16 @@ function salesTable(sales) {
               (sale) => `
                 <tr>
                   <td>${dateTime(sale.date)}</td>
-                  <td>${sale.items.reduce((sum, item) => sum + item.qty, 0)} itens</td>
+                  <td>${saleItemsLabel(sale)}</td>
                   <td><span class="status blue">${sale.payment}</span></td>
-                  <td><span class="status ${sale.status === "Cancelada" ? "red" : "green"}">${sale.status || "Concluida"}</span></td>
+                  <td><span class="status ${saleStatusClass(sale)}">${sale.status || "Concluida"}</span></td>
                   <td>${userName(sale.cashierId)}</td>
                   <td>${money(sale.total)}</td>
                   <td>${money(sale.total - sale.cost)}</td>
                   <td>
                     <div class="toolbar">
                       <button class="btn compact secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
-                      <button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>
+                      ${isExternalPaymentSale(sale) ? "" : `<button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>`}
                       ${
                         sale.status === "Cancelada"
                           ? ""
@@ -3489,6 +3493,7 @@ function renderCash() {
   const summary = cashSummary(openCash);
   const todaySales = salesForToday();
   const movements = state.cashMovements.slice().reverse();
+  const externalPayments = state.sales.filter(isExternalPaymentSale).slice().reverse().slice(0, 20);
 
   return `
     <div class="section-title">
@@ -3496,6 +3501,7 @@ function renderCash() {
         <h2>Caixa</h2>
         <p>Abertura, movimentos e fechamento. ${isOnlineSession() ? "Salvando no Supabase." : "Modo local."}</p>
       </div>
+      <button class="btn secondary" type="button" data-open-modal="externalPayment">Registrar pagamento externo</button>
     </div>
 
     <div class="grid stats">
@@ -3567,6 +3573,41 @@ function renderCash() {
         </div>
       </section>
     </div>
+
+    <section class="card" style="margin-top: 16px;">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">Pagamentos externos da maquininha</h2>
+          <p>Use quando a venda foi feita direto na Point. Entra no caixa, sem baixar estoque.</p>
+        </div>
+        <button class="btn compact secondary" type="button" data-open-modal="externalPayment">Adicionar</button>
+      </div>
+      ${
+        externalPayments.length
+          ? `<div class="table-wrap">
+              <table>
+                <thead><tr><th>Data</th><th>Forma</th><th>Maquininha</th><th>Valor</th><th>Operador</th><th>Status</th></tr></thead>
+                <tbody>
+                  ${externalPayments
+                    .map(
+                      (sale) => `
+                        <tr>
+                          <td>${dateTime(sale.date)}</td>
+                          <td><span class="status blue">${sale.payment}</span></td>
+                          <td>${sale.terminalLabel ? escapeHtml(ticketTerminalLabel({ label: sale.terminalLabel })) : "-"}</td>
+                          <td>${money(sale.total)}</td>
+                          <td>${userName(sale.cashierId)}</td>
+                          <td><span class="status ${saleStatusClass(sale)}">${sale.status || "Concluida"}</span></td>
+                        </tr>
+                      `,
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>`
+          : '<div class="empty">Nenhum pagamento externo registrado.</div>'
+      }
+    </section>
 
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
@@ -3687,6 +3728,27 @@ function cashSalesPaymentTotals(sales) {
   return totals;
 }
 
+function isExternalPaymentSale(sale) {
+  return sale?.status === "Pagamento externo";
+}
+
+function saleItemsLabel(sale) {
+  if (isExternalPaymentSale(sale)) return "Pagamento externo da maquininha";
+  const count = (sale.items || []).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+  return `${qty(count)} ${count === 1 ? "item" : "itens"}`;
+}
+
+function saleItemsDescription(sale) {
+  if (isExternalPaymentSale(sale)) return "Pagamento externo da maquininha";
+  return (sale.items || []).map((item) => `${qty(item.qty)}x ${item.name}`).join(", ");
+}
+
+function saleStatusClass(sale) {
+  if (sale.status === "Cancelada") return "red";
+  if (isExternalPaymentSale(sale)) return "blue";
+  return "green";
+}
+
 async function closeCashAndDownloadSalesReport(useFormValues = false) {
   const openCash = getOpenCash();
   if (!openCash) {
@@ -3784,7 +3846,7 @@ function downloadSalesReportPdf(cash) {
     body: activeSales.length
       ? activeSales.map((sale) => [
           dateTime(sale.date),
-          sale.items.map((item) => `${item.qty}x ${item.name}`).join(", "),
+          saleItemsDescription(sale),
           sale.payment,
           userName(sale.cashierId),
           money(sale.total),
@@ -4717,6 +4779,7 @@ function renderModal() {
     table: renderTableModal,
     user: renderUserModal,
     movement: renderMovementModal,
+    externalPayment: renderExternalPaymentModal,
     order: renderOrderModal,
     printTickets: renderPrintTicketsModal,
   };
@@ -5400,6 +5463,62 @@ function renderMovementModal() {
   `;
 }
 
+function renderExternalPaymentModal() {
+  const terminals = paymentTerminalOptions();
+  const selectedTerminal = getSelectedPaymentTerminal();
+  const terminalOptions = [
+    `<option value="">Nao informada</option>`,
+    ...terminals.map(
+      (terminal) =>
+        `<option value="${escapeHtml(terminal.label)}" ${terminal.id === selectedTerminal?.id ? "selected" : ""}>${escapeHtml(
+          ticketTerminalLabel(terminal) || terminal.label,
+        )}</option>`,
+    ),
+  ].join("");
+
+  return `
+    <form id="external-payment-form">
+      <div class="modal-head">
+        <h2>Pagamento externo</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="notice compact">Use para pagamento feito direto na maquininha. Ele entra no caixa e nos relatorios, mas nao baixa estoque.</div>
+        <div class="form-grid">
+          <label class="field">
+            <span>Forma</span>
+            <select name="payment">
+              <option>Pix</option>
+              <option>Debito</option>
+              <option>Credito</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Valor</span>
+            <input name="amount" type="number" min="0.01" step="0.01" required />
+          </label>
+          <label class="field">
+            <span>Maquininha</span>
+            <select name="terminalLabel">${terminalOptions}</select>
+          </label>
+          <label class="field">
+            <span>Data e hora</span>
+            <input name="date" type="datetime-local" />
+          </label>
+          <label class="field full">
+            <span>Observacao</span>
+            <input name="note" placeholder="Ex.: venda feita direto na Point" />
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">Registrar</button>
+      </div>
+    </form>
+  `;
+}
+
 function bindModalForms() {
   document.querySelector("#product-form")?.addEventListener("submit", saveProduct);
   document.querySelector("#stock-form")?.addEventListener("submit", saveStockAdjustment);
@@ -5414,6 +5533,7 @@ function bindModalForms() {
   document.querySelector("#lot-form")?.addEventListener("submit", saveLot);
   document.querySelector("#user-form")?.addEventListener("submit", saveUser);
   document.querySelector("#movement-form")?.addEventListener("submit", saveMovement);
+  document.querySelector("#external-payment-form")?.addEventListener("submit", saveExternalPayment);
   document.querySelector("#order-form")?.addEventListener("submit", saveOrder);
   bindUserPermissionControls();
 }
@@ -6344,6 +6464,74 @@ async function saveMovement(event) {
   renderApp();
 }
 
+async function saveExternalPayment(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const payment = form.get("payment");
+  const amount = Number(form.get("amount") || 0);
+  const terminalLabel = form.get("terminalLabel") || "";
+  const note = form.get("note").trim();
+  const rawDate = form.get("date");
+  const date = rawDate ? new Date(rawDate).toISOString() : new Date().toISOString();
+
+  if (!amount || amount <= 0) {
+    notify("Informe um valor valido para o pagamento externo.");
+    return;
+  }
+
+  if (isOnlineSession()) {
+    const saleResult = await supabaseClient
+      .from("sales")
+      .insert({
+        cashier_id: session.id,
+        client_id: null,
+        payment,
+        status: "Pagamento externo",
+        service_fee: 0,
+        total: amount,
+        cost: 0,
+        created_at: date,
+      })
+      .select("*")
+      .single();
+
+    if (saleResult.error) {
+      notify(`Erro ao registrar pagamento externo online: ${saleResult.error.message}`);
+      return;
+    }
+
+    currentModal = null;
+    await loadOnlineSalesData();
+    attachSalePrintDetails(saleResult.data.id, { terminalLabel });
+    logAudit("Pagamento externo online", `${money(amount)} em ${payment}${terminalLabel ? ` - ${ticketTerminalLabel({ label: terminalLabel })}` : ""}. ${note}`);
+    notify("Pagamento externo registrado no Supabase.");
+    renderApp();
+    return;
+  }
+
+  state.sales.push({
+    id: id("sale"),
+    date,
+    cashierId: session.id,
+    clientId: null,
+    tableId: null,
+    payment,
+    status: "Pagamento externo",
+    serviceFee: 0,
+    total: amount,
+    cost: 0,
+    items: [],
+    terminalLabel,
+    externalNote: note,
+  });
+
+  currentModal = null;
+  logAudit("Pagamento externo", `${money(amount)} em ${payment}${terminalLabel ? ` - ${ticketTerminalLabel({ label: terminalLabel })}` : ""}. ${note}`);
+  saveState();
+  notify("Pagamento externo registrado.");
+  renderApp();
+}
+
 async function saveSettings(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -6664,7 +6852,9 @@ function printSale(saleId) {
     `Data: ${dateTime(sale.date)}`,
     `Operador: ${userName(sale.cashierId)}`,
     "",
-    ...sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`),
+    ...(isExternalPaymentSale(sale)
+      ? ["Pagamento externo da maquininha"]
+      : sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)),
     "",
     `Pagamento: ${sale.payment}`,
     `Total: ${money(sale.total)}`,
@@ -7222,11 +7412,19 @@ function reportSalesSection() {
     <section>
       <h2>Vendas</h2>
       ${simpleTable(
-        ["Data", "Operador", "Pagamento", "Status", "Total", "Lucro"],
+        ["Data", "Operador", "Origem/itens", "Pagamento", "Status", "Total", "Lucro"],
         reportSales()
           .slice()
           .reverse()
-          .map((sale) => [dateTime(sale.date), userName(sale.cashierId), sale.payment, sale.status || "Concluida", money(sale.total), money(sale.total - sale.cost)]),
+          .map((sale) => [
+            dateTime(sale.date),
+            userName(sale.cashierId),
+            saleItemsDescription(sale),
+            sale.payment,
+            sale.status || "Concluida",
+            money(sale.total),
+            money(sale.total - sale.cost),
+          ]),
       )}
     </section>
   `;
@@ -7275,11 +7473,12 @@ async function exportBackup() {
 
 function exportSalesCsv() {
   const rows = [
-    ["id", "data", "operador", "pagamento", "total", "custo", "lucro"],
+    ["id", "data", "operador", "origem_itens", "pagamento", "total", "custo", "lucro"],
     ...reportSales().map((sale) => [
       sale.id,
       sale.date,
       userName(sale.cashierId),
+      saleItemsDescription(sale),
       sale.payment,
       sale.total,
       sale.cost,
