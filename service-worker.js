@@ -1,4 +1,4 @@
-const CACHE_NAME = "distribuidora-america-bj-v19";
+const CACHE_NAME = "distribuidora-america-bj-v20";
 const APP_ASSETS = [
   "/",
   "/index.html",

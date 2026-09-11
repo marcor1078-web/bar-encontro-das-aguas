@@ -3392,6 +3392,7 @@ function renderSales() {
   const total = activeSales.reduce((sum, sale) => sum + sale.total, 0);
   const profit = activeSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
   const openCash = getOpenCash();
+  const weeklyTopProducts = topProductsForPeriod(7, 10);
 
   return `
     <div class="section-title">
@@ -3406,6 +3407,15 @@ function renderSales() {
       ${metric("Tickets", activeSales.length, "Vendas concluidas", "N")}
       ${metric("Canceladas", sales.length - activeSales.length, "Com senha e motivo", "C")}
     </div>
+    <section class="card" style="margin-top: 16px;">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">Top 10 produtos da semana</h2>
+          <p>Mais vendidos nos ultimos 7 dias, incluindo pagamentos externos com produtos.</p>
+        </div>
+      </div>
+      ${topProductsTable(weeklyTopProducts)}
+    </section>
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
         <h2 class="card-title">Historico de vendas</h2>
@@ -3434,7 +3444,7 @@ function salesTable(sales) {
         <thead>
           <tr>
             <th>Data</th>
-            <th>Itens</th>
+            <th>Produtos vendidos</th>
             <th>Pagamento</th>
             <th>Status</th>
             <th>Operador</th>
@@ -3449,7 +3459,7 @@ function salesTable(sales) {
               (sale) => `
                 <tr>
                   <td>${dateTime(sale.date)}</td>
-                  <td>${saleItemsLabel(sale)}</td>
+                  <td>${saleItemsSummary(sale)}</td>
                   <td><span class="status blue">${sale.payment}</span></td>
                   <td><span class="status ${saleStatusClass(sale)}">${sale.status || "Concluida"}</span></td>
                   <td>${userName(sale.cashierId)}</td>
@@ -3763,10 +3773,71 @@ function saleItemsDescription(sale) {
   return itemsText;
 }
 
+function saleItemsSummary(sale) {
+  return escapeHtml(saleItemsDescription(sale) || saleItemsLabel(sale));
+}
+
 function saleStatusClass(sale) {
   if (sale.status === "Cancelada") return "red";
   if (isExternalPaymentSale(sale)) return "blue";
   return "green";
+}
+
+function topProductsForPeriod(days = 7, limit = 10) {
+  const start = Date.now() - days * 24 * 60 * 60 * 1000;
+  const totals = new Map();
+
+  state.sales.forEach((sale) => {
+    if (sale.status === "Cancelada" || new Date(sale.date).getTime() < start) return;
+
+    (sale.items || []).forEach((item) => {
+      const product = state.products.find((entry) => entry.id === item.productId);
+      const key = item.productId || item.name;
+      const current = totals.get(key) || {
+        name: item.name,
+        category: product?.category || "Sem categoria",
+        qty: 0,
+        revenue: 0,
+      };
+
+      current.qty += Number(item.qty || 0);
+      current.revenue += Number(item.qty || 0) * Number(item.price || 0);
+      totals.set(key, current);
+    });
+  });
+
+  return [...totals.values()]
+    .sort((a, b) => b.qty - a.qty || b.revenue - a.revenue || a.name.localeCompare(b.name, "pt-BR"))
+    .slice(0, limit);
+}
+
+function topProductsTable(products) {
+  if (!products.length) return '<div class="empty">Nenhum produto vendido nos ultimos 7 dias.</div>';
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>#</th><th>Produto</th><th>Categoria</th><th>Qtd.</th><th>Total vendido</th></tr>
+        </thead>
+        <tbody>
+          ${products
+            .map(
+              (product, index) => `
+                <tr>
+                  <td><strong>${index + 1}</strong></td>
+                  <td>${escapeHtml(product.name)}</td>
+                  <td>${escapeHtml(product.category)}</td>
+                  <td>${qty(product.qty)}</td>
+                  <td>${money(product.revenue)}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 async function closeCashAndDownloadSalesReport(useFormValues = false) {
