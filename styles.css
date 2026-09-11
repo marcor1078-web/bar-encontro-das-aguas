@@ -1874,6 +1874,10 @@ body[data-theme="dark"] .notice {
   font-size: 1.08rem;
 }
 
+.table-product-search {
+  margin-bottom: 12px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

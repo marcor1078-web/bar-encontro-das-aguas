@@ -5291,7 +5291,7 @@ function renderClientPaymentModal() {
 
 function renderTableModal() {
   const table = state.tables.find((item) => item.id === currentModal.id);
-  const products = state.products.filter((product) => product.active);
+  const products = filteredProducts().filter((product) => product.active);
   return `
     <div>
       <div class="modal-head">
@@ -5319,18 +5319,23 @@ function renderTableModal() {
         <div class="grid two-col">
           <section>
             <h3 class="compact-title">Adicionar item</h3>
+            <input class="field-input search table-product-search" data-search type="search" placeholder="Buscar produto por nome, codigo ou barra" />
             <div class="mobile-product-list">
-              ${products
-                .map(
-                  (product) => `
-                    <button class="mobile-product" type="button" data-table-id="${table.id}" data-add-table-product="${product.id}">
-                      <span class="category-badge">${categoryMeta[product.category]?.icon || "IT"}</span>
-                      <span><strong>${product.name}</strong><small>${money(product.price)}</small></span>
-                      <span>+</span>
-                    </button>
-                  `,
-                )
-                .join("")}
+              ${
+                products.length
+                  ? products
+                      .map(
+                        (product) => `
+                          <button class="mobile-product" type="button" data-table-id="${table.id}" data-add-table-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
+                            <span class="category-badge">${categoryMeta[product.category]?.icon || "IT"}</span>
+                            <span><strong>${product.name}</strong><small>${money(product.price)} - ${productStockText(product)}</small></span>
+                            <span>+</span>
+                          </button>
+                        `,
+                      )
+                      .join("")
+                  : '<div class="empty">Nenhum produto encontrado.</div>'
+              }
             </div>
           </section>
           <section>
