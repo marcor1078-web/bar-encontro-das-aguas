@@ -5611,6 +5611,7 @@ function renderExternalPaymentModal() {
               <option>Pix</option>
               <option>Debito</option>
               <option>Credito</option>
+              <option>Dinheiro</option>
             </select>
           </label>
           <label class="field">
