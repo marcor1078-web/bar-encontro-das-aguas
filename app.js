@@ -5524,7 +5524,7 @@ function renderExternalPaymentModal() {
           </label>
           <label class="field">
             <span>Valor pago</span>
-            <input name="amount" type="number" min="0.01" step="0.01" placeholder="Soma dos produtos se vazio" />
+            <input name="amount" data-external-amount type="number" min="0.01" step="0.01" placeholder="Calculado pelos produtos" />
           </label>
           <label class="field">
             <span>Maquininha</span>
@@ -5541,17 +5541,21 @@ function renderExternalPaymentModal() {
         </div>
         <h3 class="compact-title">Produtos vendidos</h3>
         <datalist id="external-product-options">${productOptions}</datalist>
+        <div class="external-products-total">
+          <span>Total dos produtos</span>
+          <strong data-external-products-total>${money(0)}</strong>
+        </div>
         <div class="external-products-grid">
           ${Array.from({ length: 8 }, (_, index) => {
             const number = index + 1;
             return `
               <label class="field">
                 <span>Produto ${number}</span>
-                <input name="externalProductSearch-${number}" list="external-product-options" placeholder="Digite nome ou codigo" autocomplete="off" />
+                <input name="externalProductSearch-${number}" data-external-product-search list="external-product-options" placeholder="Digite nome ou codigo" autocomplete="off" />
               </label>
               <label class="field">
                 <span>Qtd.</span>
-                <input name="externalQty-${number}" type="number" min="0" step="0.001" />
+                <input name="externalQty-${number}" data-external-product-qty type="number" min="0" step="0.001" />
               </label>
             `;
           }).join("")}
@@ -5581,6 +5585,7 @@ function bindModalForms() {
   document.querySelector("#movement-form")?.addEventListener("submit", saveMovement);
   document.querySelector("#external-payment-form")?.addEventListener("submit", saveExternalPayment);
   document.querySelector("#order-form")?.addEventListener("submit", saveOrder);
+  bindExternalPaymentTotal();
   bindUserPermissionControls();
 }
 
@@ -6539,6 +6544,55 @@ function externalPaymentItemsFromForm(form) {
   }
 
   return { items: [...grouped.values()] };
+}
+
+function externalPaymentPreviewItemsFromForm(form) {
+  const items = [];
+  for (let index = 1; index <= 8; index += 1) {
+    const productSearch = String(form.get(`externalProductSearch-${index}`) || "").trim();
+    if (!productSearch) continue;
+
+    const product = findProductBySearchValue(productSearch);
+    if (!product) continue;
+
+    const quantityValue = form.get(`externalQty-${index}`);
+    const quantity = quantityValue ? Number(quantityValue) : 1;
+    if (!quantity || quantity <= 0) continue;
+
+    items.push({
+      productId: product.id,
+      qty: quantity,
+      price: Number(product.price || 0),
+    });
+  }
+  return items;
+}
+
+function externalPaymentProductsTotal(items) {
+  return items.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
+}
+
+function bindExternalPaymentTotal() {
+  const formElement = document.querySelector("#external-payment-form");
+  if (!formElement) return;
+
+  const amountInput = formElement.querySelector("[data-external-amount]");
+  const totalOutput = formElement.querySelector("[data-external-products-total]");
+  const updateTotal = () => {
+    const previewItems = externalPaymentPreviewItemsFromForm(new FormData(formElement));
+    const total = externalPaymentProductsTotal(previewItems);
+    if (totalOutput) totalOutput.textContent = money(total);
+    if (amountInput && total > 0) amountInput.value = total.toFixed(2);
+    if (amountInput && total <= 0 && amountInput.dataset.autoFilled === "true") amountInput.value = "";
+    if (amountInput) amountInput.dataset.autoFilled = total > 0 ? "true" : "false";
+  };
+
+  formElement.querySelectorAll("[data-external-product-search], [data-external-product-qty]").forEach((input) => {
+    input.addEventListener("input", updateTotal);
+    input.addEventListener("change", updateTotal);
+  });
+
+  updateTotal();
 }
 
 async function saveExternalPayment(event) {

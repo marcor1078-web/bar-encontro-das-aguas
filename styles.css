@@ -148,6 +148,15 @@ body[data-theme="dark"] .field-input::placeholder {
   color: #94a3b8;
 }
 
+body[data-theme="dark"] .external-products-total {
+  background: rgba(15, 118, 110, 0.18);
+  border-color: rgba(45, 212, 191, 0.36);
+}
+
+body[data-theme="dark"] .external-products-total strong {
+  color: #5eead4;
+}
+
 body[data-theme="dark"] option {
   background: #020617;
   color: #f8fafc;
@@ -1841,6 +1850,28 @@ body[data-theme="dark"] .notice {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 112px;
   gap: 10px;
+}
+
+.external-products-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 12px;
+  border: 1px solid rgba(15, 118, 110, 0.22);
+  border-radius: 8px;
+  background: rgba(240, 253, 250, 0.86);
+  padding: 10px 12px;
+}
+
+.external-products-total span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.external-products-total strong {
+  color: var(--brand-strong);
+  font-size: 1.08rem;
 }
 
 .modal-backdrop {
