@@ -132,6 +132,7 @@ const categoryMeta = {
 };
 
 const paymentMethods = ["Pix", "Debito", "Credito", "Dinheiro", "Fiado"];
+const cashPaymentMethods = paymentMethods.filter((method) => method !== "Fiado");
 
 const defaultState = {
   users: [
@@ -2229,12 +2230,14 @@ function bindViewEvents() {
 
 function renderDashboard() {
   const today = salesForToday();
-  const total = today.reduce((sum, sale) => sum + sale.total, 0);
-  const profit = today.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
+  const receivedToday = today.filter(isReceivedSale);
+  const fiadoToday = today.filter((sale) => sale.status !== "Cancelada" && sale.payment === "Fiado");
+  const total = receivedToday.reduce((sum, sale) => sum + sale.total, 0);
+  const profit = receivedToday.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
+  const fiadoTotal = fiadoToday.reduce((sum, sale) => sum + sale.total, 0);
   const lowStock = stockAlerts();
   const openCash = getOpenCash();
-  const ticket = today.length ? total / today.length : 0;
-  const pendingOrders = state.kitchenOrders.filter((order) => order.status !== "Entregue").length;
+  const ticket = receivedToday.length ? total / receivedToday.length : 0;
 
   return `
     <div class="hero-admin">
@@ -2250,10 +2253,10 @@ function renderDashboard() {
     </div>
 
     <div class="grid stats">
-      ${metric("Vendas hoje", money(total), `${today.length} vendas registradas`, "R$")}
+      ${metric("Recebido hoje", money(total), `${receivedToday.length} venda(s) paga(s)`, "R$")}
       ${metric("Lucro estimado", money(profit), "Com base no custo cadastrado", "%")}
       ${metric("Ticket medio", money(ticket), "Media por atendimento", "TM")}
-      ${metric("Preparo", pendingOrders, "Pedidos ainda na fila", "PB")}
+      ${metric("Fiado hoje", money(fiadoTotal), `${fiadoToday.length} venda(s) a receber`, "FD")}
     </div>
 
     <div class="grid two-col" style="margin-top: 16px;">
@@ -3389,8 +3392,11 @@ function combineItems(baseItems, extraItems) {
 function renderSales() {
   const sales = state.sales.slice().reverse();
   const activeSales = sales.filter((sale) => sale.status !== "Cancelada");
-  const total = activeSales.reduce((sum, sale) => sum + sale.total, 0);
-  const profit = activeSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
+  const receivedSales = activeSales.filter(isReceivedSale);
+  const fiadoSales = activeSales.filter((sale) => sale.payment === "Fiado");
+  const total = receivedSales.reduce((sum, sale) => sum + sale.total, 0);
+  const profit = receivedSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
+  const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + sale.total, 0);
   const openCash = getOpenCash();
   const weeklyTopProducts = topProductsForPeriod(7, 10);
 
@@ -3402,10 +3408,10 @@ function renderSales() {
       </div>
     </div>
     <div class="grid stats">
-      ${metric("Total vendido", money(total), "Todas as vendas registradas", "R$")}
-      ${metric("Lucro estimado", money(profit), "Receita menos custo", "%")}
+      ${metric("Total recebido", money(total), "Sem contar vendas em fiado", "R$")}
+      ${metric("Lucro recebido", money(profit), "Receita recebida menos custo", "%")}
       ${metric("Tickets", activeSales.length, "Vendas concluidas", "N")}
-      ${metric("Canceladas", sales.length - activeSales.length, "Com senha e motivo", "C")}
+      ${metric("Fiado vendido", money(fiadoTotal), `${fiadoSales.length} venda(s) a receber`, "FD")}
     </div>
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
@@ -3519,6 +3525,7 @@ function renderCash() {
   const openCash = getOpenCash();
   const summary = cashSummary(openCash);
   const todaySales = salesForToday();
+  const receivedToday = todaySales.filter(isReceivedSale);
   const movements = state.cashMovements.slice().reverse();
   const externalPayments = state.sales.filter(isExternalPaymentSale).slice().reverse().slice(0, 20);
 
@@ -3535,7 +3542,7 @@ function renderCash() {
       ${metric("Status", openCash ? "Aberto" : "Fechado", openCash ? userName(openCash.userId) : "Sem turno ativo", "CX")}
       ${metric("Abertura", money(openCash?.openingAmount || 0), openCash ? dateTime(openCash.openedAt) : "Aguardando abertura", "AB")}
       ${metric("Esperado", money(summary.expected), "Abertura + vendas + movimentos", "EX")}
-      ${metric("Vendas hoje", money(todaySales.reduce((sum, sale) => sum + sale.total, 0)), "Por todas as formas de pagamento", "R$")}
+      ${metric("Recebido hoje", money(receivedToday.reduce((sum, sale) => sum + sale.total, 0)), "Sem contar vendas em fiado", "R$")}
     </div>
 
     <div class="grid two-col" style="margin-top: 16px;">
@@ -3545,7 +3552,7 @@ function renderCash() {
           ${
             openCash
               ? `<div class="form-grid">
-                  ${paymentMethods
+                  ${cashPaymentMethods
                     .map(
                       (method) => `
                         <label class="field">
@@ -3585,7 +3592,7 @@ function renderCash() {
           <h2 class="card-title">Resumo por forma</h2>
         </div>
         <div class="summary-list">
-          ${paymentMethods
+          ${cashPaymentMethods
             .map(
               (method) => `
                 <div class="summary-row">
@@ -3670,12 +3677,12 @@ function renderCash() {
 }
 
 function countedFromCashForm(form) {
-  return Object.fromEntries(paymentMethods.map((method) => [method, Number(form.get(`counted-${method}`) || 0)]));
+  return Object.fromEntries(cashPaymentMethods.map((method) => [method, Number(form.get(`counted-${method}`) || 0)]));
 }
 
 function expectedCountedForCash(openCash) {
   const summary = cashSummary(openCash);
-  return Object.fromEntries(paymentMethods.map((method) => [method, cashCountedValueForMethod(openCash, summary, method)]));
+  return Object.fromEntries(cashPaymentMethods.map((method) => [method, cashCountedValueForMethod(openCash, summary, method)]));
 }
 
 function cashCountedValueForMethod(openCash, summary, method) {
@@ -3747,8 +3754,9 @@ function salesForCashPeriod(cash) {
 }
 
 function cashSalesPaymentTotals(sales) {
-  const totals = Object.fromEntries(paymentMethods.map((method) => [method, 0]));
+  const totals = Object.fromEntries(cashPaymentMethods.map((method) => [method, 0]));
   sales.forEach((sale) => {
+    if (!isReceivedSale(sale)) return;
     const key = sale.payment === "Cartao" ? "Credito" : sale.payment;
     totals[key] = Number(totals[key] || 0) + Number(sale.total || 0);
   });
@@ -3757,6 +3765,10 @@ function cashSalesPaymentTotals(sales) {
 
 function isExternalPaymentSale(sale) {
   return sale?.status === "Pagamento externo";
+}
+
+function isReceivedSale(sale) {
+  return sale?.status !== "Cancelada" && sale?.payment !== "Fiado";
 }
 
 function saleItemsLabel(sale) {
@@ -3876,9 +3888,11 @@ function downloadSalesReportPdf(cash) {
   }
 
   const sales = salesForCashPeriod(cash);
-  const activeSales = sales.filter((sale) => sale.status !== "Cancelada");
+  const activeSales = sales.filter(isReceivedSale);
+  const fiadoSales = sales.filter((sale) => sale.status !== "Cancelada" && sale.payment === "Fiado");
   const total = activeSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
   const profit = activeSales.reduce((sum, sale) => sum + Number(sale.total || 0) - Number(sale.cost || 0), 0);
+  const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
   const paymentTotals = cashSalesPaymentTotals(activeSales);
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
   const generatedAt = dateTime(new Date().toISOString());
@@ -3909,8 +3923,9 @@ function downloadSalesReportPdf(cash) {
   doc.autoTable({
     body: [
       ["Total vendido", money(total), "Lucro estimado", money(profit)],
-      ["Vendas concluidas", activeSales.length, "Valor esperado", money(cash.expectedAmount)],
+      ["Vendas recebidas", activeSales.length, "Valor esperado", money(cash.expectedAmount)],
       ["Valor contado", money(cash.closingAmount), "Diferenca", money(cash.difference)],
+      ["Fiado no periodo", money(fiadoTotal), "Vendas fiado", fiadoSales.length],
     ],
     startY: 138,
     margin: { left: 40, right: 40 },
@@ -3924,7 +3939,7 @@ function downloadSalesReportPdf(cash) {
 
   doc.autoTable({
     head: [["Forma de pagamento", "Total"]],
-    body: paymentMethods.map((method) => [method, money(paymentTotals[method] || 0)]),
+    body: cashPaymentMethods.map((method) => [method, money(paymentTotals[method] || 0)]),
     startY: (doc.lastAutoTable?.finalY || 138) + 18,
     margin: { left: 40, right: 520 },
     theme: "grid",
@@ -5607,7 +5622,7 @@ function renderExternalPaymentModal() {
             <select name="terminalLabel">${terminalOptions}</select>
           </label>
           <label class="field">
-            <span>Data e hora</span>
+            <span>Data da venda</span>
             <input name="date" type="datetime-local" />
           </label>
           <label class="field full">
@@ -6888,9 +6903,9 @@ function alertsList() {
 }
 
 function cashSummary(openCash = getOpenCash()) {
-  const payments = Object.fromEntries(paymentMethods.map((method) => [method, 0]));
+  const payments = Object.fromEntries(cashPaymentMethods.map((method) => [method, 0]));
   const since = openCash ? new Date(openCash.openedAt) : startOfToday();
-  const sales = state.sales.filter((sale) => new Date(sale.date) >= since && sale.status !== "Cancelada");
+  const sales = state.sales.filter((sale) => new Date(sale.date) >= since && isReceivedSale(sale));
 
   sales.forEach((sale) => {
     const key = sale.payment === "Cartao" ? "Credito" : sale.payment;
@@ -7337,12 +7352,13 @@ function reportInventoryPrintMetrics() {
 
 function reportMetrics() {
   const activeSales = reportSales().filter((sale) => sale.status !== "Cancelada");
-  const revenue = activeSales.reduce((sum, sale) => sum + sale.total, 0);
-  const profit = activeSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
+  const receivedSales = activeSales.filter(isReceivedSale);
+  const revenue = receivedSales.reduce((sum, sale) => sum + sale.total, 0);
+  const profit = receivedSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
   const debt = state.clients.reduce((sum, client) => sum + Number(client.debt || 0), 0);
   return `
     <section class="metrics">
-      <div class="metric"><span>Receita</span><strong>${money(revenue)}</strong></div>
+      <div class="metric"><span>Receita recebida</span><strong>${money(revenue)}</strong></div>
       <div class="metric"><span>Lucro estimado</span><strong>${money(profit)}</strong></div>
       <div class="metric"><span>Vendas</span><strong>${activeSales.length}</strong></div>
       <div class="metric"><span>Fiado aberto</span><strong>${money(debt)}</strong></div>
@@ -7355,7 +7371,7 @@ function reportCashSection() {
   return `
     <section>
       <h2>Caixa por forma de pagamento</h2>
-      ${simpleTable(["Forma", "Total"], paymentMethods.map((method) => [method, money(summary.payments[method] || 0)]))}
+      ${simpleTable(["Forma", "Total"], cashPaymentMethods.map((method) => [method, money(summary.payments[method] || 0)]))}
       <p><strong>Movimentos:</strong> ${money(summary.movements)} | <strong>Esperado:</strong> ${money(summary.expected)}</p>
     </section>
   `;
