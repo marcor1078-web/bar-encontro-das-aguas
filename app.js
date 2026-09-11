@@ -704,7 +704,7 @@ function setView(view) {
   categoryFilter = "Todos";
   if (view !== "stock") stockSortMode = "default";
   renderApp();
-  if (["pos", "waiter"].includes(view) && isOnlineSession() && !mercadoPagoPointStatus.checked) {
+  if (["pos", "waiter"].includes(view) && !mercadoPagoPointStatus.checked) {
     loadMercadoPagoPointStatus(true).then(() => renderApp());
   }
 }
@@ -1156,6 +1156,42 @@ async function processMercadoPagoPointPayment({ amount, payment, description, te
     ok: false,
     message: `Pagamento ainda nao confirmado. Ultimo status: ${pending?.status || "created"}. Na Point, abra Inserir valor antes de tentar novamente.`,
   };
+}
+
+async function processPointPaymentBeforeSale({ amount, payment, description, items = [] }) {
+  if (!isPointPayment(payment)) return { ok: true, terminal: null };
+
+  await loadMercadoPagoPointStatus(true);
+  if (!mercadoPagoPointStatus.enabled) {
+    notify("Mercado Pago Point indisponivel. Abra pelo link online da Vercel e confira as variaveis MP_ACCESS_TOKEN e MP_TERMINAL_ID.");
+    return { ok: false };
+  }
+
+  const selectedTerminal = getSelectedPaymentTerminal();
+  if (!selectedTerminal?.enabled) {
+    notify("Selecione uma maquininha Mercado Pago ativa antes de finalizar.");
+    return { ok: false };
+  }
+
+  if (selectedTerminal.provider === "stone") {
+    notify(`${selectedTerminal.label} ainda nao esta configurada. Use uma Mercado Pago ou configure a Stone primeiro.`);
+    return { ok: false };
+  }
+
+  const pointPayment = await processMercadoPagoPointPayment({
+    amount,
+    payment,
+    terminalId: selectedTerminal.terminalId,
+    items,
+    description,
+  });
+
+  if (pointPayment.skipped || !pointPayment.ok) {
+    notify(pointPayment.message || "Nao foi possivel enviar a cobranca para a maquininha.");
+    return { ok: false };
+  }
+
+  return { ok: true, terminal: selectedTerminal };
 }
 
 async function setMercadoPagoTerminalMode(operatingMode = "PDV", terminalId = "") {
@@ -2660,12 +2696,7 @@ async function finalizeSale() {
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
   const payment = document.querySelector("#payment-method")?.value || "Pix";
   const clientId = document.querySelector("#client-id")?.value || "cl-001";
-  const selectedTerminal = isPointPayment(payment) ? getSelectedPaymentTerminal() : null;
-  const printDetails = {
-    tableName: tableCheckout?.name || "",
-    customerName: tableCheckout?.customerName || "",
-    terminalLabel: ticketTerminalLabel(selectedTerminal),
-  };
+  let selectedTerminal = null;
 
   if (payment === "Fiado") {
     const client = state.clients.find((entry) => entry.id === clientId);
@@ -2682,29 +2713,22 @@ async function finalizeSale() {
     return;
   }
 
-  if (isOnlineSession()) {
-    if (isPointPayment(payment)) {
-      if (!selectedTerminal?.enabled) {
-        notify("Selecione uma maquininha ativa antes de finalizar.");
-        return;
-      }
-      if (selectedTerminal?.provider === "stone") {
-        notify(`${selectedTerminal.label} ainda nao esta configurada. Use uma Mercado Pago ou configure a Stone primeiro.`);
-        return;
-      }
-      const pointPayment = await processMercadoPagoPointPayment({
-        amount: total,
-        payment,
-        terminalId: selectedTerminal?.terminalId,
-        items: structuredClone(cart),
-        description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
-      });
-      if (!pointPayment.skipped && !pointPayment.ok) {
-        notify(pointPayment.message);
-        return;
-      }
-    }
+  const pointPayment = await processPointPaymentBeforeSale({
+    amount: total,
+    payment,
+    items: structuredClone(cart),
+    description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
+  });
+  if (!pointPayment.ok) return;
+  selectedTerminal = pointPayment.terminal;
 
+  const printDetails = {
+    tableName: tableCheckout?.name || "",
+    customerName: tableCheckout?.customerName || "",
+    terminalLabel: ticketTerminalLabel(selectedTerminal),
+  };
+
+  if (isOnlineSession()) {
     const checkout = tableCheckout;
     const saleId = await finalizeSaleOnline({
       payment,
