@@ -4063,9 +4063,9 @@ function renderStock() {
           <thead>
             <tr>
               <th>Produto</th>
+              <th>Saldo</th>
               <th>Codigo</th>
               <th>Acoes</th>
-              <th>Saldo</th>
               <th>Categoria</th>
               <th>Preco</th>
               <th>Custo</th>
@@ -4082,6 +4082,7 @@ function renderStock() {
                 (product) => `
                   <tr class="stock-row ${stockStatus(product).className} expiry-${productExpiryStatus(product).className}">
                     <td data-label="Produto">${product.name}</td>
+                    <td data-label="Saldo">${productStockText(product)}</td>
                     <td data-label="Codigo">${productCodeDisplay(product)}</td>
                     <td data-label="Acoes">
                       <div class="toolbar stock-actions">
@@ -4090,7 +4091,6 @@ function renderStock() {
                         <button class="btn compact danger" type="button" data-remove-product="${product.id}">Remover</button>
                       </div>
                     </td>
-                    <td data-label="Saldo">${productStockText(product)}</td>
                     <td data-label="Categoria">${product.category}</td>
                     <td data-label="Preco">${money(product.price)}</td>
                     <td data-label="Custo">${money(product.cost)}</td>
