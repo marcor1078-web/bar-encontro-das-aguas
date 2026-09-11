@@ -1837,6 +1837,12 @@ body[data-theme="dark"] .notice {
   grid-column: 1 / -1;
 }
 
+.external-products-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  gap: 10px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1977,6 +1983,7 @@ body[data-theme="dark"] .notice {
 
   .demo-grid,
   .form-grid,
+  .external-products-grid,
   .permission-grid {
     grid-template-columns: 1fr;
   }

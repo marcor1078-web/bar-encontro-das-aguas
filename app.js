@@ -3441,7 +3441,7 @@ function salesTable(sales) {
                   <td>
                     <div class="toolbar">
                       <button class="btn compact secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
-                      ${isExternalPaymentSale(sale) ? "" : `<button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>`}
+                      ${(sale.items || []).length ? `<button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>` : ""}
                       ${
                         sale.status === "Cancelada"
                           ? ""
@@ -3733,14 +3733,17 @@ function isExternalPaymentSale(sale) {
 }
 
 function saleItemsLabel(sale) {
-  if (isExternalPaymentSale(sale)) return "Pagamento externo da maquininha";
   const count = (sale.items || []).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+  if (isExternalPaymentSale(sale) && count > 0) return `${qty(count)} ${count === 1 ? "item" : "itens"} (externo)`;
+  if (isExternalPaymentSale(sale)) return "Pagamento externo da maquininha";
   return `${qty(count)} ${count === 1 ? "item" : "itens"}`;
 }
 
 function saleItemsDescription(sale) {
+  const itemsText = (sale.items || []).map((item) => `${qty(item.qty)}x ${item.name}`).join(", ");
+  if (isExternalPaymentSale(sale) && itemsText) return `${itemsText} (pagamento externo)`;
   if (isExternalPaymentSale(sale)) return "Pagamento externo da maquininha";
-  return (sale.items || []).map((item) => `${qty(item.qty)}x ${item.name}`).join(", ");
+  return itemsText;
 }
 
 function saleStatusClass(sale) {
@@ -5466,6 +5469,15 @@ function renderMovementModal() {
 function renderExternalPaymentModal() {
   const terminals = paymentTerminalOptions();
   const selectedTerminal = getSelectedPaymentTerminal();
+  const productOptions = state.products
+    .filter((product) => product.active !== false)
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
+    .map(
+      (product) =>
+        `<option value="${product.id}">${escapeHtml(product.name)} - ${money(product.price)} - estoque ${escapeHtml(productStockText(product))}</option>`,
+    )
+    .join("");
   const terminalOptions = [
     `<option value="">Nao informada</option>`,
     ...terminals.map(
@@ -5483,7 +5495,7 @@ function renderExternalPaymentModal() {
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body">
-        <div class="notice compact">Use para pagamento feito direto na maquininha. Ele entra no caixa e nos relatorios, mas nao baixa estoque.</div>
+        <div class="notice compact">Use para pagamento feito direto na maquininha. Se informar produtos, o estoque sera baixado.</div>
         <div class="form-grid">
           <label class="field">
             <span>Forma</span>
@@ -5494,8 +5506,8 @@ function renderExternalPaymentModal() {
             </select>
           </label>
           <label class="field">
-            <span>Valor</span>
-            <input name="amount" type="number" min="0.01" step="0.01" required />
+            <span>Valor pago</span>
+            <input name="amount" type="number" min="0.01" step="0.01" placeholder="Soma dos produtos se vazio" />
           </label>
           <label class="field">
             <span>Maquininha</span>
@@ -5509,6 +5521,25 @@ function renderExternalPaymentModal() {
             <span>Observacao</span>
             <input name="note" placeholder="Ex.: venda feita direto na Point" />
           </label>
+        </div>
+        <h3 class="compact-title">Produtos vendidos</h3>
+        <div class="external-products-grid">
+          ${Array.from({ length: 8 }, (_, index) => {
+            const number = index + 1;
+            return `
+              <label class="field">
+                <span>Produto ${number}</span>
+                <select name="externalProductId-${number}">
+                  <option value="">Selecionar produto</option>
+                  ${productOptions}
+                </select>
+              </label>
+              <label class="field">
+                <span>Qtd.</span>
+                <input name="externalQty-${number}" type="number" min="0" step="0.001" />
+              </label>
+            `;
+          }).join("")}
         </div>
       </div>
       <div class="modal-actions">
@@ -6464,6 +6495,37 @@ async function saveMovement(event) {
   renderApp();
 }
 
+function externalPaymentItemsFromForm(form) {
+  const grouped = new Map();
+
+  for (let index = 1; index <= 8; index += 1) {
+    const productId = form.get(`externalProductId-${index}`);
+    if (!productId) continue;
+
+    const product = state.products.find((entry) => entry.id === productId);
+    if (!product) return { error: "Produto selecionado nao encontrado." };
+
+    const quantityValue = form.get(`externalQty-${index}`);
+    const quantity = quantityValue ? Number(quantityValue) : 1;
+    if (!quantity || quantity <= 0) return { error: `Informe uma quantidade valida para ${product.name}.` };
+
+    const previous = grouped.get(product.id);
+    if (previous) {
+      previous.qty += quantity;
+    } else {
+      grouped.set(product.id, {
+        productId: product.id,
+        name: product.name,
+        qty: quantity,
+        price: Number(product.price || 0),
+        cost: Number(product.cost || 0),
+      });
+    }
+  }
+
+  return { items: [...grouped.values()] };
+}
+
 async function saveExternalPayment(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -6473,10 +6535,29 @@ async function saveExternalPayment(event) {
   const note = form.get("note").trim();
   const rawDate = form.get("date");
   const date = rawDate ? new Date(rawDate).toISOString() : new Date().toISOString();
+  const parsedItems = externalPaymentItemsFromForm(form);
 
-  if (!amount || amount <= 0) {
-    notify("Informe um valor valido para o pagamento externo.");
+  if (parsedItems.error) {
+    notify(parsedItems.error);
     return;
+  }
+
+  const saleItems = parsedItems.items || [];
+  const productsTotal = saleItems.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
+  const saleTotal = amount > 0 ? amount : productsTotal;
+  const saleCost = saleItems.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.cost || 0), 0);
+
+  if (!saleTotal || saleTotal <= 0) {
+    notify("Informe o valor pago ou selecione produtos vendidos.");
+    return;
+  }
+
+  if (saleItems.length) {
+    const stockCheck = canFulfillCart(saleItems);
+    if (!stockCheck.ok) {
+      notify(stockCheck.message);
+      return;
+    }
   }
 
   if (isOnlineSession()) {
@@ -6488,8 +6569,8 @@ async function saveExternalPayment(event) {
         payment,
         status: "Pagamento externo",
         service_fee: 0,
-        total: amount,
-        cost: 0,
+        total: saleTotal,
+        cost: saleCost,
         created_at: date,
       })
       .select("*")
@@ -6500,14 +6581,54 @@ async function saveExternalPayment(event) {
       return;
     }
 
+    if (saleItems.length) {
+      const itemsResult = await supabaseClient.from("sale_items").insert(
+        saleItems.map((item) => ({
+          sale_id: saleResult.data.id,
+          product_id: item.productId,
+          name: item.name,
+          qty: item.qty,
+          price: item.price,
+          cost: item.cost,
+        })),
+      );
+
+      if (itemsResult.error) {
+        notify(`Pagamento registrado, mas falhou ao salvar produtos: ${itemsResult.error.message}`);
+        await loadOnlineSalesData();
+        await loadOnlineStockData();
+        renderApp();
+        return;
+      }
+    }
+
+    if (saleItems.length) {
+      const stockResult = await applyCartStockOnline(saleItems);
+      if (!stockResult.ok) {
+        notify(`Pagamento registrado, mas falhou ao baixar estoque: ${stockResult.message}`);
+        await loadOnlineSalesData();
+        await loadOnlineStockData();
+        renderApp();
+        return;
+      }
+    }
+
     currentModal = null;
+    await loadOnlineStockData();
     await loadOnlineSalesData();
     attachSalePrintDetails(saleResult.data.id, { terminalLabel });
-    logAudit("Pagamento externo online", `${money(amount)} em ${payment}${terminalLabel ? ` - ${ticketTerminalLabel({ label: terminalLabel })}` : ""}. ${note}`);
-    notify("Pagamento externo registrado no Supabase.");
+    logAudit(
+      "Pagamento externo online",
+      `${money(saleTotal)} em ${payment}${terminalLabel ? ` - ${ticketTerminalLabel({ label: terminalLabel })}` : ""}. ${
+        saleItems.length ? saleItemsDescription({ items: saleItems }) : "Sem produtos."
+      } ${note}`,
+    );
+    notify(saleItems.length ? "Pagamento externo registrado e estoque baixado." : "Pagamento externo registrado no Supabase.");
     renderApp();
     return;
   }
+
+  if (saleItems.length) applyCartStock(saleItems);
 
   state.sales.push({
     id: id("sale"),
@@ -6518,17 +6639,22 @@ async function saveExternalPayment(event) {
     payment,
     status: "Pagamento externo",
     serviceFee: 0,
-    total: amount,
-    cost: 0,
-    items: [],
+    total: saleTotal,
+    cost: saleCost,
+    items: saleItems,
     terminalLabel,
     externalNote: note,
   });
 
   currentModal = null;
-  logAudit("Pagamento externo", `${money(amount)} em ${payment}${terminalLabel ? ` - ${ticketTerminalLabel({ label: terminalLabel })}` : ""}. ${note}`);
+  logAudit(
+    "Pagamento externo",
+    `${money(saleTotal)} em ${payment}${terminalLabel ? ` - ${ticketTerminalLabel({ label: terminalLabel })}` : ""}. ${
+      saleItems.length ? saleItemsDescription({ items: saleItems }) : "Sem produtos."
+    } ${note}`,
+  );
   saveState();
-  notify("Pagamento externo registrado.");
+  notify(saleItems.length ? "Pagamento externo registrado e estoque baixado." : "Pagamento externo registrado.");
   renderApp();
 }
 
@@ -6852,9 +6978,11 @@ function printSale(saleId) {
     `Data: ${dateTime(sale.date)}`,
     `Operador: ${userName(sale.cashierId)}`,
     "",
-    ...(isExternalPaymentSale(sale)
-      ? ["Pagamento externo da maquininha"]
-      : sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)),
+    ...(isExternalPaymentSale(sale) && sale.items?.length
+      ? ["Pagamento externo da maquininha", ...sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)]
+      : isExternalPaymentSale(sale)
+        ? ["Pagamento externo da maquininha"]
+        : sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)),
     "",
     `Pagamento: ${sale.payment}`,
     `Total: ${money(sale.total)}`,
