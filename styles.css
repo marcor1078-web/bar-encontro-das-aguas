@@ -414,6 +414,12 @@ button:disabled {
   box-shadow: 0 10px 20px rgba(13, 148, 136, 0.2);
 }
 
+.payment-choice input:disabled + span,
+#sale-payment-form[data-submitting="true"] .payment-choice span {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .payment-choice input:focus-visible + span {
   outline: 3px solid rgba(15, 118, 110, 0.22);
   outline-offset: 2px;
@@ -1940,7 +1946,7 @@ body[data-theme="dark"] .notice {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 20;
+  z-index: 80;
   display: grid;
   place-items: center;
   background: rgba(15, 23, 42, 0.54);
