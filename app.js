@@ -890,14 +890,14 @@ function mercadoPagoTerminalName(terminal, index = 0) {
   return `Maquininha ${index + 1} - ${serial}${mode}`;
 }
 
-function renderPaymentTerminalField() {
+function renderPaymentTerminalField({ inputId = "payment-terminal-id", inputName = "" } = {}) {
   const terminals = paymentTerminalOptions();
   if (!terminals.length) return "";
   const selectedTerminal = getSelectedPaymentTerminal();
   return `
     <label class="field">
       <span>Maquininha</span>
-      <select id="payment-terminal-id" data-payment-terminal>
+      <select id="${inputId}" ${inputName ? `name="${inputName}"` : ""} data-payment-terminal>
         ${terminals
           .map(
             (terminal) =>
@@ -1159,7 +1159,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description, te
   };
 }
 
-async function processPointPaymentBeforeSale({ amount, payment, description, items = [] }) {
+async function processPointPaymentBeforeSale({ amount, payment, description, items = [], terminalKey = "" }) {
   if (!isPointPayment(payment)) return { ok: true, terminal: null };
 
   await loadMercadoPagoPointStatus(true);
@@ -1168,11 +1168,14 @@ async function processPointPaymentBeforeSale({ amount, payment, description, ite
     return { ok: false };
   }
 
-  const selectedTerminal = getSelectedPaymentTerminal();
+  const selectedTerminal = terminalKey
+    ? paymentTerminalOptions().find((terminal) => terminal.id === terminalKey)
+    : getSelectedPaymentTerminal();
   if (!selectedTerminal?.enabled) {
     notify("Selecione uma maquininha Mercado Pago ativa antes de finalizar.");
     return { ok: false };
   }
+  setSelectedPaymentTerminal(selectedTerminal.id);
 
   if (selectedTerminal.provider === "stone") {
     notify(`${selectedTerminal.label} ainda nao esta configurada. Use uma Mercado Pago ou configure a Stone primeiro.`);
@@ -2122,7 +2125,7 @@ function bindViewEvents() {
   });
 
   document.querySelectorAll("[data-finalize-sale]").forEach((button) => {
-    button.addEventListener("click", finalizeSale);
+    button.addEventListener("click", openSalePaymentModal);
   });
   document.querySelector("[data-test-supabase]")?.addEventListener("click", testSupabaseConnection);
   document.querySelector("[data-test-mercadopago]")?.addEventListener("click", async () => {
@@ -2416,19 +2419,7 @@ function renderPos() {
           }
         </div>
         <div class="cart-total">
-          <label class="field">
-            <span>Pagamento</span>
-            <select id="payment-method">
-              ${paymentMethods.map((method) => `<option>${method}</option>`).join("")}
-            </select>
-          </label>
-          ${renderPaymentTerminalField()}
-          <label class="field">
-            <span>Cliente para fiado</span>
-            <select id="client-id">
-              ${state.clients.map((client) => `<option value="${client.id}">${client.name}</option>`).join("")}
-            </select>
-          </label>
+          <div class="notice compact">A forma de pagamento sera escolhida ao finalizar.</div>
           ${tableCheckout ? `<div class="total-row"><span>Subtotal da mesa</span><strong>${money(subtotal)}</strong></div>` : ""}
           ${tableCheckout ? `<div class="total-row"><span>Servico ${state.settings.serviceFee || 0}%</span><strong>${money(serviceFee)}</strong></div>` : ""}
           <div class="total-row"><span>Total</span><strong>${money(total)}</strong></div>
@@ -2588,15 +2579,7 @@ function renderWaiter() {
           }
         </div>
         <div class="cart-total">
-          <label class="field">
-            <span>Pagamento</span>
-            <select id="payment-method">${paymentMethods.map((method) => `<option>${method}</option>`).join("")}</select>
-          </label>
-          ${renderPaymentTerminalField()}
-          <label class="field">
-            <span>Cliente para fiado</span>
-            <select id="client-id">${state.clients.map((client) => `<option value="${client.id}">${client.name}</option>`).join("")}</select>
-          </label>
+          <div class="notice compact">A forma de pagamento sera escolhida ao finalizar.</div>
           <div class="total-row"><span>Total</span><strong>${money(total)}</strong></div>
           <button class="btn primary" type="button" data-finalize-sale ${cart.length ? "" : "disabled"}>Enviar e fechar</button>
         </div>
@@ -2710,39 +2693,66 @@ function changeCartQty(productId, change) {
   renderApp();
 }
 
-async function finalizeSale() {
+function openSalePaymentModal() {
   if (!cart.length) return;
+  currentModal = { type: "salePayment" };
+  renderApp();
+}
+
+async function confirmSalePayment(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const payment = String(form.get("payment") || "");
+  if (!payment) {
+    notify("Escolha a forma de pagamento para finalizar.");
+    return;
+  }
+
+  await finalizeSale({
+    payment,
+    clientId: String(form.get("clientId") || ""),
+    terminalKey: String(form.get("terminalKey") || ""),
+  });
+}
+
+async function finalizeSale({ payment = "", clientId = "", terminalKey = "" } = {}) {
+  if (!cart.length) return false;
+  if (!payment) {
+    openSalePaymentModal();
+    notify("Escolha a forma de pagamento para finalizar.");
+    return false;
+  }
 
   const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
   const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
   const total = subtotal + serviceFee;
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
-  const payment = document.querySelector("#payment-method")?.value || "Pix";
-  const clientId = document.querySelector("#client-id")?.value || "cl-001";
+  const selectedClientId = clientId || state.clients[0]?.id || "";
   let selectedTerminal = null;
 
   if (payment === "Fiado") {
-    const client = state.clients.find((entry) => entry.id === clientId);
+    const client = state.clients.find((entry) => entry.id === selectedClientId);
     const projectedDebt = Number(client?.debt || 0) + total;
     if (!client || Number(client.creditLimit || 0) <= 0 || projectedDebt > Number(client.creditLimit || 0)) {
       notify("Fiado bloqueado: limite do cliente insuficiente.");
-      return;
+      return false;
     }
   }
 
   const stockCheck = canFulfillCart(cart);
   if (!stockCheck.ok) {
     notify(stockCheck.message);
-    return;
+    return false;
   }
 
   const pointPayment = await processPointPaymentBeforeSale({
     amount: total,
     payment,
+    terminalKey,
     items: structuredClone(cart),
     description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
   });
-  if (!pointPayment.ok) return;
+  if (!pointPayment.ok) return false;
   selectedTerminal = pointPayment.terminal;
 
   const printDetails = {
@@ -2755,7 +2765,7 @@ async function finalizeSale() {
     const checkout = tableCheckout;
     const saleId = await finalizeSaleOnline({
       payment,
-      clientId,
+      clientId: selectedClientId,
       total,
       cost,
       serviceFee,
@@ -2763,7 +2773,7 @@ async function finalizeSale() {
       clearCart: false,
       renderAfter: false,
     });
-    if (!saleId) return;
+    if (!saleId) return false;
     if (checkout) await releaseTableAfterCheckout(checkout.id);
     cart = [];
     tableCheckout = null;
@@ -2773,7 +2783,7 @@ async function finalizeSale() {
     currentModal = { type: "printTickets", id: saleId };
     notify(checkout ? "Conta da mesa fechada no balcao." : "Venda salva no Supabase.");
     renderApp();
-    return;
+    return true;
   }
 
   applyCartStock(cart);
@@ -2783,7 +2793,7 @@ async function finalizeSale() {
     date: new Date().toISOString(),
     cashierId: session.id,
     payment,
-    clientId: payment === "Fiado" ? clientId : null,
+    clientId: payment === "Fiado" ? selectedClientId : null,
     tableId: tableCheckout?.id || null,
     tableName: printDetails.tableName,
     customerName: printDetails.customerName,
@@ -2800,7 +2810,7 @@ async function finalizeSale() {
 
   if (payment === "Fiado") {
     state.clients = state.clients.map((client) =>
-      client.id === clientId
+      client.id === selectedClientId
         ? {
             ...client,
             debt: Number(client.debt || 0) + total,
@@ -2839,6 +2849,7 @@ async function finalizeSale() {
   saveState();
   notify("Venda finalizada.");
   renderApp();
+  return true;
 }
 
 function canFulfillCart(items) {
@@ -4887,6 +4898,7 @@ function renderModal() {
     movement: renderMovementModal,
     externalPayment: renderExternalPaymentModal,
     order: renderOrderModal,
+    salePayment: renderSalePaymentModal,
     printTickets: renderPrintTicketsModal,
   };
   return `
@@ -4895,6 +4907,51 @@ function renderModal() {
         ${renderers[currentModal.type]()}
       </section>
     </div>
+  `;
+}
+
+function renderSalePaymentModal() {
+  const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
+  const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
+  const total = subtotal + serviceFee;
+  return `
+    <form id="sale-payment-form">
+      <div class="modal-head">
+        <h2>Finalizar venda</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="summary-list">
+          ${tableCheckout ? `<div class="summary-row"><span>Mesa</span><strong>${tableCheckout.name}</strong></div>` : ""}
+          ${tableCheckout?.customerName ? `<div class="summary-row"><span>Cliente</span><strong>${escapeHtml(tableCheckout.customerName)}</strong></div>` : ""}
+          <div class="summary-row"><span>Itens</span><strong>${cart.reduce((sum, item) => sum + item.qty, 0)}</strong></div>
+          ${tableCheckout ? `<div class="summary-row"><span>Subtotal</span><strong>${money(subtotal)}</strong></div>` : ""}
+          ${tableCheckout ? `<div class="summary-row"><span>Servico</span><strong>${money(serviceFee)}</strong></div>` : ""}
+          <div class="summary-row total"><span>Total</span><strong>${money(total)}</strong></div>
+        </div>
+        <label class="field">
+          <span>Forma de pagamento obrigatoria</span>
+          <select name="payment" required>
+            <option value="">Selecione a forma de pagamento</option>
+            ${paymentMethods.map((method) => `<option value="${method}">${method}</option>`).join("")}
+          </select>
+        </label>
+        ${renderPaymentTerminalField({ inputId: "sale-payment-terminal-id", inputName: "terminalKey" })}
+        <label class="field">
+          <span>Cliente para fiado</span>
+          <select name="clientId">
+            ${state.clients.length
+              ? state.clients.map((client) => `<option value="${client.id}">${client.name}</option>`).join("")
+              : '<option value="">Cadastre um cliente antes de vender fiado</option>'}
+          </select>
+        </label>
+        <div class="notice compact">Pix, Debito e Credito enviam a cobranca para a maquininha selecionada. Dinheiro finaliza direto no caixa. Fiado exige cliente com limite disponivel.</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">Confirmar pagamento</button>
+      </div>
+    </form>
   `;
 }
 
@@ -5677,6 +5734,7 @@ function bindModalForms() {
   document.querySelector("#movement-form")?.addEventListener("submit", saveMovement);
   document.querySelector("#external-payment-form")?.addEventListener("submit", saveExternalPayment);
   document.querySelector("#order-form")?.addEventListener("submit", saveOrder);
+  document.querySelector("#sale-payment-form")?.addEventListener("submit", confirmSalePayment);
   bindExternalPaymentTotal();
   bindUserPermissionControls();
 }
