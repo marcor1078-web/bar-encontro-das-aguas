@@ -4929,13 +4929,21 @@ function renderSalePaymentModal() {
           ${tableCheckout ? `<div class="summary-row"><span>Servico</span><strong>${money(serviceFee)}</strong></div>` : ""}
           <div class="summary-row total"><span>Total</span><strong>${money(total)}</strong></div>
         </div>
-        <label class="field">
+        <div class="field">
           <span>Forma de pagamento obrigatoria</span>
-          <select name="payment" required>
-            <option value="">Selecione a forma de pagamento</option>
-            ${paymentMethods.map((method) => `<option value="${method}">${method}</option>`).join("")}
-          </select>
-        </label>
+          <div class="payment-choice-grid">
+            ${paymentMethods
+              .map(
+                (method, index) => `
+                  <label class="payment-choice">
+                    <input type="radio" name="payment" value="${method}" ${index === 0 ? "required" : ""} />
+                    <span>${method}</span>
+                  </label>
+                `,
+              )
+              .join("")}
+          </div>
+        </div>
         ${renderPaymentTerminalField({ inputId: "sale-payment-terminal-id", inputName: "terminalKey" })}
         <label class="field">
           <span>Cliente para fiado</span>
