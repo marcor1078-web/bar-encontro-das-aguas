@@ -1408,6 +1408,23 @@ function productCodeDisplay(product) {
   `;
 }
 
+function productSearchOptionValue(product) {
+  const code = product.productCode || productBarcodeCodes(product)[0] || "";
+  return [product.name, code].filter(Boolean).join(" | ");
+}
+
+function findProductBySearchValue(value) {
+  const term = String(value || "").trim().toLowerCase();
+  if (!term) return null;
+  return (
+    state.products.find((product) => product.id === value) ||
+    state.products.find((product) => productSearchOptionValue(product).toLowerCase() === term) ||
+    state.products.find((product) => product.productCode?.toLowerCase() === term || productBarcodeCodes(product).some((code) => code.toLowerCase() === term)) ||
+    state.products.find((product) => product.name.toLowerCase() === term) ||
+    null
+  );
+}
+
 function productAvailableStock(product) {
   if (!product?.recipe?.length) return Number(product?.stock || 0);
   const availableByIngredient = product.recipe.map((recipeItem) => {
@@ -5475,7 +5492,7 @@ function renderExternalPaymentModal() {
     .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"))
     .map(
       (product) =>
-        `<option value="${product.id}">${escapeHtml(product.name)} - ${money(product.price)} - estoque ${escapeHtml(productStockText(product))}</option>`,
+        `<option value="${escapeHtml(productSearchOptionValue(product))}">${escapeHtml(product.category)} - ${money(product.price)} - estoque ${escapeHtml(productStockText(product))}</option>`,
     )
     .join("");
   const terminalOptions = [
@@ -5523,16 +5540,14 @@ function renderExternalPaymentModal() {
           </label>
         </div>
         <h3 class="compact-title">Produtos vendidos</h3>
+        <datalist id="external-product-options">${productOptions}</datalist>
         <div class="external-products-grid">
           ${Array.from({ length: 8 }, (_, index) => {
             const number = index + 1;
             return `
               <label class="field">
                 <span>Produto ${number}</span>
-                <select name="externalProductId-${number}">
-                  <option value="">Selecionar produto</option>
-                  ${productOptions}
-                </select>
+                <input name="externalProductSearch-${number}" list="external-product-options" placeholder="Digite nome ou codigo" autocomplete="off" />
               </label>
               <label class="field">
                 <span>Qtd.</span>
@@ -6499,11 +6514,11 @@ function externalPaymentItemsFromForm(form) {
   const grouped = new Map();
 
   for (let index = 1; index <= 8; index += 1) {
-    const productId = form.get(`externalProductId-${index}`);
-    if (!productId) continue;
+    const productSearch = String(form.get(`externalProductSearch-${index}`) || "").trim();
+    if (!productSearch) continue;
 
-    const product = state.products.find((entry) => entry.id === productId);
-    if (!product) return { error: "Produto selecionado nao encontrado." };
+    const product = findProductBySearchValue(productSearch);
+    if (!product) return { error: `Produto nao encontrado: ${productSearch}. Escolha uma opcao da lista.` };
 
     const quantityValue = form.get(`externalQty-${index}`);
     const quantity = quantityValue ? Number(quantityValue) : 1;
