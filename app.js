@@ -488,6 +488,7 @@ let session = null;
 let currentView = "dashboard";
 let cart = [];
 let tableCheckout = null;
+let selectedTableId = null;
 let lastSaleForTicketsId = null;
 let currentModal = null;
 let searchTerm = "";
@@ -2078,6 +2079,7 @@ function bindViewEvents() {
         id: button.dataset.id || null,
         movementType: button.dataset.movementType || null,
       };
+      if (button.dataset.openModal === "table" && button.dataset.id) selectedTableId = button.dataset.id;
       renderApp();
       if (button.dataset.openModal === "externalPayment" && !mercadoPagoPointStatus.checked) {
         loadMercadoPagoPointStatus(true).then(() => renderApp());
@@ -2091,6 +2093,10 @@ function bindViewEvents() {
 
   document.querySelectorAll("[data-add-table-product]").forEach((button) => {
     button.addEventListener("click", () => addProductToTable(button.dataset.tableId, button.dataset.addTableProduct));
+  });
+
+  document.querySelectorAll("[data-select-table]").forEach((button) => {
+    button.addEventListener("click", () => selectTable(button.dataset.selectTable));
   });
 
   document.querySelectorAll("[data-category]").forEach((button) => {
@@ -2196,6 +2202,22 @@ function bindViewEvents() {
 
   document.querySelectorAll("[data-close-table]").forEach((button) => {
     button.addEventListener("click", () => closeTable(button.dataset.closeTable));
+  });
+
+  document.querySelectorAll("[data-table-item-minus]").forEach((button) => {
+    button.addEventListener("click", () =>
+      changeTableItemQty(button.dataset.tableId, button.dataset.tableItemMinus, -1),
+    );
+  });
+
+  document.querySelectorAll("[data-table-item-plus]").forEach((button) => {
+    button.addEventListener("click", () =>
+      changeTableItemQty(button.dataset.tableId, button.dataset.tableItemPlus, 1),
+    );
+  });
+
+  document.querySelectorAll("[data-remove-table-item]").forEach((button) => {
+    button.addEventListener("click", () => removeTableItem(button.dataset.tableId, button.dataset.removeTableItem));
   });
 
   document.querySelectorAll("[data-table-customer]").forEach((input) => {
@@ -2461,9 +2483,49 @@ function filteredProducts() {
   });
 }
 
+function selectedTableForView() {
+  const selected = state.tables.find((table) => table.id === selectedTableId);
+  if (selected) return selected;
+  return state.tables.find((table) => table.status !== "Livre") || null;
+}
+
+function selectTable(tableId) {
+  selectedTableId = tableId || null;
+  currentModal = null;
+  renderApp();
+}
+
+function renderTableItems(table) {
+  if (!table?.items?.length) return '<div class="cart-list"><div class="empty">Mesa sem itens.</div></div>';
+
+  return `
+    <div class="cart-list compact-cart">
+      ${table.items
+        .map(
+          (item) => `
+            <div class="cart-item table-order-item">
+              <div>
+                <strong>${escapeHtml(item.name)}</strong>
+                <span>${qty(item.qty)} x ${money(item.price)} = ${money(item.qty * item.price)}</span>
+              </div>
+              <div class="table-item-actions">
+                <div class="qty-stepper">
+                  <button type="button" data-table-id="${table.id}" data-table-item-minus="${item.productId}">-</button>
+                  <output>${qty(item.qty)}</output>
+                  <button type="button" data-table-id="${table.id}" data-table-item-plus="${item.productId}">+</button>
+                </div>
+                <button class="btn compact danger" type="button" data-table-id="${table.id}" data-remove-table-item="${item.productId}">Remover</button>
+              </div>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function renderTables() {
-  const selectedTableId = currentModal?.type === "table" ? currentModal.id : state.tables.find((table) => table.status !== "Livre")?.id;
-  const selectedTable = state.tables.find((table) => table.id === selectedTableId) || state.tables[0];
+  const selectedTable = selectedTableForView();
   const tableTotal = tableTotalValue(selectedTable);
 
   return `
@@ -2473,7 +2535,7 @@ function renderTables() {
         <p>Abra mesa, adicione itens, acompanhe status e feche a conta. ${isOnlineSession() ? "Salvando no Supabase." : "Modo local."}</p>
       </div>
       <div class="toolbar">
-        <button class="btn secondary" type="button" data-clear-table="${selectedTable?.id || ""}">Liberar selecionada</button>
+        <button class="btn secondary" type="button" data-clear-table="${selectedTable?.id || ""}" ${selectedTable ? "" : "disabled"}>Liberar selecionada</button>
       </div>
     </div>
     <div class="tables-layout">
@@ -2482,7 +2544,7 @@ function renderTables() {
           ${state.tables
             .map(
               (table) => `
-                <button class="table-tile ${table.status.toLowerCase()} ${table.id === selectedTable?.id ? "active" : ""}" type="button" data-open-modal="table" data-id="${table.id}">
+                <button class="table-tile ${table.status.toLowerCase()} ${table.id === selectedTable?.id ? "active" : ""}" type="button" data-select-table="${table.id}">
                   <strong>${table.name}</strong>
                   ${table.customerName ? `<em>${escapeHtml(table.customerName)}</em>` : ""}
                   <span>${table.status}</span>
@@ -2495,32 +2557,24 @@ function renderTables() {
       </section>
       <aside class="card">
         <div class="card-head">
-          <h2 class="card-title">${selectedTable?.name || "Mesa"}</h2>
-          <span class="status ${selectedTable?.status === "Livre" ? "green" : "amber"}">${selectedTable?.status || "Livre"}</span>
+          <h2 class="card-title">${selectedTable?.name || "Selecione uma mesa"}</h2>
+          <span class="status ${selectedTable?.status === "Livre" ? "green" : selectedTable ? "amber" : "blue"}">${selectedTable?.status || "Aguardando"}</span>
         </div>
-        ${selectedTable?.customerName ? `<div class="table-customer">Cliente: <strong>${escapeHtml(selectedTable.customerName)}</strong></div>` : ""}
-        <div class="cart-list">
-          ${
-            selectedTable?.items?.length
-              ? selectedTable.items
-                  .map(
-                    (item) => `
-                      <div class="cart-item">
-                        <div><strong>${item.name}</strong><span>${item.qty} x ${money(item.price)}</span></div>
-                        <strong>${money(item.qty * item.price)}</strong>
-                      </div>
-                    `,
-                  )
-                  .join("")
-              : '<div class="empty">Mesa sem itens.</div>'
-          }
-        </div>
-        <div class="cart-total">
-          <div class="total-row"><span>Subtotal</span><strong>${money(tableTotal)}</strong></div>
-          <div class="total-row"><span>Servico ${state.settings.serviceFee || 0}%</span><strong>${money(tableServiceFee(tableTotal))}</strong></div>
-          <div class="total-row"><span>Total</span><strong>${money(tableTotal + tableServiceFee(tableTotal))}</strong></div>
-          <button class="btn primary" type="button" data-close-table="${selectedTable?.id || ""}" ${selectedTable?.items?.length ? "" : "disabled"}>Enviar para balcao</button>
-        </div>
+        ${
+          selectedTable
+            ? `
+              ${selectedTable.customerName ? `<div class="table-customer">Cliente: <strong>${escapeHtml(selectedTable.customerName)}</strong></div>` : ""}
+              ${renderTableItems(selectedTable)}
+              <div class="cart-total">
+                <div class="total-row"><span>Subtotal</span><strong>${money(tableTotal)}</strong></div>
+                <div class="total-row"><span>Servico ${state.settings.serviceFee || 0}%</span><strong>${money(tableServiceFee(tableTotal))}</strong></div>
+                <div class="total-row"><span>Total</span><strong>${money(tableTotal + tableServiceFee(tableTotal))}</strong></div>
+                <button class="btn secondary" type="button" data-open-modal="table" data-id="${selectedTable.id}">Editar pedido</button>
+                <button class="btn primary" type="button" data-close-table="${selectedTable.id}" ${selectedTable.items?.length ? "" : "disabled"}>Enviar para balcao</button>
+              </div>
+            `
+            : '<div class="empty">Escolha uma mesa no mapa para abrir, editar ou enviar para o balcao.</div>'
+        }
       </aside>
     </div>
   `;
@@ -3177,6 +3231,7 @@ async function saveTableCustomerName(tableId, customerName) {
 }
 
 async function openTable(tableId) {
+  selectedTableId = tableId;
   if (isOnlineSession()) {
     const table = state.tables.find((entry) => entry.id === tableId);
     if (!table || table.status !== "Livre") return;
@@ -3210,6 +3265,7 @@ async function addProductToTable(tableId, productId) {
   const table = state.tables.find((item) => item.id === tableId);
   const product = state.products.find((item) => item.id === productId);
   if (!table || !product) return;
+  selectedTableId = tableId;
 
   const item = {
     productId: product.id,
@@ -3270,9 +3326,88 @@ async function addProductToTable(tableId, productId) {
   renderApp();
 }
 
+async function saveTableItems(tableId, nextItems, actionLabel) {
+  const table = state.tables.find((entry) => entry.id === tableId);
+  if (!table) return;
+  const status = table.status === "Livre" ? "Aberta" : table.status;
+  const openedAt = table.openedAt || new Date().toISOString();
+  selectedTableId = tableId;
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient
+      .from("bar_tables")
+      .update({
+        status,
+        opened_at: openedAt,
+        server_id: table.serverId || session.id,
+        items: nextItems,
+      })
+      .eq("id", tableId);
+
+    if (error) {
+      notify(`Erro ao editar pedido da mesa: ${error.message}`);
+      return;
+    }
+
+    await loadOnlineTableData();
+    logAudit("Pedido da mesa editado online", `${table.name}: ${actionLabel}.`);
+    notify("Pedido da mesa atualizado.");
+    renderApp();
+    return;
+  }
+
+  state.tables = state.tables.map((entry) =>
+    entry.id === tableId
+      ? {
+          ...entry,
+          status,
+          openedAt,
+          serverId: entry.serverId || session.id,
+          items: nextItems,
+        }
+      : entry,
+  );
+  logAudit("Pedido da mesa editado", `${table.name}: ${actionLabel}.`);
+  saveState();
+  notify("Pedido da mesa atualizado.");
+  renderApp();
+}
+
+async function changeTableItemQty(tableId, productId, change) {
+  const table = state.tables.find((entry) => entry.id === tableId);
+  if (!table) return;
+  const nextItems = structuredClone(table.items || []);
+  const item = nextItems.find((entry) => entry.productId === productId);
+  if (!item) return;
+
+  const nextQty = Number(item.qty || 0) + change;
+  if (nextQty <= 0) {
+    await removeTableItem(tableId, productId);
+    return;
+  }
+
+  item.qty = nextQty;
+  const check = canFulfillCart(nextItems);
+  if (!check.ok) {
+    notify(check.message);
+    return;
+  }
+
+  await saveTableItems(tableId, nextItems, `${item.name} ajustado para ${qty(nextQty)}.`);
+}
+
+async function removeTableItem(tableId, productId) {
+  const table = state.tables.find((entry) => entry.id === tableId);
+  if (!table) return;
+  const removed = (table.items || []).find((entry) => entry.productId === productId);
+  const nextItems = (table.items || []).filter((entry) => entry.productId !== productId);
+  await saveTableItems(tableId, nextItems, `${removed?.name || "Item"} removido.`);
+}
+
 async function closeTable(tableId) {
   const table = state.tables.find((entry) => entry.id === tableId);
   if (!table || !table.items.length) return;
+  selectedTableId = tableId;
 
   const subtotal = tableTotalValue(table);
   const saleItems = table.items.map((item) => ({ ...item }));
@@ -3318,10 +3453,11 @@ async function closeTable(tableId) {
 }
 
 async function clearTable(tableId) {
+  selectedTableId = tableId;
   if (isOnlineSession()) {
     const { error } = await supabaseClient
       .from("bar_tables")
-      .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, items: [] })
+      .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, customer_name: "", items: [] })
       .eq("id", tableId);
 
     if (error) {
@@ -3377,6 +3513,7 @@ async function transferTable(tableId) {
     }
 
     currentModal = { type: "table", id: targetId };
+    selectedTableId = targetId;
     await loadOnlineTableData();
     logAudit("Mesa transferida online", `${source.name} para ${target?.name || targetId}.`);
     renderApp();
@@ -3400,6 +3537,7 @@ async function transferTable(tableId) {
     return table;
   });
   currentModal = { type: "table", id: targetId };
+  selectedTableId = targetId;
   logAudit("Mesa transferida", `${source.name} para ${state.tables.find((table) => table.id === targetId)?.name}.`);
   saveState();
   renderApp();
@@ -5681,22 +5819,7 @@ function renderTableModal() {
           </section>
           <section>
             <h3 class="compact-title">Comanda aberta</h3>
-            <div class="cart-list compact-cart">
-              ${
-                table.items.length
-                  ? table.items
-                      .map(
-                        (item) => `
-                          <div class="cart-item">
-                            <div><strong>${item.name}</strong><span>${item.qty} x ${money(item.price)}</span></div>
-                            <strong>${money(item.qty * item.price)}</strong>
-                          </div>
-                        `,
-                      )
-                      .join("")
-                  : '<div class="empty">Sem itens.</div>'
-              }
-            </div>
+            ${renderTableItems(table)}
           </section>
         </div>
       </div>

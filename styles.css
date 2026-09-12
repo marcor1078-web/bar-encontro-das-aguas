@@ -1599,6 +1599,18 @@ body[data-theme="dark"] .table-tile.fechamento em {
   padding: 0;
 }
 
+.table-order-item {
+  align-items: center;
+}
+
+.table-item-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .mobile-product-list {
   display: grid;
   gap: 10px;
