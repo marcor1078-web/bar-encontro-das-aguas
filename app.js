@@ -2076,6 +2076,7 @@ function bindViewEvents() {
       currentModal = {
         type: button.dataset.openModal,
         id: button.dataset.id || null,
+        movementType: button.dataset.movementType || null,
       };
       renderApp();
       if (button.dataset.openModal === "externalPayment" && !mercadoPagoPointStatus.checked) {
@@ -3561,7 +3562,10 @@ function renderCash() {
         <h2>Caixa</h2>
         <p>Abertura, movimentos e fechamento. ${isOnlineSession() ? "Salvando no Supabase." : "Modo local."}</p>
       </div>
-      <button class="btn secondary" type="button" data-open-modal="externalPayment">Registrar pagamento externo</button>
+      <div class="toolbar">
+        <button class="btn secondary" type="button" data-open-modal="externalPayment">Registrar pagamento externo</button>
+        <button class="btn danger" type="button" data-open-modal="movement" data-movement-type="despesa" ${openCash ? "" : "disabled"}>Saida para despesa</button>
+      </div>
     </div>
 
     <div class="grid stats">
@@ -3672,7 +3676,10 @@ function renderCash() {
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
           <h2 class="card-title">Sangrias, suprimentos e despesas</h2>
-          <button class="btn compact secondary" type="button" data-open-modal="movement">Adicionar</button>
+          <div class="toolbar">
+            <button class="btn compact danger" type="button" data-open-modal="movement" data-movement-type="despesa" ${openCash ? "" : "disabled"}>Despesa do dia</button>
+            <button class="btn compact secondary" type="button" data-open-modal="movement" ${openCash ? "" : "disabled"}>Adicionar</button>
+          </div>
       </div>
       ${
         movements.length
@@ -5619,29 +5626,33 @@ function renderUserModal() {
 }
 
 function renderMovementModal() {
+  const selectedType = currentModal?.movementType || "suprimento";
+  const fixedExpense = selectedType === "despesa";
   return `
     <form id="movement-form">
       <div class="modal-head">
-        <h2>Movimentacao de caixa</h2>
+        <h2>${fixedExpense ? "Saida para despesa do dia" : "Movimentacao de caixa"}</h2>
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body">
+        ${fixedExpense ? '<div class="notice compact">Essa despesa sera abatida do dinheiro esperado no caixa aberto.</div>' : ""}
         <div class="form-grid">
           <label class="field">
             <span>Tipo</span>
-            <select name="type">
-              <option value="suprimento">Suprimento</option>
-              <option value="sangria">Sangria</option>
-              <option value="despesa">Despesa</option>
+            <select name="type" ${fixedExpense ? "disabled" : ""}>
+              <option value="suprimento" ${selectedType === "suprimento" ? "selected" : ""}>Suprimento</option>
+              <option value="sangria" ${selectedType === "sangria" ? "selected" : ""}>Sangria</option>
+              <option value="despesa" ${selectedType === "despesa" ? "selected" : ""}>Despesa</option>
             </select>
+            ${fixedExpense ? '<input type="hidden" name="type" value="despesa" />' : ""}
           </label>
           <label class="field">
             <span>Valor</span>
             <input name="amount" type="number" min="0.01" step="0.01" required />
           </label>
           <label class="field full">
-            <span>Motivo</span>
-            <input name="reason" required />
+            <span>${fixedExpense ? "Descricao da despesa" : "Motivo"}</span>
+            <input name="reason" required placeholder="${fixedExpense ? "Ex.: compra de gelo, entrega, limpeza" : ""}" />
           </label>
         </div>
       </div>
@@ -6650,6 +6661,12 @@ async function saveMovement(event) {
   const type = form.get("type");
   const amount = Number(form.get("amount"));
   const reason = form.get("reason").trim();
+  const openCash = getOpenCash();
+
+  if (!openCash) {
+    notify("Abra o caixa antes de registrar saida, despesa ou suprimento.");
+    return;
+  }
 
   if (isOnlineSession()) {
     const { error } = await supabaseClient.from("cash_movements").insert({
