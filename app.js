@@ -2143,6 +2143,9 @@ function bindViewEvents() {
   document.querySelector("[data-export-backup]")?.addEventListener("click", exportBackup);
   document.querySelector("[data-export-sales]")?.addEventListener("click", exportSalesCsv);
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
+  document.querySelectorAll("[data-print-daily-sales-report]").forEach((button) => {
+    button.addEventListener("click", downloadDailySalesReportPdf);
+  });
   document.querySelector("[data-print-cash-report]")?.addEventListener("click", () => printReport("cash"));
   document.querySelector("[data-print-stock-report]")?.addEventListener("click", () => printReport("stock"));
   document.querySelector("[data-print-inventory-report]")?.addEventListener("click", downloadInventoryPdf);
@@ -2168,6 +2171,9 @@ function bindViewEvents() {
   });
 
   document.querySelector("[data-clear-sales]")?.addEventListener("click", clearSales);
+  document.querySelectorAll("[data-zero-today-sales]").forEach((button) => {
+    button.addEventListener("click", zeroTodaySales);
+  });
   document.querySelectorAll("[data-close-cash-sales-report]").forEach((button) => {
     button.addEventListener("click", () => closeCashAndDownloadSalesReport(button.dataset.closeCashSalesReport === "form"));
   });
@@ -2235,7 +2241,7 @@ function bindViewEvents() {
 function renderDashboard() {
   const today = salesForToday();
   const receivedToday = today.filter(isReceivedSale);
-  const fiadoToday = today.filter((sale) => sale.status !== "Cancelada" && sale.payment === "Fiado");
+  const fiadoToday = today.filter((sale) => isFinancialSale(sale) && sale.payment === "Fiado");
   const total = receivedToday.reduce((sum, sale) => sum + sale.total, 0);
   const profit = receivedToday.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
   const fiadoTotal = fiadoToday.reduce((sum, sale) => sum + sale.total, 0);
@@ -3418,7 +3424,7 @@ function combineItems(baseItems, extraItems) {
 
 function renderSales() {
   const sales = state.sales.slice().reverse();
-  const activeSales = sales.filter((sale) => sale.status !== "Cancelada");
+  const activeSales = sales.filter(isFinancialSale);
   const receivedSales = activeSales.filter(isReceivedSale);
   const fiadoSales = activeSales.filter((sale) => sale.payment === "Fiado");
   const total = receivedSales.reduce((sum, sale) => sum + sale.total, 0);
@@ -3426,12 +3432,23 @@ function renderSales() {
   const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + sale.total, 0);
   const openCash = getOpenCash();
   const weeklyTopProducts = topProductsForPeriod(7, 10);
+  const todaySales = salesForToday({ includeInactive: true }).slice().reverse();
+  const todayFinancialSales = todaySales.filter(isFinancialSale);
+  const todayReceivedSales = todayFinancialSales.filter(isReceivedSale);
+  const todayFiadoSales = todayFinancialSales.filter((sale) => sale.payment === "Fiado");
+  const todayZeroedSales = todaySales.filter(isZeroedSale);
+  const todayTotal = todayReceivedSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+  const todayProfit = todayReceivedSales.reduce((sum, sale) => sum + Number(sale.total || 0) - Number(sale.cost || 0), 0);
 
   return `
     <div class="section-title">
       <div>
         <h2>Vendas</h2>
         <p>${isOnlineSession() ? "Histórico e novas vendas salvando no Supabase." : "Histórico em modo local."}</p>
+      </div>
+      <div class="toolbar">
+        <button class="btn secondary" type="button" data-print-daily-sales-report>${icon("print")} Relatorio diario</button>
+        <button class="btn danger" type="button" data-zero-today-sales ${todayReceivedSales.length ? "" : "disabled"}>Zerar vendas do dia</button>
       </div>
     </div>
     <div class="grid stats">
@@ -3443,6 +3460,25 @@ function renderSales() {
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
         <div>
+          <h2 class="card-title">Resumo diario</h2>
+          <p>Vendas de hoje, sem contar fiado, canceladas ou zeradas.</p>
+        </div>
+        <div class="toolbar">
+          <button class="btn compact secondary" type="button" data-print-daily-sales-report>${icon("print")} PDF diario</button>
+          <button class="btn compact danger" type="button" data-zero-today-sales ${todayReceivedSales.length ? "" : "disabled"}>Zerar dia</button>
+        </div>
+      </div>
+      <div class="summary-list">
+        <div class="summary-row total"><span>Recebido hoje</span><strong>${money(todayTotal)}</strong></div>
+        <div class="summary-row"><span>Lucro estimado hoje</span><strong>${money(todayProfit)}</strong></div>
+        <div class="summary-row"><span>Vendas recebidas</span><strong>${todayReceivedSales.length}</strong></div>
+        <div class="summary-row"><span>Fiado hoje</span><strong>${todayFiadoSales.length}</strong></div>
+        <div class="summary-row"><span>Vendas zeradas</span><strong>${todayZeroedSales.length}</strong></div>
+      </div>
+    </section>
+    <section class="card" style="margin-top: 16px;">
+      <div class="card-head">
+        <div>
           <h2 class="card-title">Top 10 produtos da semana</h2>
           <p>Mais vendidos nos ultimos 7 dias, incluindo pagamentos externos com produtos.</p>
         </div>
@@ -3451,7 +3487,13 @@ function renderSales() {
     </section>
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
-        <h2 class="card-title">Historico de vendas</h2>
+        <h2 class="card-title">Historico do dia</h2>
+      </div>
+      ${salesTable(todaySales)}
+    </section>
+    <section class="card" style="margin-top: 16px;">
+      <div class="card-head">
+        <h2 class="card-title">Historico completo de vendas</h2>
         <div class="toolbar">
           <button class="btn compact secondary" type="button" data-print-report>${icon("print")} Gerar relatorio</button>
           <button class="btn compact secondary" type="button" data-open-modal="externalPayment">Registrar pagamento externo</button>
@@ -3460,7 +3502,7 @@ function renderSales() {
               ? `<button class="btn compact secondary" type="button" data-close-cash-sales-report="auto">${icon("print")} Fechar caixa + relatorio</button>`
               : ""
           }
-          <button class="btn compact danger" type="button" data-clear-sales>Limpar vendas</button>
+          <button class="btn compact danger" type="button" data-zero-today-sales ${todayReceivedSales.length ? "" : "disabled"}>Zerar vendas do dia</button>
         </div>
       </div>
       ${salesTable(sales)}
@@ -3496,14 +3538,14 @@ function salesTable(sales) {
                   <td><span class="status blue">${sale.payment}</span></td>
                   <td><span class="status ${saleStatusClass(sale)}">${sale.status || "Concluida"}</span></td>
                   <td>${userName(sale.cashierId)}</td>
-                  <td>${money(sale.total)}</td>
-                  <td>${money(sale.total - sale.cost)}</td>
+                  <td>${money(saleDisplayTotal(sale))}</td>
+                  <td>${money(saleDisplayProfit(sale))}</td>
                   <td>
                     <div class="toolbar">
                       <button class="btn compact secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
                       ${(sale.items || []).length ? `<button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>` : ""}
                       ${
-                        sale.status === "Cancelada"
+                        !isFinancialSale(sale)
                           ? ""
                           : `<button class="btn compact danger" type="button" data-cancel-sale="${sale.id}">Cancelar</button>`
                       }
@@ -3545,6 +3587,44 @@ async function clearSales() {
   logAudit("Vendas limpas", `${cleared} venda(s) removida(s) do historico.`);
   saveState();
   notify("Historico de vendas limpo.");
+  renderApp();
+}
+
+async function zeroTodaySales() {
+  const todayReceivedSales = salesForToday({ includeInactive: true }).filter(isReceivedSale);
+  if (!todayReceivedSales.length) {
+    notify("Nao ha vendas recebidas de hoje para zerar.");
+    return;
+  }
+
+  if (
+    !confirm(
+      `Zerar o valor de ${todayReceivedSales.length} venda(s) recebida(s) de hoje? Os produtos vendidos continuarao no historico.`,
+    )
+  ) {
+    return;
+  }
+
+  const saleIds = todayReceivedSales.map((sale) => sale.id);
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient.from("sales").update({ status: "Zerada" }).in("id", saleIds);
+    if (error) {
+      notify(`Erro ao zerar vendas online: ${error.message}`);
+      return;
+    }
+
+    await loadOnlineSalesData();
+    logAudit("Vendas do dia zeradas online", `${todayReceivedSales.length} venda(s) mantida(s) no historico.`);
+    notify("Vendas recebidas de hoje foram zeradas, sem apagar produtos do historico.");
+    renderApp();
+    return;
+  }
+
+  state.sales = state.sales.map((sale) => (saleIds.includes(sale.id) ? { ...sale, status: "Zerada" } : sale));
+  logAudit("Vendas do dia zeradas", `${todayReceivedSales.length} venda(s) mantida(s) no historico.`);
+  saveState();
+  notify("Vendas recebidas de hoje foram zeradas, sem apagar produtos do historico.");
   renderApp();
 }
 
@@ -3782,7 +3862,7 @@ function salesForCashPeriod(cash) {
   const end = cash.closedAt ? new Date(cash.closedAt).getTime() : Date.now();
   return state.sales.filter((sale) => {
     const date = new Date(sale.date).getTime();
-    return sale.status !== "Cancelada" && date >= start && date <= end;
+    return isFinancialSale(sale) && date >= start && date <= end;
   });
 }
 
@@ -3800,8 +3880,24 @@ function isExternalPaymentSale(sale) {
   return sale?.status === "Pagamento externo";
 }
 
+function isZeroedSale(sale) {
+  return sale?.status === "Zerada";
+}
+
+function isFinancialSale(sale) {
+  return sale?.status !== "Cancelada" && !isZeroedSale(sale);
+}
+
 function isReceivedSale(sale) {
-  return sale?.status !== "Cancelada" && sale?.payment !== "Fiado";
+  return isFinancialSale(sale) && sale?.payment !== "Fiado";
+}
+
+function saleDisplayTotal(sale) {
+  return isZeroedSale(sale) ? 0 : Number(sale?.total || 0);
+}
+
+function saleDisplayProfit(sale) {
+  return isZeroedSale(sale) ? 0 : Number(sale?.total || 0) - Number(sale?.cost || 0);
 }
 
 function saleItemsLabel(sale) {
@@ -3824,6 +3920,7 @@ function saleItemsSummary(sale) {
 
 function saleStatusClass(sale) {
   if (sale.status === "Cancelada") return "red";
+  if (isZeroedSale(sale)) return "amber";
   if (isExternalPaymentSale(sale)) return "blue";
   return "green";
 }
@@ -3833,7 +3930,7 @@ function topProductsForPeriod(days = 7, limit = 10) {
   const totals = new Map();
 
   state.sales.forEach((sale) => {
-    if (sale.status === "Cancelada" || new Date(sale.date).getTime() < start) return;
+    if (!isFinancialSale(sale) || new Date(sale.date).getTime() < start) return;
 
     (sale.items || []).forEach((item) => {
       const product = state.products.find((entry) => entry.id === item.productId);
@@ -3922,7 +4019,7 @@ function downloadSalesReportPdf(cash) {
 
   const sales = salesForCashPeriod(cash);
   const activeSales = sales.filter(isReceivedSale);
-  const fiadoSales = sales.filter((sale) => sale.status !== "Cancelada" && sale.payment === "Fiado");
+  const fiadoSales = sales.filter((sale) => isFinancialSale(sale) && sale.payment === "Fiado");
   const total = activeSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
   const profit = activeSales.reduce((sum, sale) => sum + Number(sale.total || 0) - Number(sale.cost || 0), 0);
   const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
@@ -4016,6 +4113,149 @@ function downloadSalesReportPdf(cash) {
   logAudit("Relatorio de vendas baixado", `Caixa fechado em ${dateTime(cash.closedAt || new Date().toISOString())}.`);
   saveState();
   notify("Caixa fechado e relatorio de vendas baixado.");
+}
+
+function dailySales() {
+  return salesForToday({ includeInactive: true }).slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+}
+
+function topProductsFromSales(sales, limit = 10) {
+  const totals = new Map();
+  sales.forEach((sale) => {
+    if (sale.status === "Cancelada") return;
+    (sale.items || []).forEach((item) => {
+      const key = item.productId || item.name;
+      const current = totals.get(key) || { name: item.name, qty: 0, revenue: 0 };
+      current.qty += Number(item.qty || 0);
+      current.revenue += isZeroedSale(sale) ? 0 : Number(item.qty || 0) * Number(item.price || 0);
+      totals.set(key, current);
+    });
+  });
+  return [...totals.values()].sort((a, b) => b.qty - a.qty || b.revenue - a.revenue).slice(0, limit);
+}
+
+function downloadDailySalesReportPdf() {
+  const { jsPDF } = window.jspdf || {};
+  if (!jsPDF) {
+    notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
+    return;
+  }
+
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  if (typeof doc.autoTable !== "function") {
+    notify("Tabela do PDF ainda nao carregou. Atualize a pagina e tente novamente.");
+    return;
+  }
+
+  const sales = dailySales();
+  const financialSales = sales.filter(isFinancialSale);
+  const receivedSales = financialSales.filter(isReceivedSale);
+  const fiadoSales = financialSales.filter((sale) => sale.payment === "Fiado");
+  const zeroedSales = sales.filter(isZeroedSale);
+  const cancelledSales = sales.filter((sale) => sale.status === "Cancelada");
+  const total = receivedSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+  const profit = receivedSales.reduce((sum, sale) => sum + Number(sale.total || 0) - Number(sale.cost || 0), 0);
+  const paymentTotals = cashSalesPaymentTotals(receivedSales);
+  const topProducts = topProductsFromSales(sales);
+  const businessName = state.settings.barName || APP_DISPLAY_NAME;
+  const today = new Date().toLocaleDateString("pt-BR");
+  const generatedAt = dateTime(new Date().toISOString());
+
+  doc.setProperties({
+    title: `${businessName} - Relatorio diario de vendas`,
+    subject: "Relatorio diario de vendas",
+    author: session?.name || "Usuario",
+  });
+
+  doc.setFontSize(18);
+  doc.setTextColor(17, 24, 39);
+  doc.text(businessName, 40, 42);
+  doc.setFontSize(12);
+  doc.text(`Relatorio diario de vendas - ${today}`, 40, 62);
+  doc.setFontSize(8);
+  doc.setTextColor(75, 85, 99);
+  [
+    state.settings.cnpj ? `CNPJ: ${state.settings.cnpj}` : "",
+    state.settings.address || "",
+    `Gerado em ${generatedAt} por ${session?.name || "Usuario"}`,
+  ]
+    .filter(Boolean)
+    .forEach((line, index) => doc.text(line, 40, 80 + index * 12));
+
+  doc.autoTable({
+    body: [
+      ["Total recebido", money(total), "Lucro estimado", money(profit)],
+      ["Vendas recebidas", receivedSales.length, "Fiado no dia", fiadoSales.length],
+      ["Vendas zeradas", zeroedSales.length, "Canceladas", cancelledSales.length],
+    ],
+    startY: 126,
+    margin: { left: 40, right: 40 },
+    theme: "grid",
+    styles: { fontSize: 9, cellPadding: 5 },
+    columnStyles: {
+      0: { fontStyle: "bold", fillColor: [241, 245, 249] },
+      2: { fontStyle: "bold", fillColor: [241, 245, 249] },
+    },
+  });
+
+  doc.autoTable({
+    head: [["Forma de pagamento", "Total recebido"]],
+    body: cashPaymentMethods.map((method) => [method, money(paymentTotals[method] || 0)]),
+    startY: (doc.lastAutoTable?.finalY || 126) + 18,
+    margin: { left: 40, right: 520 },
+    theme: "grid",
+    styles: { fontSize: 8, cellPadding: 4 },
+    headStyles: { fillColor: [15, 118, 110], textColor: [255, 255, 255] },
+  });
+
+  doc.autoTable({
+    head: [["Produto", "Qtd.", "Valor vendido"]],
+    body: topProducts.length
+      ? topProducts.map((item) => [item.name, qty(item.qty), money(item.revenue)])
+      : [["Nenhum produto vendido hoje.", "", ""]],
+    startY: (doc.lastAutoTable?.finalY || 190) + 18,
+    margin: { left: 40, right: 520 },
+    theme: "grid",
+    styles: { fontSize: 8, cellPadding: 4 },
+    headStyles: { fillColor: [15, 118, 110], textColor: [255, 255, 255] },
+  });
+
+  doc.autoTable({
+    head: [["Data", "Produtos", "Pagamento", "Status", "Operador", "Total", "Lucro"]],
+    body: sales.length
+      ? sales.map((sale) => [
+          dateTime(sale.date),
+          saleItemsDescription(sale),
+          sale.payment,
+          sale.status || "Concluida",
+          userName(sale.cashierId),
+          money(saleDisplayTotal(sale)),
+          money(saleDisplayProfit(sale)),
+        ])
+      : [["Nenhuma venda registrada hoje.", "", "", "", "", "", ""]],
+    startY: (doc.lastAutoTable?.finalY || 248) + 24,
+    margin: { left: 40, right: 40 },
+    theme: "grid",
+    styles: { fontSize: 7, cellPadding: 3, overflow: "linebreak", valign: "middle" },
+    headStyles: { fillColor: [15, 118, 110], textColor: [255, 255, 255] },
+    alternateRowStyles: { fillColor: [248, 250, 252] },
+    columnStyles: {
+      1: { cellWidth: 280 },
+    },
+  });
+
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let page = 1; page <= pageCount; page += 1) {
+    doc.setPage(page);
+    doc.setFontSize(8);
+    doc.setTextColor(107, 114, 128);
+    doc.text(`Pagina ${page} de ${pageCount}`, doc.internal.pageSize.getWidth() - 88, doc.internal.pageSize.getHeight() - 24);
+  }
+
+  const date = new Date().toISOString().slice(0, 10);
+  doc.save(`vendas-diarias-${safeFileName(businessName)}-${date}.pdf`);
+  logAudit("Relatorio diario baixado", `Vendas do dia ${today}.`);
+  saveState();
 }
 
 async function bindCashForm() {
@@ -4526,7 +4766,7 @@ function renderClients() {
 
 function renderReports() {
   const sales = reportSales().slice().reverse();
-  const activeSales = sales.filter((sale) => sale.status !== "Cancelada");
+  const activeSales = sales.filter(isFinancialSale);
   const byPayment = paymentMethods.map((method) => ({
     method,
     total: activeSales.filter((sale) => sale.payment === method).reduce((sum, sale) => sum + sale.total, 0),
@@ -6441,8 +6681,8 @@ function saveCancelSale(event) {
     return;
   }
 
-  if (!sale || sale.status === "Cancelada") {
-    notify("Venda nao encontrada ou ja cancelada.");
+  if (!sale || !isFinancialSale(sale)) {
+    notify("Venda nao encontrada, ja cancelada ou ja zerada.");
     return;
   }
 
@@ -7129,7 +7369,7 @@ function reportPeriodLabel() {
 function categoryTotals(sales = state.sales) {
   const totals = {};
   sales.forEach((sale) => {
-    if (sale.status === "Cancelada") return;
+    if (!isFinancialSale(sale)) return;
     sale.items.forEach((item) => {
       const product = state.products.find((entry) => entry.id === item.productId);
       const category = product?.category || "Sem categoria";
@@ -7142,7 +7382,7 @@ function categoryTotals(sales = state.sales) {
 function productProfitability(sales = state.sales) {
   const totals = {};
   sales.forEach((sale) => {
-    if (sale.status === "Cancelada") return;
+    if (!isFinancialSale(sale)) return;
     sale.items.forEach((item) => {
       if (!totals[item.productId]) {
         totals[item.productId] = { name: item.name, qty: 0, revenue: 0, cost: 0, profit: 0, margin: 0 };
@@ -7161,7 +7401,7 @@ function productProfitability(sales = state.sales) {
 
 function operatorReport(sales = state.sales) {
   return state.users.map((user) => {
-    const userSales = sales.filter((sale) => sale.cashierId === user.id && sale.status !== "Cancelada");
+    const userSales = sales.filter((sale) => sale.cashierId === user.id && isFinancialSale(sale));
     return {
       name: user.name,
       sales: userSales.length,
@@ -7450,7 +7690,7 @@ function reportInventoryPrintMetrics() {
 }
 
 function reportMetrics() {
-  const activeSales = reportSales().filter((sale) => sale.status !== "Cancelada");
+  const activeSales = reportSales().filter(isFinancialSale);
   const receivedSales = activeSales.filter(isReceivedSale);
   const revenue = receivedSales.reduce((sum, sale) => sum + sale.total, 0);
   const profit = receivedSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
@@ -7810,8 +8050,8 @@ function reportSalesSection() {
             saleItemsDescription(sale),
             sale.payment,
             sale.status || "Concluida",
-            money(sale.total),
-            money(sale.total - sale.cost),
+            money(saleDisplayTotal(sale)),
+            money(saleDisplayProfit(sale)),
           ]),
       )}
     </section>
@@ -7861,16 +8101,17 @@ async function exportBackup() {
 
 function exportSalesCsv() {
   const rows = [
-    ["id", "data", "operador", "origem_itens", "pagamento", "total", "custo", "lucro"],
+    ["id", "data", "operador", "origem_itens", "pagamento", "status", "total", "custo", "lucro"],
     ...reportSales().map((sale) => [
       sale.id,
       sale.date,
       userName(sale.cashierId),
       saleItemsDescription(sale),
       sale.payment,
-      sale.total,
+      sale.status || "Concluida",
+      saleDisplayTotal(sale),
       sale.cost,
-      sale.total - sale.cost,
+      saleDisplayProfit(sale),
     ]),
   ];
   downloadFile("distribuidora-america-bj-vendas.csv", rows.map((row) => row.join(";")).join("\n"), "text/csv");
@@ -7908,12 +8149,12 @@ function getOpenCash() {
   return state.cashSessions.find((cash) => !cash.closedAt);
 }
 
-function salesForToday() {
+function salesForToday({ includeInactive = false } = {}) {
   const now = new Date();
   return state.sales.filter((sale) => {
     const date = new Date(sale.date);
     return (
-      sale.status !== "Cancelada" &&
+      (includeInactive || isFinancialSale(sale)) &&
       date.getFullYear() === now.getFullYear() &&
       date.getMonth() === now.getMonth() &&
       date.getDate() === now.getDate()
