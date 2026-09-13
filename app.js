@@ -133,6 +133,8 @@ const categoryMeta = {
 
 const paymentMethods = ["Pix", "Debito", "Credito", "Dinheiro", "Fiado"];
 const cashPaymentMethods = paymentMethods.filter((method) => method !== "Fiado");
+const checkoutPaymentMethods = [...paymentMethods, "Dividido"];
+const PAYMENT_DETAILS_PREFIX = "PAYMENT_DETAILS:";
 
 const defaultState = {
   users: [
@@ -835,6 +837,97 @@ function isPointPayment(payment) {
   return payment === "Pix" || payment === "Debito" || payment === "Credito";
 }
 
+function normalizePaymentMethod(method) {
+  if (method === "Cartao") return "Credito";
+  return String(method || "").trim();
+}
+
+function normalizePaymentBreakdown(breakdown = []) {
+  return (Array.isArray(breakdown) ? breakdown : [])
+    .map((part) => ({
+      method: normalizePaymentMethod(part.method),
+      amount: Number(part.amount || 0),
+    }))
+    .filter((part) => paymentMethods.includes(part.method) && part.amount > 0)
+    .map((part) => ({ ...part, amount: Number(part.amount.toFixed(2)) }));
+}
+
+function encodePaymentDetails({ payment = "", breakdown = [], cashReceived = 0, cashChange = 0 } = {}) {
+  const parts = normalizePaymentBreakdown(breakdown);
+  const shouldEncode = parts.length > 1 || payment === "Dividido" || Number(cashReceived || 0) > 0 || Number(cashChange || 0) > 0;
+  if (!shouldEncode) return normalizePaymentMethod(payment);
+  return `${PAYMENT_DETAILS_PREFIX}${JSON.stringify({
+    payment: payment || (parts.length > 1 ? "Dividido" : parts[0]?.method || ""),
+    breakdown: parts,
+    cashReceived: Number(cashReceived || 0),
+    cashChange: Number(cashChange || 0),
+  })}`;
+}
+
+function parsePaymentDetails(value) {
+  const text = String(value || "");
+  if (!text.startsWith(PAYMENT_DETAILS_PREFIX)) {
+    const payment = normalizePaymentMethod(text);
+    return {
+      payment,
+      paymentBreakdown: payment && payment !== "Dividido" ? [{ method: payment, amount: 0 }] : [],
+      cashReceived: 0,
+      cashChange: 0,
+    };
+  }
+
+  try {
+    const payload = JSON.parse(text.slice(PAYMENT_DETAILS_PREFIX.length));
+    const parts = normalizePaymentBreakdown(payload.breakdown);
+    return {
+      payment: normalizePaymentMethod(payload.payment) || (parts.length > 1 ? "Dividido" : parts[0]?.method || ""),
+      paymentBreakdown: parts,
+      cashReceived: Number(payload.cashReceived || 0),
+      cashChange: Number(payload.cashChange || 0),
+    };
+  } catch (error) {
+    return { payment: "Indefinido", paymentBreakdown: [], cashReceived: 0, cashChange: 0 };
+  }
+}
+
+function salePaymentParts(sale) {
+  const parts = normalizePaymentBreakdown(sale?.paymentBreakdown || []);
+  if (parts.length) return parts;
+  const method = normalizePaymentMethod(sale?.payment);
+  if (!method || method === "Dividido") return [];
+  return [{ method, amount: Number(sale?.total || 0) }];
+}
+
+function saleReceivedAmount(sale) {
+  if (!isFinancialSale(sale)) return 0;
+  return salePaymentParts(sale)
+    .filter((part) => part.method !== "Fiado")
+    .reduce((sum, part) => sum + Number(part.amount || 0), 0);
+}
+
+function saleFiadoAmount(sale) {
+  if (!isFinancialSale(sale)) return 0;
+  return salePaymentParts(sale)
+    .filter((part) => part.method === "Fiado")
+    .reduce((sum, part) => sum + Number(part.amount || 0), 0);
+}
+
+function saleReceivedProfit(sale) {
+  if (!isFinancialSale(sale)) return 0;
+  const total = Number(sale?.total || 0);
+  const received = saleReceivedAmount(sale);
+  if (!total || !received) return 0;
+  return received - Number(sale?.cost || 0) * (received / total);
+}
+
+function paymentDisplay(sale) {
+  const parts = salePaymentParts(sale);
+  if (parts.length > 1 || sale?.payment === "Dividido") {
+    return parts.map((part) => `${part.method} ${money(part.amount)}`).join(" + ");
+  }
+  return normalizePaymentMethod(sale?.payment) || "-";
+}
+
 function describeMercadoPagoError(payload) {
   const details = payload?.details || payload || {};
   const raw = details.errors || details.message || details.error || details.cause || details;
@@ -1194,6 +1287,30 @@ async function processPointPaymentBeforeSale({ amount, payment, description, ite
   if (pointPayment.skipped || !pointPayment.ok) {
     notify(pointPayment.message || "Nao foi possivel enviar a cobranca para a maquininha.");
     return { ok: false };
+  }
+
+  return { ok: true, terminal: selectedTerminal };
+}
+
+async function processPointPaymentsBeforeSale({ payment, paymentBreakdown = [], total = 0, terminalKey = "", items = [], description = "" }) {
+  const parts = normalizePaymentBreakdown(paymentBreakdown);
+  const pointParts = parts.length
+    ? parts.filter((part) => isPointPayment(part.method))
+    : isPointPayment(payment)
+      ? [{ method: payment, amount: Number(total || 0) }]
+      : [];
+  let selectedTerminal = null;
+
+  for (const part of pointParts) {
+    const result = await processPointPaymentBeforeSale({
+      amount: part.amount,
+      payment: part.method,
+      terminalKey,
+      items,
+      description: pointParts.length > 1 ? `${description} - ${part.method}` : description,
+    });
+    if (!result.ok) return { ok: false };
+    selectedTerminal = result.terminal || selectedTerminal;
   }
 
   return { ok: true, terminal: selectedTerminal };
@@ -1566,6 +1683,7 @@ async function loadOnlineClientsData() {
 }
 
 function mapSaleFromDb(row, items = []) {
+  const paymentDetails = parsePaymentDetails(row.payment);
   const saleItems = items
     .filter((item) => item.sale_id === row.id)
     .map((item) => ({
@@ -1582,7 +1700,10 @@ function mapSaleFromDb(row, items = []) {
     cashierId: row.cashier_id,
     clientId: row.client_id,
     tableId: row.table_id,
-    payment: row.payment,
+    payment: paymentDetails.payment,
+    paymentBreakdown: paymentDetails.paymentBreakdown,
+    cashReceived: paymentDetails.cashReceived,
+    cashChange: paymentDetails.cashChange,
     status: row.status || "Concluida",
     serviceFee: Number(row.service_fee || 0),
     cancelledAt: row.cancelled_at,
@@ -2263,10 +2384,10 @@ function bindViewEvents() {
 function renderDashboard() {
   const today = salesForToday();
   const receivedToday = today.filter(isReceivedSale);
-  const fiadoToday = today.filter((sale) => isFinancialSale(sale) && sale.payment === "Fiado");
-  const total = receivedToday.reduce((sum, sale) => sum + sale.total, 0);
-  const profit = receivedToday.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
-  const fiadoTotal = fiadoToday.reduce((sum, sale) => sum + sale.total, 0);
+  const fiadoToday = today.filter((sale) => saleFiadoAmount(sale) > 0);
+  const total = receivedToday.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const profit = receivedToday.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
+  const fiadoTotal = fiadoToday.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
   const lowStock = stockAlerts();
   const openCash = getOpenCash();
   const ticket = receivedToday.length ? total / receivedToday.length : 0;
@@ -2762,30 +2883,59 @@ function openSalePaymentModal() {
 
 async function confirmSalePayment(event) {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
   const payment = String(form.get("payment") || "");
   const total = salePaymentTotal();
-  const cashReceived = payment === "Dinheiro" ? Number(form.get("cashReceived") || 0) : 0;
+  let cashReceived = payment === "Dinheiro" ? Number(form.get("cashReceived") || 0) : 0;
+  let cashChange = payment === "Dinheiro" ? Math.max(0, cashReceived - total) : 0;
+  let paymentBreakdown = [];
   if (!payment) {
     notify("Escolha a forma de pagamento para finalizar.");
     return;
   }
   if (payment === "Dinheiro" && cashReceived < total) {
     notify("Informe um valor recebido igual ou maior que o total da venda.");
-    delete event.currentTarget.dataset.submitting;
+    delete formElement.dataset.submitting;
     return;
   }
-  event.currentTarget.dataset.submitting = "true";
+  if (payment === "Dividido") {
+    paymentBreakdown = paymentMethods
+      .map((method) => ({ method, amount: Number(form.get(`split-${method}`) || 0) }))
+      .filter((part) => part.amount > 0);
+    const paid = paymentBreakdown.reduce((sum, part) => sum + part.amount, 0);
+    const cashPart = paymentBreakdown.find((part) => part.method === "Dinheiro")?.amount || 0;
+    cashReceived = cashPart > 0 ? Number(form.get("splitCashReceived") || 0) : 0;
+    cashChange = Math.max(0, cashReceived - cashPart);
+
+    if (paymentBreakdown.length < 2) {
+      notify("Informe pelo menos duas formas de pagamento para dividir a venda.");
+      delete formElement.dataset.submitting;
+      return;
+    }
+    if (Math.abs(paid - total) > 0.009) {
+      notify(`A soma dos pagamentos precisa fechar ${money(total)}. Agora esta em ${money(paid)}.`);
+      delete formElement.dataset.submitting;
+      return;
+    }
+    if (cashPart > 0 && cashReceived < cashPart) {
+      notify("Informe o valor recebido em dinheiro para calcular o troco.");
+      delete formElement.dataset.submitting;
+      return;
+    }
+  }
+  formElement.dataset.submitting = "true";
 
   const finalized = await finalizeSale({
     payment,
     clientId: String(form.get("clientId") || ""),
     terminalKey: String(form.get("terminalKey") || ""),
     cashReceived,
-    cashChange: payment === "Dinheiro" ? Math.max(0, cashReceived - total) : 0,
+    cashChange,
+    paymentBreakdown,
   });
   if (!finalized) {
-    delete event.currentTarget.dataset.submitting;
+    delete formElement.dataset.submitting;
   }
 }
 
@@ -2814,18 +2964,58 @@ function updateCashChangePreview(form) {
   output.textContent = money(Math.max(0, received - total));
 }
 
+function updateSplitPaymentPreview(form) {
+  const panel = form.querySelector("[data-split-payment-panel]");
+  if (!panel) return;
+
+  const payment = form.querySelector('input[name="payment"]:checked')?.value || "";
+  const showSplit = payment === "Dividido";
+  panel.hidden = !showSplit;
+  if (!showSplit) return;
+
+  const total = salePaymentTotal();
+  const paid = paymentMethods.reduce((sum, method) => {
+    const input = form.querySelector(`[data-split-amount="${method}"]`);
+    return sum + Number(input?.value || 0);
+  }, 0);
+  const cashPart = Number(form.querySelector('[data-split-amount="Dinheiro"]')?.value || 0);
+  const cashReceivedInput = form.querySelector("[data-split-cash-received]");
+  const cashReceived = Number(cashReceivedInput?.value || 0);
+  const remaining = total - paid;
+  const paidOutput = form.querySelector("[data-split-paid]");
+  const remainingOutput = form.querySelector("[data-split-remaining]");
+  const cashChangeOutput = form.querySelector("[data-split-cash-change]");
+  const cashReceivedField = form.querySelector("[data-split-cash-field]");
+  if (cashReceivedField) cashReceivedField.hidden = cashPart <= 0;
+  if (cashReceivedInput && cashPart <= 0) cashReceivedInput.value = "";
+  if (paidOutput) paidOutput.textContent = money(paid);
+  if (remainingOutput) {
+    remainingOutput.textContent = Math.abs(remaining) <= 0.009 ? "Fechado" : money(remaining);
+    remainingOutput.className = Math.abs(remaining) <= 0.009 ? "ok" : remaining > 0 ? "warn" : "bad";
+  }
+  if (cashChangeOutput) cashChangeOutput.textContent = money(Math.max(0, cashReceived - cashPart));
+}
+
 function bindSalePaymentChoice() {
   const form = document.querySelector("#sale-payment-form");
   if (!form) return;
   const cashInput = form.querySelector("[data-cash-received]");
+  const splitInputs = form.querySelectorAll("[data-split-amount], [data-split-cash-received]");
   updateCashChangePreview(form);
+  updateSplitPaymentPreview(form);
   cashInput?.addEventListener("input", () => updateCashChangePreview(form));
+  splitInputs.forEach((input) => input.addEventListener("input", () => updateSplitPaymentPreview(form)));
 
   form.querySelectorAll('input[name="payment"]').forEach((input) => {
     input.addEventListener("change", () => {
       updateCashChangePreview(form);
+      updateSplitPaymentPreview(form);
       if (input.value === "Dinheiro") {
         cashInput?.focus();
+        return;
+      }
+      if (input.value === "Dividido") {
+        form.querySelector("[data-split-amount]")?.focus();
         return;
       }
       if (form.dataset.submitting === "true") return;
@@ -2835,7 +3025,14 @@ function bindSalePaymentChoice() {
   });
 }
 
-async function finalizeSale({ payment = "", clientId = "", terminalKey = "", cashReceived = 0, cashChange = 0 } = {}) {
+async function finalizeSale({
+  payment = "",
+  clientId = "",
+  terminalKey = "",
+  cashReceived = 0,
+  cashChange = 0,
+  paymentBreakdown = [],
+} = {}) {
   if (!cart.length) return false;
   if (!payment) {
     openSalePaymentModal();
@@ -2849,10 +3046,12 @@ async function finalizeSale({ payment = "", clientId = "", terminalKey = "", cas
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
   const selectedClientId = clientId || state.clients[0]?.id || "";
   let selectedTerminal = null;
+  const paymentParts = normalizePaymentBreakdown(paymentBreakdown);
+  const fiadoAmount = payment === "Fiado" ? total : paymentParts.find((part) => part.method === "Fiado")?.amount || 0;
 
-  if (payment === "Fiado") {
+  if (fiadoAmount > 0) {
     const client = state.clients.find((entry) => entry.id === selectedClientId);
-    const projectedDebt = Number(client?.debt || 0) + total;
+    const projectedDebt = Number(client?.debt || 0) + fiadoAmount;
     if (!client || Number(client.creditLimit || 0) <= 0 || projectedDebt > Number(client.creditLimit || 0)) {
       notify("Fiado bloqueado: limite do cliente insuficiente.");
       return false;
@@ -2865,9 +3064,10 @@ async function finalizeSale({ payment = "", clientId = "", terminalKey = "", cas
     return false;
   }
 
-  const pointPayment = await processPointPaymentBeforeSale({
-    amount: total,
+  const pointPayment = await processPointPaymentsBeforeSale({
+    total,
     payment,
+    paymentBreakdown: paymentParts,
     terminalKey,
     items: structuredClone(cart),
     description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
@@ -2891,6 +3091,9 @@ async function finalizeSale({ payment = "", clientId = "", terminalKey = "", cas
       total,
       cost,
       serviceFee,
+      paymentBreakdown: paymentParts,
+      cashReceived,
+      cashChange,
       tableId: checkout?.id || null,
       clearCart: false,
       renderAfter: false,
@@ -2915,7 +3118,8 @@ async function finalizeSale({ payment = "", clientId = "", terminalKey = "", cas
     date: new Date().toISOString(),
     cashierId: session.id,
     payment,
-    clientId: payment === "Fiado" ? selectedClientId : null,
+    paymentBreakdown: paymentParts,
+    clientId: fiadoAmount > 0 ? selectedClientId : null,
     tableId: tableCheckout?.id || null,
     tableName: printDetails.tableName,
     customerName: printDetails.customerName,
@@ -2932,19 +3136,19 @@ async function finalizeSale({ payment = "", clientId = "", terminalKey = "", cas
   state.sales.push(sale);
   createKitchenOrders(sale);
 
-  if (payment === "Fiado") {
+  if (fiadoAmount > 0) {
     state.clients = state.clients.map((client) =>
       client.id === selectedClientId
         ? {
             ...client,
-            debt: Number(client.debt || 0) + total,
+            debt: Number(client.debt || 0) + fiadoAmount,
             transactions: [
               {
                 id: id("clienttx"),
                 date: sale.date,
                 type: "debito",
                 description: sale.items.map((item) => `${item.qty}x ${item.name}`).join(", "),
-                amount: total,
+                amount: fiadoAmount,
                 saleId: sale.id,
                 userId: session.id,
               },
@@ -2955,7 +3159,7 @@ async function finalizeSale({ payment = "", clientId = "", terminalKey = "", cas
     );
   }
 
-  logAudit("Venda finalizada", `${money(total)} em ${payment}.`);
+  logAudit("Venda finalizada", `${money(total)} em ${paymentDisplay(sale)}.`);
 
   if (tableCheckout) {
     state.tables = state.tables.map((entry) =>
@@ -3082,6 +3286,9 @@ async function finalizeSaleOnline({
   clientId,
   total,
   cost,
+  paymentBreakdown = [],
+  cashReceived = 0,
+  cashChange = 0,
   saleItems = structuredClone(cart),
   serviceFee = 0,
   tableId = null,
@@ -3094,12 +3301,15 @@ async function finalizeSaleOnline({
     return;
   }
 
+  const paymentParts = normalizePaymentBreakdown(paymentBreakdown);
+  const fiadoAmount = payment === "Fiado" ? total : paymentParts.find((part) => part.method === "Fiado")?.amount || 0;
+  const encodedPayment = encodePaymentDetails({ payment, breakdown: paymentParts, cashReceived, cashChange });
   const saleResult = await supabaseClient
     .from("sales")
     .insert({
       cashier_id: session.id,
-      client_id: payment === "Fiado" ? clientId : null,
-      payment,
+      client_id: fiadoAmount > 0 ? clientId : null,
+      payment: encodedPayment,
       status: "Concluida",
       service_fee: serviceFee,
       table_id: tableId,
@@ -3135,9 +3345,9 @@ async function finalizeSaleOnline({
 
   await createKitchenOrdersOnline({ id: saleId, items: saleItems });
 
-  if (payment === "Fiado") {
+  if (fiadoAmount > 0) {
     const client = state.clients.find((entry) => entry.id === clientId);
-    const nextDebt = Number(client?.debt || 0) + total;
+    const nextDebt = Number(client?.debt || 0) + fiadoAmount;
     const clientResult = await supabaseClient.from("clients").update({ debt: nextDebt }).eq("id", clientId);
     if (clientResult.error) {
       notify(`Venda salva, mas falhou ao atualizar fiado: ${clientResult.error.message}`);
@@ -3148,12 +3358,12 @@ async function finalizeSaleOnline({
         user_id: session.id,
         type: "debito",
         description: saleItems.map((item) => `${item.qty}x ${item.name}`).join(", "),
-        amount: total,
+        amount: fiadoAmount,
       });
     }
   }
 
-  logAudit("Venda finalizada online", `${money(total)} em ${payment}.`);
+  logAudit("Venda finalizada online", `${money(total)} em ${paymentDisplay({ payment, paymentBreakdown: paymentParts, total })}.`);
   if (clearCart) cart = [];
   await loadOnlineStockData();
   await loadOnlineClientsData();
@@ -3612,19 +3822,19 @@ function renderSales() {
   const sales = state.sales.slice().reverse();
   const activeSales = sales.filter(isFinancialSale);
   const receivedSales = activeSales.filter(isReceivedSale);
-  const fiadoSales = activeSales.filter((sale) => sale.payment === "Fiado");
-  const total = receivedSales.reduce((sum, sale) => sum + sale.total, 0);
-  const profit = receivedSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
-  const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + sale.total, 0);
+  const fiadoSales = activeSales.filter((sale) => saleFiadoAmount(sale) > 0);
+  const total = receivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const profit = receivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
+  const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
   const openCash = getOpenCash();
   const weeklyTopProducts = topProductsForPeriod(7, 10);
   const todaySales = salesForToday({ includeInactive: true }).slice().reverse();
   const todayFinancialSales = todaySales.filter(isFinancialSale);
   const todayReceivedSales = todayFinancialSales.filter(isReceivedSale);
-  const todayFiadoSales = todayFinancialSales.filter((sale) => sale.payment === "Fiado");
+  const todayFiadoSales = todayFinancialSales.filter((sale) => saleFiadoAmount(sale) > 0);
   const todayZeroedSales = todaySales.filter(isZeroedSale);
-  const todayTotal = todayReceivedSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  const todayProfit = todayReceivedSales.reduce((sum, sale) => sum + Number(sale.total || 0) - Number(sale.cost || 0), 0);
+  const todayTotal = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const todayProfit = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
 
   return `
     <div class="section-title">
@@ -3721,7 +3931,7 @@ function salesTable(sales) {
                 <tr>
                   <td>${dateTime(sale.date)}</td>
                   <td>${saleItemsSummary(sale)}</td>
-                  <td><span class="status blue">${sale.payment}</span></td>
+                  <td><span class="status blue">${paymentDisplay(sale)}</span></td>
                   <td><span class="status ${saleStatusClass(sale)}">${sale.status || "Concluida"}</span></td>
                   <td>${userName(sale.cashierId)}</td>
                   <td>${money(saleDisplayTotal(sale))}</td>
@@ -3923,7 +4133,7 @@ function renderCash() {
                       (sale) => `
                         <tr>
                           <td>${dateTime(sale.date)}</td>
-                          <td><span class="status blue">${sale.payment}</span></td>
+                          <td><span class="status blue">${paymentDisplay(sale)}</span></td>
                           <td>${sale.terminalLabel ? escapeHtml(ticketTerminalLabel({ label: sale.terminalLabel })) : "-"}</td>
                           <td>${money(sale.total)}</td>
                           <td>${userName(sale.cashierId)}</td>
@@ -4056,8 +4266,11 @@ function cashSalesPaymentTotals(sales) {
   const totals = Object.fromEntries(cashPaymentMethods.map((method) => [method, 0]));
   sales.forEach((sale) => {
     if (!isReceivedSale(sale)) return;
-    const key = sale.payment === "Cartao" ? "Credito" : sale.payment;
-    totals[key] = Number(totals[key] || 0) + Number(sale.total || 0);
+    salePaymentParts(sale).forEach((part) => {
+      if (part.method === "Fiado") return;
+      const key = normalizePaymentMethod(part.method);
+      totals[key] = Number(totals[key] || 0) + Number(part.amount || 0);
+    });
   });
   return totals;
 }
@@ -4075,7 +4288,7 @@ function isFinancialSale(sale) {
 }
 
 function isReceivedSale(sale) {
-  return isFinancialSale(sale) && sale?.payment !== "Fiado";
+  return isFinancialSale(sale) && saleReceivedAmount(sale) > 0;
 }
 
 function saleDisplayTotal(sale) {
@@ -4205,10 +4418,10 @@ function downloadSalesReportPdf(cash) {
 
   const sales = salesForCashPeriod(cash);
   const activeSales = sales.filter(isReceivedSale);
-  const fiadoSales = sales.filter((sale) => isFinancialSale(sale) && sale.payment === "Fiado");
-  const total = activeSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  const profit = activeSales.reduce((sum, sale) => sum + Number(sale.total || 0) - Number(sale.cost || 0), 0);
-  const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+  const fiadoSales = sales.filter((sale) => saleFiadoAmount(sale) > 0);
+  const total = activeSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const profit = activeSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
+  const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
   const paymentTotals = cashSalesPaymentTotals(activeSales);
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
   const generatedAt = dateTime(new Date().toISOString());
@@ -4269,10 +4482,10 @@ function downloadSalesReportPdf(cash) {
       ? activeSales.map((sale) => [
           dateTime(sale.date),
           saleItemsDescription(sale),
-          sale.payment,
+          paymentDisplay(sale),
           userName(sale.cashierId),
-          money(sale.total),
-          money(Number(sale.total || 0) - Number(sale.cost || 0)),
+          money(saleReceivedAmount(sale)),
+          money(saleReceivedProfit(sale)),
         ])
       : [["Nenhuma venda concluida no periodo.", "", "", "", "", ""]],
     startY: (doc.lastAutoTable?.finalY || 190) + 24,
@@ -4336,11 +4549,11 @@ function downloadDailySalesReportPdf() {
   const sales = dailySales();
   const financialSales = sales.filter(isFinancialSale);
   const receivedSales = financialSales.filter(isReceivedSale);
-  const fiadoSales = financialSales.filter((sale) => sale.payment === "Fiado");
+  const fiadoSales = financialSales.filter((sale) => saleFiadoAmount(sale) > 0);
   const zeroedSales = sales.filter(isZeroedSale);
   const cancelledSales = sales.filter((sale) => sale.status === "Cancelada");
-  const total = receivedSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  const profit = receivedSales.reduce((sum, sale) => sum + Number(sale.total || 0) - Number(sale.cost || 0), 0);
+  const total = receivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const profit = receivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
   const paymentTotals = cashSalesPaymentTotals(receivedSales);
   const topProducts = topProductsFromSales(sales);
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
@@ -4412,7 +4625,7 @@ function downloadDailySalesReportPdf() {
       ? sales.map((sale) => [
           dateTime(sale.date),
           saleItemsDescription(sale),
-          sale.payment,
+          paymentDisplay(sale),
           sale.status || "Concluida",
           userName(sale.cashierId),
           money(saleDisplayTotal(sale)),
@@ -4912,7 +5125,7 @@ function renderClients() {
       ${metric("Fiado aberto", money(totalDebt), "Saldo total a receber", "CR")}
       ${metric("Clientes", state.clients.length, "Cadastros ativos", "CL")}
       ${metric("Maior saldo", money(Math.max(0, ...state.clients.map((client) => Number(client.debt || 0)))), "Cliente com mais fiado", "MS")}
-      ${metric("Vendas fiado", state.sales.filter((sale) => sale.payment === "Fiado").length, "Historico registrado", "FD")}
+      ${metric("Vendas fiado", state.sales.filter((sale) => saleFiadoAmount(sale) > 0).length, "Historico registrado", "FD")}
     </div>
     <section class="card" style="margin-top: 16px;">
       <div class="table-wrap">
@@ -4955,7 +5168,14 @@ function renderReports() {
   const activeSales = sales.filter(isFinancialSale);
   const byPayment = paymentMethods.map((method) => ({
     method,
-    total: activeSales.filter((sale) => sale.payment === method).reduce((sum, sale) => sum + sale.total, 0),
+    total: activeSales.reduce(
+      (sum, sale) =>
+        sum +
+        salePaymentParts(sale)
+          .filter((part) => part.method === method)
+          .reduce((partSum, part) => partSum + Number(part.amount || 0), 0),
+      0,
+    ),
   }));
   const byCategory = categoryTotals(reportSales());
   const profitability = productProfitability(reportSales()).slice(0, 8);
@@ -5389,7 +5609,7 @@ function renderSalePaymentModal() {
         <div class="field">
           <span>Toque na forma de pagamento</span>
           <div class="payment-choice-grid">
-            ${paymentMethods
+            ${checkoutPaymentMethods
               .map(
                 (method) => `
                   <label class="payment-choice">
@@ -5412,7 +5632,31 @@ function renderSalePaymentModal() {
           </div>
           <button class="btn primary" type="submit">Finalizar em dinheiro</button>
         </div>
-        <div class="notice compact">Pix, Debito e Credito enviam a cobranca para a maquininha selecionada imediatamente. Dinheiro calcula o troco antes de finalizar. Fiado exige cliente com limite disponivel.</div>
+        <div class="split-payment-panel" data-split-payment-panel hidden>
+          <div class="split-payment-grid">
+            ${paymentMethods
+              .map(
+                (method) => `
+                  <label class="field">
+                    <span>${method}</span>
+                    <input name="split-${method}" data-split-amount="${method}" type="number" min="0" step="0.01" placeholder="0,00" />
+                  </label>
+                `,
+              )
+              .join("")}
+          </div>
+          <label class="field" data-split-cash-field hidden>
+            <span>Valor recebido em dinheiro</span>
+            <input name="splitCashReceived" data-split-cash-received type="number" min="0" step="0.01" placeholder="Ex.: ${Math.ceil(total).toFixed(2)}" />
+          </label>
+          <div class="summary-list compact">
+            <div class="summary-row"><span>Pago</span><strong data-split-paid>${money(0)}</strong></div>
+            <div class="summary-row"><span>Falta/Excesso</span><strong data-split-remaining>${money(total)}</strong></div>
+            <div class="summary-row total"><span>Troco dinheiro</span><strong data-split-cash-change>${money(0)}</strong></div>
+          </div>
+          <button class="btn primary" type="submit">Finalizar pagamento dividido</button>
+        </div>
+        <div class="notice compact">Pix, Debito e Credito enviam a cobranca para a maquininha selecionada imediatamente. Dinheiro calcula o troco antes de finalizar. Dividido permite usar mais de uma forma na mesma venda. Fiado exige cliente com limite disponivel.</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
@@ -5445,7 +5689,7 @@ function renderPrintTicketsModal() {
       <div class="summary-list">
         <div class="summary-row"><span>Venda</span><strong>${sale.id.slice(-8)}</strong></div>
         <div class="summary-row"><span>Total</span><strong>${money(sale.total)}</strong></div>
-        <div class="summary-row"><span>Pagamento</span><strong>${sale.payment}</strong></div>
+        <div class="summary-row"><span>Pagamento</span><strong>${paymentDisplay(sale)}</strong></div>
         <div class="summary-row total"><span>Fichas</span><strong>${ticketCount}</strong></div>
       </div>
       <p>As fichas saem pelo navegador, uma impressao por unidade vendida, no tamanho de bobina 58mm.</p>
@@ -6869,9 +7113,10 @@ function saveCancelSale(event) {
   }
 
   restoreSaleStock(sale.items);
-  if (sale.payment === "Fiado" && sale.clientId) {
+  const fiadoAmount = saleFiadoAmount(sale);
+  if (fiadoAmount > 0 && sale.clientId) {
     state.clients = state.clients.map((client) =>
-      client.id === sale.clientId ? { ...client, debt: Math.max(0, Number(client.debt || 0) - sale.total) } : client,
+      client.id === sale.clientId ? { ...client, debt: Math.max(0, Number(client.debt || 0) - fiadoAmount) } : client,
     );
   }
 
@@ -7429,8 +7674,11 @@ function cashSummary(openCash = getOpenCash()) {
   const sales = state.sales.filter((sale) => new Date(sale.date) >= since && isReceivedSale(sale));
 
   sales.forEach((sale) => {
-    const key = sale.payment === "Cartao" ? "Credito" : sale.payment;
-    payments[key] = Number(payments[key] || 0) + sale.total;
+    salePaymentParts(sale).forEach((part) => {
+      if (part.method === "Fiado") return;
+      const key = normalizePaymentMethod(part.method);
+      payments[key] = Number(payments[key] || 0) + Number(part.amount || 0);
+    });
   });
 
   const movements = state.cashMovements
@@ -7665,10 +7913,10 @@ function printSale(saleId) {
         ? ["Pagamento externo da maquininha"]
         : sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)),
     "",
-    `Pagamento: ${sale.payment}`,
+    `Pagamento: ${paymentDisplay(sale)}`,
     `Total: ${money(sale.total)}`,
-    sale.payment === "Dinheiro" && Number(sale.cashReceived || 0) ? `Recebido: ${money(sale.cashReceived)}` : "",
-    sale.payment === "Dinheiro" && Number(sale.cashReceived || 0) ? `Troco: ${money(sale.cashChange || 0)}` : "",
+    Number(sale.cashReceived || 0) ? `Recebido em dinheiro: ${money(sale.cashReceived)}` : "",
+    Number(sale.cashReceived || 0) ? `Troco: ${money(sale.cashChange || 0)}` : "",
     "",
     state.settings.receiptFooter || "",
   ].filter(Boolean).join("\n");
@@ -7733,7 +7981,7 @@ function printSaleTicketsIndividual(saleId) {
             <span>Venda</span><strong>${escapeHtml(sale.id.slice(-8))}</strong>
             <span>Data</span><strong>${dateTime(sale.date)}</strong>
             <span>Operador</span><strong>${escapeHtml(userName(sale.cashierId))}</strong>
-            <span>Pagamento</span><strong>${escapeHtml(sale.payment)}</strong>
+            <span>Pagamento</span><strong>${escapeHtml(paymentDisplay(sale))}</strong>
             ${optionalRows.map(([label, value]) => `<span>${label}</span><strong>${escapeHtml(value)}</strong>`).join("")}
           </div>
           <div class="price">${money(item.unitTotal)}</div>
@@ -7878,8 +8126,8 @@ function reportInventoryPrintMetrics() {
 function reportMetrics() {
   const activeSales = reportSales().filter(isFinancialSale);
   const receivedSales = activeSales.filter(isReceivedSale);
-  const revenue = receivedSales.reduce((sum, sale) => sum + sale.total, 0);
-  const profit = receivedSales.reduce((sum, sale) => sum + sale.total - sale.cost, 0);
+  const revenue = receivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const profit = receivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
   const debt = state.clients.reduce((sum, client) => sum + Number(client.debt || 0), 0);
   return `
     <section class="metrics">
@@ -8234,7 +8482,7 @@ function reportSalesSection() {
             dateTime(sale.date),
             userName(sale.cashierId),
             saleItemsDescription(sale),
-            sale.payment,
+            paymentDisplay(sale),
             sale.status || "Concluida",
             money(saleDisplayTotal(sale)),
             money(saleDisplayProfit(sale)),
@@ -8293,7 +8541,7 @@ function exportSalesCsv() {
       sale.date,
       userName(sale.cashierId),
       saleItemsDescription(sale),
-      sale.payment,
+      paymentDisplay(sale),
       sale.status || "Concluida",
       saleDisplayTotal(sale),
       sale.cost,

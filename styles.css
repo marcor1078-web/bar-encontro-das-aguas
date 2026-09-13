@@ -175,7 +175,8 @@ body[data-theme="dark"] .payment-choice input:checked + span {
   box-shadow: 0 10px 24px rgba(20, 184, 166, 0.22);
 }
 
-body[data-theme="dark"] .cash-change-panel {
+body[data-theme="dark"] .cash-change-panel,
+body[data-theme="dark"] .split-payment-panel {
   background: rgba(20, 184, 166, 0.12);
   border-color: rgba(94, 234, 212, 0.34);
 }
@@ -380,7 +381,7 @@ button:disabled {
 
 .payment-choice-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(96px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 8px;
 }
 
@@ -430,7 +431,8 @@ button:disabled {
   outline-offset: 2px;
 }
 
-.cash-change-panel {
+.cash-change-panel,
+.split-payment-panel {
   display: grid;
   gap: 10px;
   margin: 14px 0;
@@ -440,16 +442,43 @@ button:disabled {
   background: #ecfdf5;
 }
 
-.cash-change-panel[hidden] {
+.cash-change-panel[hidden],
+.split-payment-panel[hidden],
+.split-payment-panel [hidden] {
   display: none;
 }
 
-.cash-change-panel .field {
+.cash-change-panel .field,
+.split-payment-panel .field {
   margin-bottom: 0;
 }
 
-.cash-change-panel .btn {
+.cash-change-panel .btn,
+.split-payment-panel .btn {
   width: 100%;
+}
+
+.split-payment-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.split-payment-panel .summary-list.compact {
+  gap: 0;
+  margin: 0;
+}
+
+.split-payment-panel [data-split-remaining].ok {
+  color: #047857;
+}
+
+.split-payment-panel [data-split-remaining].warn {
+  color: #b45309;
+}
+
+.split-payment-panel [data-split-remaining].bad {
+  color: #b91c1c;
 }
 
 .demo-grid {
