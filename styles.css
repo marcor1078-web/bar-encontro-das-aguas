@@ -175,6 +175,11 @@ body[data-theme="dark"] .payment-choice input:checked + span {
   box-shadow: 0 10px 24px rgba(20, 184, 166, 0.22);
 }
 
+body[data-theme="dark"] .cash-change-panel {
+  background: rgba(20, 184, 166, 0.12);
+  border-color: rgba(94, 234, 212, 0.34);
+}
+
 body[data-theme="dark"] .btn.secondary,
 body[data-theme="dark"] .icon-btn {
   background: #1e293b;
@@ -423,6 +428,28 @@ button:disabled {
 .payment-choice input:focus-visible + span {
   outline: 3px solid rgba(15, 118, 110, 0.22);
   outline-offset: 2px;
+}
+
+.cash-change-panel {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 14px;
+  border: 1px solid rgba(13, 148, 136, 0.28);
+  border-radius: 8px;
+  background: #ecfdf5;
+}
+
+.cash-change-panel[hidden] {
+  display: none;
+}
+
+.cash-change-panel .field {
+  margin-bottom: 0;
+}
+
+.cash-change-panel .btn {
+  width: 100%;
 }
 
 .demo-grid {

@@ -2764,26 +2764,70 @@ async function confirmSalePayment(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const payment = String(form.get("payment") || "");
+  const total = salePaymentTotal();
+  const cashReceived = payment === "Dinheiro" ? Number(form.get("cashReceived") || 0) : 0;
   if (!payment) {
     notify("Escolha a forma de pagamento para finalizar.");
     return;
   }
+  if (payment === "Dinheiro" && cashReceived < total) {
+    notify("Informe um valor recebido igual ou maior que o total da venda.");
+    delete event.currentTarget.dataset.submitting;
+    return;
+  }
+  event.currentTarget.dataset.submitting = "true";
 
   const finalized = await finalizeSale({
     payment,
     clientId: String(form.get("clientId") || ""),
     terminalKey: String(form.get("terminalKey") || ""),
+    cashReceived,
+    cashChange: payment === "Dinheiro" ? Math.max(0, cashReceived - total) : 0,
   });
   if (!finalized) {
     delete event.currentTarget.dataset.submitting;
   }
 }
 
+function salePaymentTotal() {
+  const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
+  return subtotal + (tableCheckout ? tableServiceFee(subtotal) : 0);
+}
+
+function updateCashChangePreview(form) {
+  const panel = form.querySelector("[data-cash-change-panel]");
+  const input = form.querySelector("[data-cash-received]");
+  const output = form.querySelector("[data-cash-change]");
+  if (!panel || !input || !output) return;
+
+  const payment = form.querySelector('input[name="payment"]:checked')?.value || "";
+  const showCash = payment === "Dinheiro";
+  panel.hidden = !showCash;
+  if (!showCash) {
+    input.value = "";
+    output.textContent = money(0);
+    return;
+  }
+
+  const total = salePaymentTotal();
+  const received = Number(input.value || 0);
+  output.textContent = money(Math.max(0, received - total));
+}
+
 function bindSalePaymentChoice() {
   const form = document.querySelector("#sale-payment-form");
   if (!form) return;
+  const cashInput = form.querySelector("[data-cash-received]");
+  updateCashChangePreview(form);
+  cashInput?.addEventListener("input", () => updateCashChangePreview(form));
+
   form.querySelectorAll('input[name="payment"]').forEach((input) => {
     input.addEventListener("change", () => {
+      updateCashChangePreview(form);
+      if (input.value === "Dinheiro") {
+        cashInput?.focus();
+        return;
+      }
       if (form.dataset.submitting === "true") return;
       form.dataset.submitting = "true";
       form.requestSubmit();
@@ -2791,7 +2835,7 @@ function bindSalePaymentChoice() {
   });
 }
 
-async function finalizeSale({ payment = "", clientId = "", terminalKey = "" } = {}) {
+async function finalizeSale({ payment = "", clientId = "", terminalKey = "", cashReceived = 0, cashChange = 0 } = {}) {
   if (!cart.length) return false;
   if (!payment) {
     openSalePaymentModal();
@@ -2835,6 +2879,8 @@ async function finalizeSale({ payment = "", clientId = "", terminalKey = "" } = 
     tableName: tableCheckout?.name || "",
     customerName: tableCheckout?.customerName || "",
     terminalLabel: ticketTerminalLabel(selectedTerminal),
+    cashReceived,
+    cashChange,
   };
 
   if (isOnlineSession()) {
@@ -2874,6 +2920,8 @@ async function finalizeSale({ payment = "", clientId = "", terminalKey = "" } = 
     tableName: printDetails.tableName,
     customerName: printDetails.customerName,
     terminalLabel: printDetails.terminalLabel,
+    cashReceived: printDetails.cashReceived,
+    cashChange: printDetails.cashChange,
     status: "Concluida",
     serviceFee,
     items: structuredClone(cart),
@@ -5353,7 +5401,18 @@ function renderSalePaymentModal() {
               .join("")}
           </div>
         </div>
-        <div class="notice compact">Pix, Debito e Credito enviam a cobranca para a maquininha selecionada imediatamente. Dinheiro finaliza direto no caixa. Fiado exige cliente com limite disponivel.</div>
+        <div class="cash-change-panel" data-cash-change-panel hidden>
+          <label class="field">
+            <span>Valor recebido em dinheiro</span>
+            <input name="cashReceived" data-cash-received type="number" min="${total.toFixed(2)}" step="0.01" placeholder="Ex.: ${(Math.ceil(total / 10) * 10).toFixed(2)}" />
+          </label>
+          <div class="summary-row total">
+            <span>Troco</span>
+            <strong data-cash-change>${money(0)}</strong>
+          </div>
+          <button class="btn primary" type="submit">Finalizar em dinheiro</button>
+        </div>
+        <div class="notice compact">Pix, Debito e Credito enviam a cobranca para a maquininha selecionada imediatamente. Dinheiro calcula o troco antes de finalizar. Fiado exige cliente com limite disponivel.</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
@@ -7608,6 +7667,8 @@ function printSale(saleId) {
     "",
     `Pagamento: ${sale.payment}`,
     `Total: ${money(sale.total)}`,
+    sale.payment === "Dinheiro" && Number(sale.cashReceived || 0) ? `Recebido: ${money(sale.cashReceived)}` : "",
+    sale.payment === "Dinheiro" && Number(sale.cashReceived || 0) ? `Troco: ${money(sale.cashChange || 0)}` : "",
     "",
     state.settings.receiptFooter || "",
   ].filter(Boolean).join("\n");
@@ -7639,6 +7700,8 @@ function attachSalePrintDetails(saleId, details = {}) {
           tableName: details.tableName || sale.tableName || "",
           customerName: details.customerName || sale.customerName || "",
           terminalLabel: details.terminalLabel || sale.terminalLabel || "",
+          cashReceived: Number(details.cashReceived || sale.cashReceived || 0),
+          cashChange: Number(details.cashChange || sale.cashChange || 0),
         }
       : sale,
   );
