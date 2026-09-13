@@ -4760,12 +4760,12 @@ function renderStock() {
         <button class="btn secondary" type="button" data-open-modal="product">Novo produto</button>
         <button class="btn secondary" type="button" data-open-modal="ingredient">Novo insumo</button>
         <button class="btn secondary" type="button" data-open-modal="inventory">Nova contagem</button>
+        <button class="btn secondary" type="button" data-open-modal="stockExpiry">Vencimentos</button>
         <button class="btn secondary ${stockSortMode === "stock-asc" ? "active" : ""}" type="button" data-stock-sort="stock-asc">Menor saldo primeiro</button>
         <button class="btn secondary ${stockSortMode === "default" ? "active" : ""}" type="button" data-stock-sort="default">Ordem normal</button>
       </div>
     </div>
     ${renderStockReportPanel()}
-    ${renderStockExpiryPanel()}
     <section class="card stock-card">
       <div class="card-head">
         <h2 class="card-title">Produtos, precos e saldos</h2>
@@ -4953,43 +4953,35 @@ function stockExpiryRows() {
     .sort((a, b) => a.status.days - b.status.days || a.name.localeCompare(b.name, "pt-BR"));
 }
 
-function renderStockExpiryPanel() {
+function renderStockExpiryTable() {
   const rows = stockExpiryRows();
   return `
-    <section class="card stock-card expiry-panel" style="margin-bottom: 16px;">
-      <div class="card-head">
-        <div>
-          <h2 class="card-title">Vencimentos</h2>
-          <p>Produtos e lotes vencidos ou a vencer nos proximos 30 dias.</p>
-        </div>
-      </div>
-      ${
-        rows.length
-          ? `<div class="table-wrap stock-table">
-              <table>
-                <thead><tr><th>Prazo</th><th>Tipo</th><th>Item</th><th>Lote</th><th>Saldo</th><th>Validade</th><th>Status</th></tr></thead>
-                <tbody>
-                  ${rows
-                    .map(
-                      (row) => `
-                        <tr class="stock-row ${row.status.className}">
-                          <td><strong>${expiryUrgencyLabel(row.status.days)}</strong></td>
-                          <td>${row.type}</td>
-                          <td>${row.name}</td>
-                          <td>${row.batch}</td>
-                          <td>${qty(row.qty)}</td>
-                          <td>${formatDateBr(row.expiresAt)}</td>
-                          <td><span class="status ${row.status.className}">${row.status.label}</span></td>
-                        </tr>
-                      `,
-                    )
-                    .join("")}
-                </tbody>
-              </table>
-            </div>`
-          : '<div class="empty">Nenhum produto ou lote vencendo nos proximos 30 dias.</div>'
-      }
-    </section>
+    ${
+      rows.length
+        ? `<div class="table-wrap stock-table modal-table-wrap">
+            <table>
+              <thead><tr><th>Prazo</th><th>Tipo</th><th>Item</th><th>Lote</th><th>Saldo</th><th>Validade</th><th>Status</th></tr></thead>
+              <tbody>
+                ${rows
+                  .map(
+                    (row) => `
+                      <tr class="stock-row ${row.status.className}">
+                        <td><strong>${expiryUrgencyLabel(row.status.days)}</strong></td>
+                        <td>${row.type}</td>
+                        <td>${row.name}</td>
+                        <td>${row.batch}</td>
+                        <td>${qty(row.qty)}</td>
+                        <td>${formatDateBr(row.expiresAt)}</td>
+                        <td><span class="status ${row.status.className}">${row.status.label}</span></td>
+                      </tr>
+                    `,
+                  )
+                  .join("")}
+              </tbody>
+            </table>
+          </div>`
+        : '<div class="empty">Nenhum produto ou lote vencendo nos proximos 30 dias.</div>'
+    }
   `;
 }
 
@@ -5750,6 +5742,7 @@ function renderModal() {
     salePayment: renderSalePaymentModal,
     printTickets: renderPrintTicketsModal,
     productHistory: renderProductHistoryModal,
+    stockExpiry: renderStockExpiryModal,
   };
   return `
     <div class="modal-backdrop">
@@ -5937,6 +5930,22 @@ function renderProductHistoryModal() {
             </div>`
           : '<div class="empty">Nenhuma venda, lote, compra ou contagem registrada para este produto.</div>'
       }
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" type="button" data-close-modal>Fechar</button>
+    </div>
+  `;
+}
+
+function renderStockExpiryModal() {
+  return `
+    <div class="modal-head">
+      <h2>Vencimentos</h2>
+      <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+    </div>
+    <div class="modal-body">
+      <p>Produtos e lotes vencidos ou a vencer nos proximos 30 dias.</p>
+      ${renderStockExpiryTable()}
     </div>
     <div class="modal-actions">
       <button class="btn secondary" type="button" data-close-modal>Fechar</button>
