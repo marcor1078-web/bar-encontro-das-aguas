@@ -558,6 +558,7 @@ function migrateState(nextState) {
   nextState.ingredients = nextState.ingredients || structuredClone(defaultState.ingredients);
   nextState.suppliers = nextState.suppliers || structuredClone(defaultState.suppliers);
   nextState.purchases = nextState.purchases || structuredClone(defaultState.purchases);
+  nextState.cashSessions = nextState.cashSessions || structuredClone(defaultState.cashSessions);
   nextState.inventoryCounts = nextState.inventoryCounts || structuredClone(defaultState.inventoryCounts);
   nextState.stockLots = nextState.stockLots || structuredClone(defaultState.stockLots);
   nextState.tables = (nextState.tables || structuredClone(defaultState.tables)).map((table) => ({
@@ -1594,6 +1595,7 @@ function mapIngredientFromDb(row) {
 function mapLotFromDb(row) {
   return {
     id: row.id,
+    createdAt: row.created_at || "",
     itemType: row.item_type,
     itemId: row.item_id,
     batch: row.batch,
@@ -1750,6 +1752,7 @@ async function loadOnlineSalesData() {
 function mapCashSessionFromDb(row) {
   return {
     id: row.id,
+    cashCode: row.cash_code || "",
     openedAt: row.opened_at,
     closedAt: row.closed_at,
     userId: row.user_id,
@@ -4033,6 +4036,7 @@ function renderCash() {
   const todaySales = salesForToday();
   const receivedToday = todaySales.filter(isReceivedSale);
   const movements = state.cashMovements.slice().reverse();
+  const cashHistory = state.cashSessions.slice().reverse();
   const externalPayments = state.sales.filter(isExternalPaymentSale).slice().reverse().slice(0, 20);
 
   return `
@@ -4049,9 +4053,10 @@ function renderCash() {
 
     <div class="grid stats">
       ${metric("Status", openCash ? "Aberto" : "Fechado", openCash ? userName(openCash.userId) : "Sem turno ativo", "CX")}
+      ${metric("Caixa", openCash ? cashSessionCode(openCash) : nextCashSessionCode(), openCash ? "Turno atual" : "Proximo turno", "N")}
       ${metric("Abertura", money(openCash?.openingAmount || 0), openCash ? dateTime(openCash.openedAt) : "Aguardando abertura", "AB")}
       ${metric("Esperado", money(summary.expected), "Abertura + vendas + movimentos", "EX")}
-      ${metric("Recebido hoje", money(receivedToday.reduce((sum, sale) => sum + sale.total, 0)), "Sem contar vendas em fiado", "R$")}
+      ${metric("Recebido hoje", money(receivedToday.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0)), "Sem contar vendas em fiado", "R$")}
     </div>
 
     <div class="grid two-col" style="margin-top: 16px;">
@@ -4185,6 +4190,34 @@ function renderCash() {
           : '<div class="empty">Nenhuma movimentacao manual.</div>'
       }
     </section>
+    <section class="card" style="margin-top: 16px;">
+      <div class="card-head">
+        <h2 class="card-title">Historico de caixas</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Caixa</th><th>Abertura</th><th>Fechamento</th><th>Operador</th><th>Esperado</th><th>Contado</th><th>Diferenca</th><th>Obs.</th></tr></thead>
+          <tbody>
+            ${cashHistory
+              .map(
+                (cash) => `
+                  <tr>
+                    <td><strong>${cashSessionCode(cash)}</strong></td>
+                    <td>${dateTime(cash.openedAt)}</td>
+                    <td>${cash.closedAt ? dateTime(cash.closedAt) : '<span class="status green">Aberto</span>'}</td>
+                    <td>${userName(cash.userId)}</td>
+                    <td>${cash.expectedAmount === null ? "-" : money(cash.expectedAmount)}</td>
+                    <td>${cash.closingAmount === null ? "-" : money(cash.closingAmount)}</td>
+                    <td>${cash.difference === null ? "-" : money(cash.difference)}</td>
+                    <td>${cash.notes || ""}</td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
@@ -4216,6 +4249,7 @@ async function closeOpenCash({ counted, notes = "" } = {}) {
   const closedAt = new Date().toISOString();
   const closedCash = {
     ...openCash,
+    cashCode: openCash.cashCode || cashSessionCode(openCash),
     closedAt,
     closingAmount,
     closingBreakdown: finalCounted,
@@ -4243,13 +4277,13 @@ async function closeOpenCash({ counted, notes = "" } = {}) {
     }
 
     await loadOnlineCashData();
-    logAudit("Caixa fechado online", `Diferenca: ${money(closedCash.difference)}.`);
+    logAudit("Caixa fechado online", `${closedCash.cashCode}: diferenca ${money(closedCash.difference)}.`);
     notify("Caixa fechado no Supabase.");
     return closedCash;
   }
 
   Object.assign(openCash, closedCash);
-  logAudit("Caixa fechado", `Diferenca: ${money(openCash.difference)}.`);
+  logAudit("Caixa fechado", `${closedCash.cashCode}: diferenca ${money(openCash.difference)}.`);
   saveState();
   notify("Caixa fechado.");
   return closedCash;
@@ -4446,7 +4480,7 @@ function downloadSalesReportPdf(cash) {
   [
     state.settings.cnpj ? `CNPJ: ${state.settings.cnpj}` : "",
     state.settings.address || "",
-    `Caixa: ${dateTime(cash.openedAt)} ate ${dateTime(cash.closedAt || new Date().toISOString())}`,
+    `Caixa: ${cashSessionCode(cash)} | ${dateTime(cash.openedAt)} ate ${dateTime(cash.closedAt || new Date().toISOString())}`,
     `Operador: ${userName(cash.userId)} | Gerado em ${generatedAt} por ${session?.name || "Usuario"}`,
   ]
     .filter(Boolean)
@@ -4691,8 +4725,10 @@ async function bindCashForm() {
         return;
       }
 
+      const cashCode = nextCashSessionCode();
       state.cashSessions.push({
         id: id("cash"),
+        cashCode,
         openedAt: new Date().toISOString(),
         closedAt: null,
         userId: session.id,
@@ -4703,7 +4739,7 @@ async function bindCashForm() {
         difference: null,
         notes,
       });
-      logAudit("Caixa aberto", `Abertura com ${money(amount)}.`);
+      logAudit("Caixa aberto", `${cashCode}: abertura com ${money(amount)}.`);
       notify("Caixa aberto.");
       saveState();
       renderApp();
@@ -4729,6 +4765,7 @@ function renderStock() {
       </div>
     </div>
     ${renderStockReportPanel()}
+    ${renderStockExpiryPanel()}
     <section class="card stock-card">
       <div class="card-head">
         <h2 class="card-title">Produtos, precos e saldos</h2>
@@ -4763,6 +4800,7 @@ function renderStock() {
                       <div class="toolbar stock-actions">
                         <button class="btn compact secondary" type="button" data-open-modal="product" data-id="${product.id}">Editar</button>
                         <button class="btn compact secondary" type="button" data-open-modal="stock" data-id="${product.id}">Ajustar</button>
+                        <button class="btn compact secondary" type="button" data-open-modal="productHistory" data-id="${product.id}">Historico</button>
                         <button class="btn compact danger" type="button" data-remove-product="${product.id}">Remover</button>
                       </div>
                     </td>
@@ -4876,6 +4914,146 @@ function stockSortedProducts(products) {
         Number(a.minStock || 0) - Number(b.minStock || 0) ||
         a.name.localeCompare(b.name, "pt-BR"),
     );
+}
+
+function expiryUrgencyLabel(days) {
+  if (days === null || days === undefined) return "Sem validade";
+  if (days < 0) return "Vencido";
+  if (days === 0) return "Vence hoje";
+  if (days <= 7) return "Ate 7 dias";
+  if (days <= 15) return "Ate 15 dias";
+  return "Ate 30 dias";
+}
+
+function stockExpiryRows() {
+  const productRows = state.products
+    .filter((product) => product.active !== false && product.expiresAt)
+    .map((product) => {
+      const status = productExpiryStatus(product);
+      return {
+        type: "Produto",
+        name: product.name,
+        batch: "-",
+        qty: productAvailableStock(product),
+        expiresAt: product.expiresAt,
+        status,
+      };
+    });
+  const lotRows = state.stockLots.map((lot) => ({
+    type: lot.itemType === "ingredient" ? "Lote de insumo" : "Lote de produto",
+    name: inventoryItemName(lot),
+    batch: lot.batch,
+    qty: lot.qty,
+    expiresAt: lot.expiresAt,
+    status: lotStatus(lot),
+  }));
+
+  return [...productRows, ...lotRows]
+    .filter((row) => row.status.days !== null && row.status.days <= 30)
+    .sort((a, b) => a.status.days - b.status.days || a.name.localeCompare(b.name, "pt-BR"));
+}
+
+function renderStockExpiryPanel() {
+  const rows = stockExpiryRows();
+  return `
+    <section class="card stock-card expiry-panel" style="margin-bottom: 16px;">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">Vencimentos</h2>
+          <p>Produtos e lotes vencidos ou a vencer nos proximos 30 dias.</p>
+        </div>
+      </div>
+      ${
+        rows.length
+          ? `<div class="table-wrap stock-table">
+              <table>
+                <thead><tr><th>Prazo</th><th>Tipo</th><th>Item</th><th>Lote</th><th>Saldo</th><th>Validade</th><th>Status</th></tr></thead>
+                <tbody>
+                  ${rows
+                    .map(
+                      (row) => `
+                        <tr class="stock-row ${row.status.className}">
+                          <td><strong>${expiryUrgencyLabel(row.status.days)}</strong></td>
+                          <td>${row.type}</td>
+                          <td>${row.name}</td>
+                          <td>${row.batch}</td>
+                          <td>${qty(row.qty)}</td>
+                          <td>${formatDateBr(row.expiresAt)}</td>
+                          <td><span class="status ${row.status.className}">${row.status.label}</span></td>
+                        </tr>
+                      `,
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>`
+          : '<div class="empty">Nenhum produto ou lote vencendo nos proximos 30 dias.</div>'
+      }
+    </section>
+  `;
+}
+
+function productStockHistory(productId) {
+  const product = state.products.find((entry) => entry.id === productId);
+  if (!product) return [];
+  const productNameKey = product.name.trim().toLowerCase();
+  const entries = [];
+
+  state.sales.forEach((sale) => {
+    (sale.items || [])
+      .filter((item) => item.productId === productId)
+      .forEach((item) => {
+        entries.push({
+          date: sale.date,
+          type: sale.status === "Cancelada" ? "Venda cancelada" : isZeroedSale(sale) ? "Venda zerada" : "Venda",
+          qty: sale.status === "Cancelada" ? 0 : -Number(item.qty || 0),
+          balance: "",
+          userId: sale.cashierId,
+          details: `${qty(item.qty)}x ${item.name} - ${paymentDisplay(sale)} - ${money(Number(item.qty || 0) * Number(item.price || 0))}`,
+        });
+      });
+  });
+
+  state.stockLots
+    .filter((lot) => lot.itemType === "product" && lot.itemId === productId)
+    .forEach((lot) => {
+      entries.push({
+        date: lot.createdAt || lot.expiresAt,
+        type: "Lote",
+        qty: Number(lot.qty || 0),
+        balance: "",
+        userId: "",
+        details: `${lot.batch} - validade ${formatDateBr(lot.expiresAt)} - fornecedor ${supplierName(lot.supplierId)}`,
+      });
+    });
+
+  state.purchases
+    .filter((purchase) => String(purchase.itemName || "").trim().toLowerCase() === productNameKey)
+    .forEach((purchase) => {
+      entries.push({
+        date: purchase.date,
+        type: "Compra",
+        qty: Number(purchase.qty || 0),
+        balance: "",
+        userId: purchase.userId,
+        details: `${purchase.itemName} - ${money(purchase.total)} (${money(purchase.unitCost)} un.)`,
+      });
+    });
+
+  state.inventoryCounts
+    .filter((count) => count.itemType === "product" && count.itemId === productId)
+    .forEach((count) => {
+      entries.push({
+        date: count.date,
+        type: count.notes?.toLowerCase().includes("ajuste manual") ? "Ajuste manual" : "Contagem",
+        qty: Number(count.difference || 0),
+        balance: Number(count.counted || 0),
+        userId: count.userId,
+        details: `Esperado ${qty(count.expected)} | contado ${qty(count.counted)} | diferenca ${qty(count.difference)}${count.notes ? ` | ${count.notes}` : ""}`,
+      });
+    });
+
+  return entries.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
 }
 
 function stockInventorySummary() {
@@ -5571,6 +5749,7 @@ function renderModal() {
     order: renderOrderModal,
     salePayment: renderSalePaymentModal,
     printTickets: renderPrintTicketsModal,
+    productHistory: renderProductHistoryModal,
   };
   return `
     <div class="modal-backdrop">
@@ -5703,6 +5882,64 @@ function renderPrintTicketsModal() {
     <div class="modal-actions">
       <button class="btn secondary" type="button" data-close-modal>Fechar</button>
       <button class="btn primary" type="button" data-print-last-tickets="${sale.id}">${icon("print")} Imprimir fichas</button>
+    </div>
+  `;
+}
+
+function renderProductHistoryModal() {
+  const product = state.products.find((item) => item.id === currentModal.id);
+  if (!product) {
+    return `
+      <div class="modal-head">
+        <h2>Historico do produto</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body"><p>Produto nao encontrado.</p></div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Fechar</button>
+      </div>
+    `;
+  }
+  const rows = productStockHistory(product.id);
+  return `
+    <div class="modal-head">
+      <h2>Historico do produto</h2>
+      <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+    </div>
+    <div class="modal-body">
+      <div class="summary-list">
+        <div class="summary-row"><span>Produto</span><strong>${escapeHtml(product.name)}</strong></div>
+        <div class="summary-row"><span>Codigo</span><strong>${escapeHtml(product.productCode || productBarcodeCodes(product)[0] || "-")}</strong></div>
+        <div class="summary-row total"><span>Saldo atual</span><strong>${productStockText(product)}</strong></div>
+      </div>
+      ${
+        rows.length
+          ? `<div class="table-wrap modal-table-wrap">
+              <table>
+                <thead><tr><th>Data</th><th>Tipo</th><th>Qtd.</th><th>Saldo</th><th>Usuario</th><th>Detalhes</th></tr></thead>
+                <tbody>
+                  ${rows
+                    .map(
+                      (row) => `
+                        <tr>
+                          <td>${dateTime(row.date)}</td>
+                          <td><span class="status ${row.qty < 0 ? "red" : row.qty > 0 ? "green" : "blue"}">${row.type}</span></td>
+                          <td>${row.qty === "" ? "-" : qty(row.qty)}</td>
+                          <td>${row.balance === "" ? "-" : qty(row.balance)}</td>
+                          <td>${row.userId ? userName(row.userId) : "-"}</td>
+                          <td>${escapeHtml(row.details)}</td>
+                        </tr>
+                      `,
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            </div>`
+          : '<div class="empty">Nenhuma venda, lote, compra ou contagem registrada para este produto.</div>'
+      }
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" type="button" data-close-modal>Fechar</button>
     </div>
   `;
 }
@@ -6665,8 +6902,11 @@ async function saveStockAdjustment(event) {
   const qty = Number(form.get("qty"));
   const product = state.products.find((entry) => entry.id === currentModal.id);
   if (!product) return;
+  const previousStock = Number(product.stock || 0);
   const nextStock =
-    mode === "add" ? product.stock + qty : mode === "remove" ? Math.max(0, product.stock - qty) : qty;
+    mode === "add" ? previousStock + qty : mode === "remove" ? Math.max(0, previousStock - qty) : qty;
+  const difference = nextStock - previousStock;
+  const reason = form.get("reason").trim();
 
   if (isOnlineSession()) {
     const { error } = await supabaseClient.from("products").update({ stock: nextStock }).eq("id", product.id);
@@ -6674,9 +6914,21 @@ async function saveStockAdjustment(event) {
       notify(`Erro ao ajustar estoque online: ${error.message}`);
       return;
     }
+    const insertAdjustment = await supabaseClient.from("inventory_counts").insert({
+      user_id: session.id,
+      item_type: "product",
+      item_id: product.id,
+      expected: previousStock,
+      counted: nextStock,
+      difference,
+      notes: `Ajuste manual: ${reason}`,
+    });
+    if (insertAdjustment.error) {
+      notify(`Estoque atualizado, mas falhou ao registrar historico: ${insertAdjustment.error.message}`);
+    }
     currentModal = null;
     await loadOnlineStockData();
-    logAudit("Estoque ajustado online", `${product.name}: ${nextStock}.`);
+    logAudit("Estoque ajustado online", `${product.name}: ${nextStock}. Motivo: ${reason}.`);
     notify("Estoque atualizado no Supabase.");
     renderApp();
     return;
@@ -6687,8 +6939,20 @@ async function saveStockAdjustment(event) {
     return { ...product, stock: nextStock };
   });
 
+  state.inventoryCounts.unshift({
+    id: id("inventory"),
+    date: new Date().toISOString(),
+    itemType: "product",
+    itemId: product.id,
+    expected: previousStock,
+    counted: nextStock,
+    difference,
+    userId: session.id,
+    notes: `Ajuste manual: ${reason}`,
+  });
+
   currentModal = null;
-  logAudit("Estoque ajustado", `${currentModal?.id || "produto"} atualizado.`);
+  logAudit("Estoque ajustado", `${product.name}: ${nextStock}. Motivo: ${reason}.`);
   saveState();
   notify("Estoque atualizado.");
   renderApp();
@@ -7183,6 +7447,7 @@ async function saveLot(event) {
 
   state.stockLots.unshift({
     id: id("lot"),
+    createdAt: new Date().toISOString(),
     ...lotPayload,
   });
   currentModal = null;
@@ -7714,10 +7979,11 @@ function lotStatus(lot) {
   const today = startOfToday();
   const expires = new Date(`${lot.expiresAt}T00:00:00`);
   const days = Math.ceil((expires - today) / 86400000);
-  if (days < 0) return { label: "Vencido", className: "red" };
-  if (days <= 7) return { label: `${days} dias`, className: "red" };
-  if (days <= 30) return { label: `${days} dias`, className: "amber" };
-  return { label: "Ok", className: "green" };
+  if (days < 0) return { label: "Vencido", className: "red", days };
+  if (days === 0) return { label: "Vence hoje", className: "red", days };
+  if (days <= 7) return { label: `${days} dias`, className: "red", days };
+  if (days <= 30) return { label: `${days} dias`, className: "amber", days };
+  return { label: "Ok", className: "green", days };
 }
 
 function auditList(logs) {
@@ -8587,6 +8853,19 @@ function startOfToday() {
 
 function getOpenCash() {
   return state.cashSessions.find((cash) => !cash.closedAt);
+}
+
+function cashSessionCode(cash) {
+  if (cash?.cashCode) return cash.cashCode;
+  const ordered = state.cashSessions
+    .slice()
+    .sort((a, b) => new Date(a.openedAt || 0) - new Date(b.openedAt || 0));
+  const index = ordered.findIndex((entry) => entry.id === cash?.id);
+  return `CAIXA-${String(index + 1 || 1).padStart(4, "0")}`;
+}
+
+function nextCashSessionCode() {
+  return `CAIXA-${String((state.cashSessions || []).length + 1).padStart(4, "0")}`;
 }
 
 function salesForToday({ includeInactive = false } = {}) {
