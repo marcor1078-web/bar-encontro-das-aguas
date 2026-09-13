@@ -2887,15 +2887,16 @@ async function confirmSalePayment(event) {
   const form = new FormData(formElement);
   const payment = String(form.get("payment") || "");
   const total = salePaymentTotal();
+  const cashExact = form.get("cashExact") === "true";
   const cashReceivedText = String(form.get("cashReceived") || "").trim();
-  let cashReceived = payment === "Dinheiro" && cashReceivedText ? Number(cashReceivedText) : 0;
-  let cashChange = payment === "Dinheiro" && cashReceivedText ? Math.max(0, cashReceived - total) : 0;
+  let cashReceived = payment === "Dinheiro" && (cashExact || !cashReceivedText) ? total : payment === "Dinheiro" ? Number(cashReceivedText) : 0;
+  let cashChange = payment === "Dinheiro" && (cashExact || !cashReceivedText) ? 0 : payment === "Dinheiro" ? Math.max(0, cashReceived - total) : 0;
   let paymentBreakdown = [];
   if (!payment) {
     notify("Escolha a forma de pagamento para finalizar.");
     return;
   }
-  if (payment === "Dinheiro" && cashReceivedText && cashReceived < total) {
+  if (payment === "Dinheiro" && !cashExact && cashReceivedText && cashReceived < total) {
     notify("Informe um valor recebido igual ou maior que o total da venda.");
     delete formElement.dataset.submitting;
     return;
@@ -5632,7 +5633,10 @@ function renderSalePaymentModal() {
             <span>Troco</span>
             <strong data-cash-change>${money(0)}</strong>
           </div>
-          <button class="btn primary" type="submit">Finalizar em dinheiro</button>
+          <div class="cash-action-grid">
+            <button class="btn primary" type="submit" name="cashExact" value="true">Valor exato</button>
+            <button class="btn secondary" type="submit">Finalizar com troco</button>
+          </div>
         </div>
         <div class="split-payment-panel" data-split-payment-panel hidden>
           <div class="split-payment-grid">
