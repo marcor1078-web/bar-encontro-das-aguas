@@ -942,13 +942,16 @@ function describeMercadoPagoError(payload) {
 }
 
 function paymentTerminalOptions() {
-  const mpTerminals = mercadoPagoPointStatus.terminals.map((terminal, index) => ({
-    id: `mp:${terminal.id}`,
-    provider: "mercado_pago",
-    terminalId: terminal.id,
-    label: `${mercadoPagoTerminalName(terminal, index)}${terminal.operating_mode === "PDV" ? "" : " (ativar PDV)"}`,
-    enabled: terminal.operating_mode === "PDV",
-  }));
+  const mpTerminals = mercadoPagoPointStatus.terminals
+    .map((terminal, index) => ({ terminal, number: mercadoPagoTerminalNumber(terminal, index) }))
+    .sort((a, b) => a.number - b.number || String(a.terminal.id).localeCompare(String(b.terminal.id)))
+    .map(({ terminal, number }) => ({
+      id: `mp:${terminal.id}`,
+      provider: "mercado_pago",
+      terminalId: terminal.id,
+      label: `${mercadoPagoTerminalName(terminal, number)}${terminal.operating_mode === "PDV" ? "" : " (ativar PDV)"}`,
+      enabled: terminal.operating_mode === "PDV",
+    }));
 
   return [
     ...mpTerminals,
@@ -979,10 +982,19 @@ function setSelectedPaymentTerminal(terminalKey) {
   }
 }
 
-function mercadoPagoTerminalName(terminal, index = 0) {
+function mercadoPagoTerminalNumber(terminal, fallbackIndex = 0) {
+  const serial = String(terminal.id || "").split("__").pop().toUpperCase();
+  const stableNumbers = {
+    N950NCC603875878: 1,
+    N950NCC503663738: 2,
+  };
+  return stableNumbers[serial] || fallbackIndex + 1;
+}
+
+function mercadoPagoTerminalName(terminal, number = 1) {
   const serial = String(terminal.id || "").split("__").pop() || terminal.id || "Terminal";
   const mode = terminal.operating_mode ? ` - ${terminal.operating_mode}` : "";
-  return `Maquininha ${index + 1} - ${serial}${mode}`;
+  return `Maquininha ${number} - ${serial}${mode}`;
 }
 
 function renderPaymentTerminalField({ inputId = "payment-terminal-id", inputName = "" } = {}) {
@@ -5564,11 +5576,13 @@ function renderOnline() {
     (terminal) => terminal.id === mercadoPagoPointStatus.terminalId,
   );
   const terminalRows = mercadoPagoPointStatus.terminals
-    .map((terminal, index) => {
+    .map((terminal, index) => ({ terminal, number: mercadoPagoTerminalNumber(terminal, index) }))
+    .sort((a, b) => a.number - b.number || String(a.terminal.id).localeCompare(String(b.terminal.id)))
+    .map(({ terminal, number }) => {
       const selected = terminal.id === mercadoPagoPointStatus.terminalId;
       return `
         <tr>
-          <td>Maquininha ${index + 1}${selected ? " / Principal" : ""}</td>
+          <td>Maquininha ${number}${selected ? " / Principal" : ""}</td>
           <td>${terminal.id}</td>
           <td>${terminal.operating_mode || "Sem modo"}</td>
           <td>${terminal.store_id || "-"}</td>
