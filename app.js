@@ -2887,14 +2887,15 @@ async function confirmSalePayment(event) {
   const form = new FormData(formElement);
   const payment = String(form.get("payment") || "");
   const total = salePaymentTotal();
-  let cashReceived = payment === "Dinheiro" ? Number(form.get("cashReceived") || 0) : 0;
-  let cashChange = payment === "Dinheiro" ? Math.max(0, cashReceived - total) : 0;
+  const cashReceivedText = String(form.get("cashReceived") || "").trim();
+  let cashReceived = payment === "Dinheiro" && cashReceivedText ? Number(cashReceivedText) : 0;
+  let cashChange = payment === "Dinheiro" && cashReceivedText ? Math.max(0, cashReceived - total) : 0;
   let paymentBreakdown = [];
   if (!payment) {
     notify("Escolha a forma de pagamento para finalizar.");
     return;
   }
-  if (payment === "Dinheiro" && cashReceived < total) {
+  if (payment === "Dinheiro" && cashReceivedText && cashReceived < total) {
     notify("Informe um valor recebido igual ou maior que o total da venda.");
     delete formElement.dataset.submitting;
     return;
@@ -2905,8 +2906,9 @@ async function confirmSalePayment(event) {
       .filter((part) => part.amount > 0);
     const paid = paymentBreakdown.reduce((sum, part) => sum + part.amount, 0);
     const cashPart = paymentBreakdown.find((part) => part.method === "Dinheiro")?.amount || 0;
-    cashReceived = cashPart > 0 ? Number(form.get("splitCashReceived") || 0) : 0;
-    cashChange = Math.max(0, cashReceived - cashPart);
+    const splitCashReceivedText = String(form.get("splitCashReceived") || "").trim();
+    cashReceived = cashPart > 0 && splitCashReceivedText ? Number(splitCashReceivedText) : 0;
+    cashChange = cashPart > 0 && splitCashReceivedText ? Math.max(0, cashReceived - cashPart) : 0;
 
     if (paymentBreakdown.length < 2) {
       notify("Informe pelo menos duas formas de pagamento para dividir a venda.");
@@ -2918,7 +2920,7 @@ async function confirmSalePayment(event) {
       delete formElement.dataset.submitting;
       return;
     }
-    if (cashPart > 0 && cashReceived < cashPart) {
+    if (cashPart > 0 && splitCashReceivedText && cashReceived < cashPart) {
       notify("Informe o valor recebido em dinheiro para calcular o troco.");
       delete formElement.dataset.submitting;
       return;
@@ -2960,7 +2962,7 @@ function updateCashChangePreview(form) {
   }
 
   const total = salePaymentTotal();
-  const received = Number(input.value || 0);
+  const received = input.value.trim() ? Number(input.value || 0) : total;
   output.textContent = money(Math.max(0, received - total));
 }
 
@@ -2980,7 +2982,7 @@ function updateSplitPaymentPreview(form) {
   }, 0);
   const cashPart = Number(form.querySelector('[data-split-amount="Dinheiro"]')?.value || 0);
   const cashReceivedInput = form.querySelector("[data-split-cash-received]");
-  const cashReceived = Number(cashReceivedInput?.value || 0);
+  const cashReceived = cashReceivedInput?.value.trim() ? Number(cashReceivedInput.value || 0) : cashPart;
   const remaining = total - paid;
   const paidOutput = form.querySelector("[data-split-paid]");
   const remainingOutput = form.querySelector("[data-split-remaining]");
@@ -5623,8 +5625,8 @@ function renderSalePaymentModal() {
         </div>
         <div class="cash-change-panel" data-cash-change-panel hidden>
           <label class="field">
-            <span>Valor recebido em dinheiro</span>
-            <input name="cashReceived" data-cash-received type="number" min="${total.toFixed(2)}" step="0.01" placeholder="Ex.: ${(Math.ceil(total / 10) * 10).toFixed(2)}" />
+            <span>Valor recebido em dinheiro, se tiver troco</span>
+            <input name="cashReceived" data-cash-received type="number" min="0" step="0.01" placeholder="Ex.: ${(Math.ceil(total / 10) * 10).toFixed(2)}" />
           </label>
           <div class="summary-row total">
             <span>Troco</span>
@@ -5646,7 +5648,7 @@ function renderSalePaymentModal() {
               .join("")}
           </div>
           <label class="field" data-split-cash-field hidden>
-            <span>Valor recebido em dinheiro</span>
+            <span>Valor recebido em dinheiro, se tiver troco</span>
             <input name="splitCashReceived" data-split-cash-received type="number" min="0" step="0.01" placeholder="Ex.: ${Math.ceil(total).toFixed(2)}" />
           </label>
           <div class="summary-list compact">
