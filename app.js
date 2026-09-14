@@ -855,15 +855,58 @@ function normalizePaymentBreakdown(breakdown = []) {
     .map((part) => ({ ...part, amount: Number(part.amount.toFixed(2)) }));
 }
 
-function encodePaymentDetails({ payment = "", breakdown = [], cashReceived = 0, cashChange = 0 } = {}) {
+function normalizeDiscount(discount = {}) {
+  const type = discount.type === "percent" ? "percent" : discount.type === "amount" ? "amount" : "none";
+  const value = Math.max(0, Number(discount.value || 0));
+  const amount = Math.max(0, Number(discount.amount || 0));
+  return {
+    type: value > 0 && type !== "none" ? type : "none",
+    value: value > 0 && type !== "none" ? value : 0,
+    amount,
+  };
+}
+
+function discountFromForm(form) {
+  const type = String(form.get("discountType") || "none");
+  const value = Number(form.get("discountValue") || 0);
+  return normalizeDiscount({ type, value });
+}
+
+function saleTotalsForItems(items = cart, discountInput = {}) {
+  const subtotal = items.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
+  const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
+  const grossTotal = subtotal + serviceFee;
+  const discount = normalizeDiscount(discountInput);
+  const rawDiscount = discount.type === "percent" ? grossTotal * (discount.value / 100) : discount.type === "amount" ? discount.value : 0;
+  const discountAmount = Math.min(grossTotal, Math.max(0, rawDiscount));
+  return {
+    subtotal,
+    serviceFee,
+    grossTotal,
+    discount: {
+      ...discount,
+      amount: Number(discountAmount.toFixed(2)),
+    },
+    total: Number(Math.max(0, grossTotal - discountAmount).toFixed(2)),
+  };
+}
+
+function encodePaymentDetails({ payment = "", breakdown = [], cashReceived = 0, cashChange = 0, discount = {} } = {}) {
   const parts = normalizePaymentBreakdown(breakdown);
-  const shouldEncode = parts.length > 1 || payment === "Dividido" || Number(cashReceived || 0) > 0 || Number(cashChange || 0) > 0;
+  const normalizedDiscount = normalizeDiscount(discount);
+  const shouldEncode =
+    parts.length > 1 ||
+    payment === "Dividido" ||
+    Number(cashReceived || 0) > 0 ||
+    Number(cashChange || 0) > 0 ||
+    normalizedDiscount.amount > 0;
   if (!shouldEncode) return normalizePaymentMethod(payment);
   return `${PAYMENT_DETAILS_PREFIX}${JSON.stringify({
     payment: payment || (parts.length > 1 ? "Dividido" : parts[0]?.method || ""),
     breakdown: parts,
     cashReceived: Number(cashReceived || 0),
     cashChange: Number(cashChange || 0),
+    discount: normalizedDiscount,
   })}`;
 }
 
@@ -876,6 +919,7 @@ function parsePaymentDetails(value) {
       paymentBreakdown: payment && payment !== "Dividido" ? [{ method: payment, amount: 0 }] : [],
       cashReceived: 0,
       cashChange: 0,
+      discount: { type: "none", value: 0, amount: 0 },
     };
   }
 
@@ -887,9 +931,10 @@ function parsePaymentDetails(value) {
       paymentBreakdown: parts,
       cashReceived: Number(payload.cashReceived || 0),
       cashChange: Number(payload.cashChange || 0),
+      discount: normalizeDiscount(payload.discount),
     };
   } catch (error) {
-    return { payment: "Indefinido", paymentBreakdown: [], cashReceived: 0, cashChange: 0 };
+    return { payment: "Indefinido", paymentBreakdown: [], cashReceived: 0, cashChange: 0, discount: { type: "none", value: 0, amount: 0 } };
   }
 }
 
@@ -1749,6 +1794,8 @@ function mapSaleFromDb(row, items = []) {
     paymentBreakdown: paymentDetails.paymentBreakdown,
     cashReceived: paymentDetails.cashReceived,
     cashChange: paymentDetails.cashChange,
+    discount: paymentDetails.discount,
+    discountAmount: Number(paymentDetails.discount?.amount || 0),
     status: row.status || "Concluida",
     serviceFee: Number(row.service_fee || 0),
     cancelledAt: row.cancelled_at,
@@ -2943,7 +2990,8 @@ async function confirmSalePayment(event) {
   const formElement = event.currentTarget;
   const form = new FormData(formElement);
   const payment = String(form.get("payment") || "");
-  const total = salePaymentTotal();
+  const discount = discountFromForm(form);
+  const total = salePaymentTotal(discount);
   const cashExact = form.get("cashExact") === "true";
   const cashReceivedText = String(form.get("cashReceived") || "").trim();
   let cashReceived = payment === "Dinheiro" && (cashExact || !cashReceivedText) ? total : payment === "Dinheiro" ? Number(cashReceivedText) : 0;
@@ -2993,15 +3041,34 @@ async function confirmSalePayment(event) {
     cashReceived,
     cashChange,
     paymentBreakdown,
+    discount,
   });
   if (!finalized) {
     delete formElement.dataset.submitting;
   }
 }
 
-function salePaymentTotal() {
-  const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
-  return subtotal + (tableCheckout ? tableServiceFee(subtotal) : 0);
+function salePaymentTotal(discount = {}) {
+  return saleTotalsForItems(cart, discount).total;
+}
+
+function updateSalePaymentTotalPreview(form) {
+  const discount = discountFromForm(new FormData(form));
+  const totals = saleTotalsForItems(cart, discount);
+  const totalOutput = form.querySelector("[data-sale-total]");
+  const discountOutput = form.querySelector("[data-sale-discount]");
+  const discountRow = form.querySelector("[data-discount-summary-row]");
+  const discountValueInput = form.querySelector("[data-discount-value]");
+  const discountType = form.querySelector("[data-discount-type]")?.value || "none";
+
+  if (totalOutput) totalOutput.textContent = money(totals.total);
+  if (discountOutput) discountOutput.textContent = money(totals.discount.amount);
+  if (discountRow) discountRow.hidden = totals.discount.amount <= 0;
+  if (discountValueInput) {
+    discountValueInput.disabled = discountType === "none";
+    if (discountType === "none") discountValueInput.value = "";
+    discountValueInput.placeholder = discountType === "percent" ? "Ex.: 10" : "Ex.: 5,00";
+  }
 }
 
 function updateCashChangePreview(form) {
@@ -3019,7 +3086,7 @@ function updateCashChangePreview(form) {
     return;
   }
 
-  const total = salePaymentTotal();
+  const total = salePaymentTotal(discountFromForm(new FormData(form)));
   const received = input.value.trim() ? Number(input.value || 0) : total;
   output.textContent = money(Math.max(0, received - total));
 }
@@ -3033,7 +3100,7 @@ function updateSplitPaymentPreview(form) {
   panel.hidden = !showSplit;
   if (!showSplit) return;
 
-  const total = salePaymentTotal();
+  const total = salePaymentTotal(discountFromForm(new FormData(form)));
   const paid = paymentMethods.reduce((sum, method) => {
     const input = form.querySelector(`[data-split-amount="${method}"]`);
     return sum + Number(input?.value || 0);
@@ -3060,10 +3127,24 @@ function bindSalePaymentChoice() {
   const form = document.querySelector("#sale-payment-form");
   if (!form) return;
   const cashInput = form.querySelector("[data-cash-received]");
+  const discountInputs = form.querySelectorAll("[data-discount-type], [data-discount-value]");
   const splitInputs = form.querySelectorAll("[data-split-amount], [data-split-cash-received]");
+  updateSalePaymentTotalPreview(form);
   updateCashChangePreview(form);
   updateSplitPaymentPreview(form);
   cashInput?.addEventListener("input", () => updateCashChangePreview(form));
+  discountInputs.forEach((input) => {
+    input.addEventListener("input", () => {
+      updateSalePaymentTotalPreview(form);
+      updateCashChangePreview(form);
+      updateSplitPaymentPreview(form);
+    });
+    input.addEventListener("change", () => {
+      updateSalePaymentTotalPreview(form);
+      updateCashChangePreview(form);
+      updateSplitPaymentPreview(form);
+    });
+  });
   splitInputs.forEach((input) => input.addEventListener("input", () => updateSplitPaymentPreview(form)));
 
   form.querySelectorAll('input[name="payment"]').forEach((input) => {
@@ -3092,6 +3173,7 @@ async function finalizeSale({
   cashReceived = 0,
   cashChange = 0,
   paymentBreakdown = [],
+  discount = {},
 } = {}) {
   if (!cart.length) return false;
   if (!payment) {
@@ -3100,9 +3182,8 @@ async function finalizeSale({
     return false;
   }
 
-  const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
-  const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
-  const total = subtotal + serviceFee;
+  const totals = saleTotalsForItems(cart, discount);
+  const { serviceFee, total } = totals;
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
   const selectedClientId = clientId || state.clients[0]?.id || "";
   let selectedTerminal = null;
@@ -3154,6 +3235,7 @@ async function finalizeSale({
       paymentBreakdown: paymentParts,
       cashReceived,
       cashChange,
+      discount: totals.discount,
       tableId: checkout?.id || null,
       clearCart: false,
       renderAfter: false,
@@ -3188,6 +3270,8 @@ async function finalizeSale({
     terminalLabel: printDetails.terminalLabel,
     cashReceived: printDetails.cashReceived,
     cashChange: printDetails.cashChange,
+    discount: totals.discount,
+    discountAmount: totals.discount.amount,
     status: "Concluida",
     serviceFee,
     items: structuredClone(cart),
@@ -3222,7 +3306,7 @@ async function finalizeSale({
     );
   }
 
-  logAudit("Venda finalizada", `${money(total)} em ${paymentDisplay(sale)}.`);
+  logAudit("Venda finalizada", `${money(total)} em ${paymentDisplay(sale)}${totals.discount.amount > 0 ? ` com desconto de ${money(totals.discount.amount)}` : ""}.`);
 
   if (tableCheckout) {
     state.tables = state.tables.map((entry) =>
@@ -3352,6 +3436,7 @@ async function finalizeSaleOnline({
   paymentBreakdown = [],
   cashReceived = 0,
   cashChange = 0,
+  discount = {},
   saleItems = structuredClone(cart),
   serviceFee = 0,
   tableId = null,
@@ -3365,8 +3450,9 @@ async function finalizeSaleOnline({
   }
 
   const paymentParts = normalizePaymentBreakdown(paymentBreakdown);
+  const normalizedDiscount = normalizeDiscount(discount);
   const fiadoAmount = payment === "Fiado" ? total : paymentParts.find((part) => part.method === "Fiado")?.amount || 0;
-  const encodedPayment = encodePaymentDetails({ payment, breakdown: paymentParts, cashReceived, cashChange });
+  const encodedPayment = encodePaymentDetails({ payment, breakdown: paymentParts, cashReceived, cashChange, discount: normalizedDiscount });
   const saleResult = await supabaseClient
     .from("sales")
     .insert({
@@ -3426,7 +3512,10 @@ async function finalizeSaleOnline({
     }
   }
 
-  logAudit("Venda finalizada online", `${money(total)} em ${paymentDisplay({ payment, paymentBreakdown: paymentParts, total })}.`);
+  logAudit(
+    "Venda finalizada online",
+    `${money(total)} em ${paymentDisplay({ payment, paymentBreakdown: paymentParts, total })}${normalizedDiscount.amount > 0 ? ` com desconto de ${money(normalizedDiscount.amount)}` : ""}.`,
+  );
   if (clearCart) cart = [];
   await loadOnlineStockData();
   await loadOnlineClientsData();
@@ -3993,6 +4082,7 @@ function salesTable(sales) {
             <th>Pagamento</th>
             <th>Status</th>
             <th>Operador</th>
+            <th>Desc.</th>
             <th>Total</th>
             <th>Lucro</th>
             <th>Acoes</th>
@@ -4008,6 +4098,7 @@ function salesTable(sales) {
                   <td><span class="status blue">${paymentDisplay(sale)}</span></td>
                   <td><span class="status ${saleStatusClass(sale)}">${sale.status || "Concluida"}</span></td>
                   <td>${userName(sale.cashierId)}</td>
+                  <td>${saleDiscountAmount(sale) ? money(saleDiscountAmount(sale)) : "-"}</td>
                   <td>${money(saleDisplayTotal(sale))}</td>
                   <td>${money(saleDisplayProfit(sale))}</td>
                   <td>
@@ -4405,6 +4496,10 @@ function saleDisplayTotal(sale) {
   return isZeroedSale(sale) ? 0 : Number(sale?.total || 0);
 }
 
+function saleDiscountAmount(sale) {
+  return Number(sale?.discountAmount || sale?.discount?.amount || 0);
+}
+
 function saleDisplayProfit(sale) {
   return isZeroedSale(sale) ? 0 : Number(sale?.total || 0) - Number(sale?.cost || 0);
 }
@@ -4587,17 +4682,18 @@ function downloadSalesReportPdf(cash) {
   });
 
   doc.autoTable({
-    head: [["Data", "Itens", "Pagamento", "Operador", "Total", "Lucro"]],
+    head: [["Data", "Itens", "Pagamento", "Operador", "Desc.", "Total", "Lucro"]],
     body: activeSales.length
       ? activeSales.map((sale) => [
           dateTime(sale.date),
           saleItemsDescription(sale),
           paymentDisplay(sale),
           userName(sale.cashierId),
+          saleDiscountAmount(sale) ? money(saleDiscountAmount(sale)) : "-",
           money(saleReceivedAmount(sale)),
           money(saleReceivedProfit(sale)),
         ])
-      : [["Nenhuma venda concluida no periodo.", "", "", "", "", ""]],
+      : [["Nenhuma venda concluida no periodo.", "", "", "", "", "", ""]],
     startY: (doc.lastAutoTable?.finalY || 190) + 24,
     margin: { left: 40, right: 40 },
     theme: "grid",
@@ -4730,7 +4826,7 @@ function downloadDailySalesReportPdf() {
   });
 
   doc.autoTable({
-    head: [["Data", "Produtos", "Pagamento", "Status", "Operador", "Total", "Lucro"]],
+    head: [["Data", "Produtos", "Pagamento", "Status", "Operador", "Desc.", "Total", "Lucro"]],
     body: sales.length
       ? sales.map((sale) => [
           dateTime(sale.date),
@@ -4738,10 +4834,11 @@ function downloadDailySalesReportPdf() {
           paymentDisplay(sale),
           sale.status || "Concluida",
           userName(sale.cashierId),
+          saleDiscountAmount(sale) ? money(saleDiscountAmount(sale)) : "-",
           money(saleDisplayTotal(sale)),
           money(saleDisplayProfit(sale)),
         ])
-      : [["Nenhuma venda registrada hoje.", "", "", "", "", "", ""]],
+      : [["Nenhuma venda registrada hoje.", "", "", "", "", "", "", ""]],
     startY: (doc.lastAutoTable?.finalY || 248) + 24,
     margin: { left: 40, right: 40 },
     theme: "grid",
@@ -5829,9 +5926,8 @@ function renderModal() {
 }
 
 function renderSalePaymentModal() {
-  const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
-  const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
-  const total = subtotal + serviceFee;
+  const totals = saleTotalsForItems(cart);
+  const { subtotal, serviceFee, total } = totals;
   return `
     <form id="sale-payment-form">
       <div class="modal-head">
@@ -5845,7 +5941,22 @@ function renderSalePaymentModal() {
           <div class="summary-row"><span>Itens</span><strong>${cart.reduce((sum, item) => sum + item.qty, 0)}</strong></div>
           ${tableCheckout ? `<div class="summary-row"><span>Subtotal</span><strong>${money(subtotal)}</strong></div>` : ""}
           ${tableCheckout ? `<div class="summary-row"><span>Servico</span><strong>${money(serviceFee)}</strong></div>` : ""}
-          <div class="summary-row total"><span>Total</span><strong>${money(total)}</strong></div>
+          <div class="summary-row" data-discount-summary-row hidden><span>Desconto</span><strong data-sale-discount>${money(0)}</strong></div>
+          <div class="summary-row total"><span>Total a pagar</span><strong data-sale-total>${money(total)}</strong></div>
+        </div>
+        <div class="discount-panel">
+          <label class="field">
+            <span>Desconto</span>
+            <select name="discountType" data-discount-type>
+              <option value="none">Sem desconto</option>
+              <option value="amount">Valor em R$</option>
+              <option value="percent">Percentual %</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Valor do desconto</span>
+            <input name="discountValue" data-discount-value type="number" min="0" step="0.01" placeholder="0,00" />
+          </label>
         </div>
         ${renderPaymentTerminalField({ inputId: "sale-payment-terminal-id", inputName: "terminalKey" })}
         <label class="field">
@@ -8275,6 +8386,7 @@ function printSale(saleId) {
         : sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)),
     "",
     `Pagamento: ${paymentDisplay(sale)}`,
+    saleDiscountAmount(sale) ? `Desconto: ${money(saleDiscountAmount(sale))}` : "",
     `Total: ${money(sale.total)}`,
     Number(sale.cashReceived || 0) ? `Recebido em dinheiro: ${money(sale.cashReceived)}` : "",
     Number(sale.cashReceived || 0) ? `Troco: ${money(sale.cashChange || 0)}` : "",
@@ -8835,7 +8947,7 @@ function reportSalesSection() {
     <section>
       <h2>Vendas</h2>
       ${simpleTable(
-        ["Data", "Operador", "Origem/itens", "Pagamento", "Status", "Total", "Lucro"],
+        ["Data", "Operador", "Origem/itens", "Pagamento", "Status", "Desc.", "Total", "Lucro"],
         reportSales()
           .slice()
           .reverse()
@@ -8845,6 +8957,7 @@ function reportSalesSection() {
             saleItemsDescription(sale),
             paymentDisplay(sale),
             sale.status || "Concluida",
+            saleDiscountAmount(sale) ? money(saleDiscountAmount(sale)) : "-",
             money(saleDisplayTotal(sale)),
             money(saleDisplayProfit(sale)),
           ]),
@@ -8896,7 +9009,7 @@ async function exportBackup() {
 
 function exportSalesCsv() {
   const rows = [
-    ["id", "data", "operador", "origem_itens", "pagamento", "status", "total", "custo", "lucro"],
+    ["id", "data", "operador", "origem_itens", "pagamento", "status", "desconto", "total", "custo", "lucro"],
     ...reportSales().map((sale) => [
       sale.id,
       sale.date,
@@ -8904,6 +9017,7 @@ function exportSalesCsv() {
       saleItemsDescription(sale),
       paymentDisplay(sale),
       sale.status || "Concluida",
+      saleDiscountAmount(sale),
       saleDisplayTotal(sale),
       sale.cost,
       saleDisplayProfit(sale),

@@ -176,6 +176,7 @@ body[data-theme="dark"] .payment-choice input:checked + span {
 }
 
 body[data-theme="dark"] .cash-change-panel,
+body[data-theme="dark"] .discount-panel,
 body[data-theme="dark"] .split-payment-panel {
   background: rgba(20, 184, 166, 0.12);
   border-color: rgba(94, 234, 212, 0.34);
@@ -432,6 +433,7 @@ button:disabled {
 }
 
 .cash-change-panel,
+.discount-panel,
 .split-payment-panel {
   display: grid;
   gap: 10px;
@@ -443,12 +445,14 @@ button:disabled {
 }
 
 .cash-change-panel[hidden],
+.discount-panel[hidden],
 .split-payment-panel[hidden],
 .split-payment-panel [hidden] {
   display: none;
 }
 
 .cash-change-panel .field,
+.discount-panel .field,
 .split-payment-panel .field {
   margin-bottom: 0;
 }
