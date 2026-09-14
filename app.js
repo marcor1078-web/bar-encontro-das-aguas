@@ -1354,6 +1354,13 @@ async function processPointPaymentsBeforeSale({ payment, paymentBreakdown = [], 
 }
 
 async function setMercadoPagoTerminalMode(operatingMode = "PDV", terminalId = "") {
+  if (
+    operatingMode === "STANDALONE" &&
+    !confirm("Voltar esta maquininha para modo comum? Ela deixara de receber cobrancas enviadas pelo app enquanto estiver fora do modo PDV.")
+  ) {
+    return;
+  }
+
   try {
     const response = await fetch("/api/mercadopago/set-terminal-mode", {
       method: "POST",
@@ -2303,6 +2310,9 @@ function bindViewEvents() {
   document.querySelector("[data-set-point-pdv]")?.addEventListener("click", () => setMercadoPagoTerminalMode("PDV"));
   document.querySelectorAll("[data-set-point-terminal-pdv]").forEach((button) => {
     button.addEventListener("click", () => setMercadoPagoTerminalMode("PDV", button.dataset.setPointTerminalPdv));
+  });
+  document.querySelectorAll("[data-set-point-terminal-standalone]").forEach((button) => {
+    button.addEventListener("click", () => setMercadoPagoTerminalMode("STANDALONE", button.dataset.setPointTerminalStandalone));
   });
   document.querySelector("[data-check-point-order]")?.addEventListener("click", checkMercadoPagoPendingOrder);
   document.querySelector("[data-cancel-point-order]")?.addEventListener("click", cancelMercadoPagoPendingOrder);
@@ -5641,7 +5651,7 @@ function renderOnline() {
           <td>
             ${
               terminal.operating_mode === "PDV"
-                ? '<span class="status green">Ativa</span>'
+                ? `<div class="toolbar"><span class="status green">Ativa no app</span><button class="btn compact secondary" type="button" data-set-point-terminal-standalone="${terminal.id}">Voltar modo comum</button></div>`
                 : `<button class="btn compact secondary" type="button" data-set-point-terminal-pdv="${terminal.id}">Ativar PDV</button>`
             }
           </td>
