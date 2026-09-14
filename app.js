@@ -439,6 +439,7 @@ const defaultState = {
   })),
   cancellations: [],
   backupHistory: [],
+  dailySalesTotals: [],
   kitchenOrders: [
     {
       id: "ko-001",
@@ -567,6 +568,7 @@ function migrateState(nextState) {
   }));
   nextState.cancellations = nextState.cancellations || [];
   nextState.backupHistory = nextState.backupHistory || [];
+  nextState.dailySalesTotals = nextState.dailySalesTotals || [];
   nextState.expenses = nextState.expenses || [];
   nextState.kitchenOrders = nextState.kitchenOrders || structuredClone(defaultState.kitchenOrders);
   nextState.clients = (nextState.clients || structuredClone(defaultState.clients)).map((client) => ({
@@ -917,6 +919,28 @@ function saleReceivedProfit(sale) {
   if (!isFinancialSale(sale)) return 0;
   const total = Number(sale?.total || 0);
   const received = saleReceivedAmount(sale);
+  if (!total || !received) return 0;
+  return received - Number(sale?.cost || 0) * (received / total);
+}
+
+function saleStoredReceivedAmount(sale) {
+  if (sale?.status === "Cancelada") return 0;
+  return salePaymentParts(sale)
+    .filter((part) => part.method !== "Fiado")
+    .reduce((sum, part) => sum + Number(part.amount || 0), 0);
+}
+
+function saleStoredFiadoAmount(sale) {
+  if (sale?.status === "Cancelada") return 0;
+  return salePaymentParts(sale)
+    .filter((part) => part.method === "Fiado")
+    .reduce((sum, part) => sum + Number(part.amount || 0), 0);
+}
+
+function saleStoredProfit(sale) {
+  if (sale?.status === "Cancelada") return 0;
+  const total = Number(sale?.total || 0);
+  const received = saleStoredReceivedAmount(sale);
   if (!total || !received) return 0;
   return received - Number(sale?.cost || 0) * (received / total);
 }
@@ -2288,6 +2312,14 @@ function bindViewEvents() {
   document.querySelectorAll("[data-print-daily-sales-report]").forEach((button) => {
     button.addEventListener("click", downloadDailySalesReportPdf);
   });
+  document.querySelectorAll("[data-store-daily-sales-total]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const summary = storeDailySalesTotal(localDateKey(), "manual");
+      saveState();
+      notify(summary ? `Total de hoje armazenado: ${money(summary.totalSold)} vendido.` : "Nao ha vendas de hoje para armazenar.");
+      renderApp();
+    });
+  });
   document.querySelector("[data-print-cash-report]")?.addEventListener("click", () => printReport("cash"));
   document.querySelector("[data-print-stock-report]")?.addEventListener("click", () => printReport("stock"));
   document.querySelector("[data-print-inventory-report]")?.addEventListener("click", downloadInventoryPdf);
@@ -3122,6 +3154,8 @@ async function finalizeSale({
     tableCheckout = null;
     await loadOnlineSalesData();
     attachSalePrintDetails(saleId, printDetails);
+    storeDailySalesTotal(localDateKey(), "automatico");
+    saveState();
     lastSaleForTicketsId = saleId;
     currentModal = { type: "printTickets", id: saleId };
     notify(checkout ? "Conta da mesa fechada no balcao." : "Venda salva no Supabase.");
@@ -3153,6 +3187,7 @@ async function finalizeSale({
 
   state.sales.push(sale);
   createKitchenOrders(sale);
+  storeDailySalesTotal(localDateKey(sale.date), "automatico");
 
   if (fiadoAmount > 0) {
     state.clients = state.clients.map((client) =>
@@ -3879,6 +3914,7 @@ function renderSales() {
         </div>
         <div class="toolbar">
           <button class="btn compact secondary" type="button" data-print-daily-sales-report>${icon("print")} PDF diario</button>
+          <button class="btn compact secondary" type="button" data-store-daily-sales-total>Salvar total de hoje</button>
           <button class="btn compact danger" type="button" data-zero-today-sales ${todayReceivedSales.length ? "" : "disabled"}>Zerar dia</button>
         </div>
       </div>
@@ -3904,6 +3940,16 @@ function renderSales() {
         <h2 class="card-title">Historico do dia</h2>
       </div>
       ${salesTable(todaySales)}
+    </section>
+    <section class="card" style="margin-top: 16px;">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">Totais diarios armazenados</h2>
+          <p>Memoria diaria do quanto foi vendido, recebido e deixado em fiado.</p>
+        </div>
+        <button class="btn compact secondary" type="button" data-store-daily-sales-total>Atualizar hoje</button>
+      </div>
+      ${renderDailySalesTotalsTable()}
     </section>
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
@@ -4029,6 +4075,8 @@ async function zeroTodaySales() {
     }
 
     await loadOnlineSalesData();
+    storeDailySalesTotal(localDateKey(), "zerar dia");
+    saveState();
     logAudit("Vendas do dia zeradas online", `${todayReceivedSales.length} venda(s) mantida(s) no historico.`);
     notify("Vendas recebidas de hoje foram zeradas, sem apagar produtos do historico.");
     renderApp();
@@ -4036,6 +4084,7 @@ async function zeroTodaySales() {
   }
 
   state.sales = state.sales.map((sale) => (saleIds.includes(sale.id) ? { ...sale, status: "Zerada" } : sale));
+  storeDailySalesTotal(localDateKey(), "zerar dia");
   logAudit("Vendas do dia zeradas", `${todayReceivedSales.length} venda(s) mantida(s) no historico.`);
   saveState();
   notify("Vendas recebidas de hoje foram zeradas, sem apagar produtos do historico.");
@@ -4269,6 +4318,7 @@ async function closeOpenCash({ counted, notes = "" } = {}) {
     difference: closingAmount - summary.expected,
     notes,
   };
+  storeDailySalesTotal(localDateKey(closedAt), "fechamento caixa");
 
   if (isOnlineSession()) {
     const { error } = await supabaseClient
@@ -4289,6 +4339,7 @@ async function closeOpenCash({ counted, notes = "" } = {}) {
     }
 
     await loadOnlineCashData();
+    saveState();
     logAudit("Caixa fechado online", `${closedCash.cashCode}: diferenca ${money(closedCash.difference)}.`);
     notify("Caixa fechado no Supabase.");
     return closedCash;
@@ -7426,6 +7477,7 @@ function saveCancelSale(event) {
     reason: sale.cancelReason,
     total: sale.total,
   });
+  storeDailySalesTotal(localDateKey(sale.date), "cancelamento");
 
   currentModal = null;
   logAudit("Venda cancelada", `${sale.id}: ${sale.cancelReason}`);
@@ -7837,6 +7889,8 @@ async function saveExternalPayment(event) {
     await loadOnlineStockData();
     await loadOnlineSalesData();
     attachSalePrintDetails(saleResult.data.id, { terminalLabel });
+    storeDailySalesTotal(localDateKey(date), "automatico");
+    saveState();
     logAudit(
       "Pagamento externo online",
       `${money(saleTotal)} em ${payment}${terminalLabel ? ` - ${ticketTerminalLabel({ label: terminalLabel })}` : ""}. ${
@@ -7850,7 +7904,7 @@ async function saveExternalPayment(event) {
 
   if (saleItems.length) applyCartStock(saleItems);
 
-  state.sales.push({
+  const externalSale = {
     id: id("sale"),
     date,
     cashierId: session.id,
@@ -7864,7 +7918,9 @@ async function saveExternalPayment(event) {
     items: saleItems,
     terminalLabel,
     externalNote: note,
-  });
+  };
+  state.sales.push(externalSale);
+  storeDailySalesTotal(localDateKey(externalSale.date), "automatico");
 
   currentModal = null;
   logAudit(
@@ -8889,6 +8945,124 @@ function cashSessionCode(cash) {
 
 function nextCashSessionCode() {
   return `CAIXA-${String((state.cashSessions || []).length + 1).padStart(4, "0")}`;
+}
+
+function localDateKey(value = new Date()) {
+  const date = new Date(value);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatDateKeyBr(dateKey) {
+  const [year, month, day] = String(dateKey || "").split("-");
+  if (!year || !month || !day) return "-";
+  return `${day}/${month}/${year}`;
+}
+
+function salesForDateKey(dateKey, { includeCanceled = false } = {}) {
+  return state.sales.filter((sale) => {
+    if (!includeCanceled && sale.status === "Cancelada") return false;
+    return localDateKey(sale.date) === dateKey;
+  });
+}
+
+function buildDailySalesTotal(dateKey, source = "automatico") {
+  const sales = salesForDateKey(dateKey, { includeCanceled: false });
+  const payments = Object.fromEntries(paymentMethods.map((method) => [method, 0]));
+  sales.forEach((sale) => {
+    salePaymentParts(sale).forEach((part) => {
+      payments[part.method] = Number(payments[part.method] || 0) + Number(part.amount || 0);
+    });
+  });
+
+  return {
+    id: dateKey,
+    date: dateKey,
+    updatedAt: new Date().toISOString(),
+    source,
+    salesCount: sales.length,
+    receivedCount: sales.filter((sale) => saleStoredReceivedAmount(sale) > 0).length,
+    fiadoCount: sales.filter((sale) => saleStoredFiadoAmount(sale) > 0).length,
+    itemCount: sales.reduce((sum, sale) => sum + (sale.items || []).reduce((itemSum, item) => itemSum + Number(item.qty || 0), 0), 0),
+    totalSold: sales.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
+    received: sales.reduce((sum, sale) => sum + saleStoredReceivedAmount(sale), 0),
+    fiado: sales.reduce((sum, sale) => sum + saleStoredFiadoAmount(sale), 0),
+    profit: sales.reduce((sum, sale) => sum + saleStoredProfit(sale), 0),
+    payments,
+  };
+}
+
+function storeDailySalesTotal(dateKey = localDateKey(), source = "automatico") {
+  const summary = buildDailySalesTotal(dateKey, source);
+  if (!summary.salesCount && !(state.dailySalesTotals || []).some((entry) => entry.date === dateKey)) return null;
+  state.dailySalesTotals = [
+    summary,
+    ...(state.dailySalesTotals || []).filter((entry) => entry.date !== dateKey),
+  ].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  return summary;
+}
+
+function dailySalesTotalsForDisplay() {
+  const keys = new Set([
+    ...(state.dailySalesTotals || []).map((entry) => entry.date),
+    ...state.sales.map((sale) => localDateKey(sale.date)),
+  ]);
+  return [...keys]
+    .map((dateKey) => {
+      const stored = (state.dailySalesTotals || []).find((entry) => entry.date === dateKey);
+      const computed = buildDailySalesTotal(dateKey, stored?.source || "calculado");
+      return computed.salesCount ? { ...stored, ...computed, updatedAt: stored?.updatedAt || computed.updatedAt } : stored;
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+function renderDailySalesTotalsTable() {
+  const totals = dailySalesTotalsForDisplay().slice(0, 60);
+  if (!totals.length) return '<div class="empty">Nenhum total diario armazenado ainda.</div>';
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Dia</th>
+            <th>Total vendido</th>
+            <th>Recebido</th>
+            <th>Fiado</th>
+            <th>Lucro</th>
+            <th>Vendas</th>
+            <th>Itens</th>
+            <th>Pix</th>
+            <th>Debito</th>
+            <th>Credito</th>
+            <th>Dinheiro</th>
+            <th>Atualizado</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${totals
+            .map(
+              (entry) => `
+                <tr>
+                  <td><strong>${formatDateKeyBr(entry.date)}</strong></td>
+                  <td>${money(entry.totalSold)}</td>
+                  <td>${money(entry.received)}</td>
+                  <td>${money(entry.fiado)}</td>
+                  <td>${money(entry.profit)}</td>
+                  <td>${entry.salesCount}</td>
+                  <td>${qty(entry.itemCount)}</td>
+                  <td>${money(entry.payments?.Pix || 0)}</td>
+                  <td>${money(entry.payments?.Debito || 0)}</td>
+                  <td>${money(entry.payments?.Credito || 0)}</td>
+                  <td>${money(entry.payments?.Dinheiro || 0)}</td>
+                  <td>${entry.updatedAt ? dateTime(entry.updatedAt) : "-"}</td>
+                </tr>
+              `,
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function salesForToday({ includeInactive = false } = {}) {
