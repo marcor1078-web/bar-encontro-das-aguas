@@ -5540,12 +5540,19 @@ function renderSuppliers() {
         <div class="card-head"><h2 class="card-title">Fornecedores</h2></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Nome</th><th>Contato</th><th>Telefone</th></tr></thead>
+            <thead><tr><th>Nome</th><th>Contato</th><th>Telefone</th><th>Acoes</th></tr></thead>
             <tbody>
               ${state.suppliers
                 .map(
                   (supplier) => `
-                    <tr><td>${supplier.name}</td><td>${supplier.contact}</td><td>${supplier.phone}</td></tr>
+                    <tr>
+                      <td>${supplier.name}</td>
+                      <td>${supplier.contact || "-"}</td>
+                      <td>${supplier.phone || "-"}</td>
+                      <td>
+                        <button class="btn compact secondary" type="button" data-open-modal="supplier" data-id="${supplier.id}">Editar</button>
+                      </td>
+                    </tr>
                   `,
                 )
                 .join("")}
@@ -6524,17 +6531,18 @@ function renderInventoryModal() {
 }
 
 function renderSupplierModal() {
+  const supplier = state.suppliers.find((item) => item.id === currentModal.id);
   return `
     <form id="supplier-form">
       <div class="modal-head">
-        <h2>Novo fornecedor</h2>
+        <h2>${supplier ? "Editar fornecedor" : "Novo fornecedor"}</h2>
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body">
         <div class="form-grid">
-          <label class="field full"><span>Nome</span><input name="name" required /></label>
-          <label class="field"><span>Contato</span><input name="contact" /></label>
-          <label class="field"><span>Telefone</span><input name="phone" /></label>
+          <label class="field full"><span>Nome</span><input name="name" required value="${supplier?.name || ""}" /></label>
+          <label class="field"><span>Contato</span><input name="contact" value="${supplier?.contact || ""}" /></label>
+          <label class="field"><span>Telefone</span><input name="phone" value="${supplier?.phone || ""}" /></label>
         </div>
       </div>
       <div class="modal-actions">
@@ -7421,36 +7429,44 @@ async function saveInventoryCount(event) {
 async function saveSupplier(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  const isEditing = Boolean(currentModal.id);
   const supplier = {
-    id: id("supplier"),
+    id: currentModal.id || id("supplier"),
     name: form.get("name").trim(),
     contact: form.get("contact").trim(),
     phone: form.get("phone").trim(),
   };
 
   if (isOnlineSession()) {
-    const { error } = await supabaseClient.from("suppliers").insert({
+    const row = {
       name: supplier.name,
       contact: supplier.contact,
       phone: supplier.phone,
-    });
+    };
+    const result = isEditing
+      ? await supabaseClient.from("suppliers").update(row).eq("id", currentModal.id)
+      : await supabaseClient.from("suppliers").insert(row);
 
-    if (error) {
-      notify(`Erro ao salvar fornecedor online: ${error.message}`);
+    if (result.error) {
+      notify(`Erro ao salvar fornecedor online: ${result.error.message}`);
       return;
     }
 
     currentModal = null;
     await loadOnlineSupplierData();
-    logAudit("Fornecedor criado online", supplier.name);
+    logAudit(isEditing ? "Fornecedor editado online" : "Fornecedor criado online", supplier.name);
     notify("Fornecedor salvo no Supabase.");
     renderApp();
     return;
   }
 
-  state.suppliers.push(supplier);
+  if (isEditing) {
+    state.suppliers = state.suppliers.map((entry) => (entry.id === supplier.id ? supplier : entry));
+  } else {
+    state.suppliers.push(supplier);
+  }
   currentModal = null;
-  logAudit("Fornecedor criado", supplier.name);
+  logAudit(isEditing ? "Fornecedor editado" : "Fornecedor criado", supplier.name);
   saveState();
   notify("Fornecedor salvo.");
   renderApp();
@@ -7506,13 +7522,15 @@ async function saveExpense(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const paid = form.get("paid") === "true";
+  const existing = (state.expenses || []).find((expense) => expense.id === currentModal.id);
+  const isEditing = Boolean(currentModal.id);
   const payload = {
     description: form.get("description").trim(),
     category: form.get("category").trim(),
     amount: Number(form.get("amount")),
     dueDate: form.get("dueDate"),
     paid,
-    paidAt: paid ? new Date().toISOString() : null,
+    paidAt: paid ? existing?.paidAt || new Date().toISOString() : null,
   };
 
   if (isOnlineSession()) {
@@ -7524,7 +7542,7 @@ async function saveExpense(event) {
       paid: payload.paid,
       paid_at: payload.paidAt,
     };
-    const result = currentModal.id
+    const result = isEditing
       ? await supabaseClient.from("expenses").update(row).eq("id", currentModal.id)
       : await supabaseClient.from("expenses").insert(row);
 
@@ -7542,9 +7560,9 @@ async function saveExpense(event) {
   }
 
   state.expenses = state.expenses || [];
-  if (currentModal.id) {
+  if (isEditing) {
     state.expenses = state.expenses.map((expense) =>
-      expense.id === currentModal.id ? { ...expense, ...payload, paidAt: paid ? expense.paidAt || payload.paidAt : null } : expense,
+      expense.id === currentModal.id ? { ...expense, ...payload } : expense,
     );
   } else {
     state.expenses.unshift({ id: id("expense"), createdAt: new Date().toISOString(), ...payload });
