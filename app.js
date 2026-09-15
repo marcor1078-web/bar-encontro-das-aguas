@@ -571,7 +571,17 @@ function migrateState(nextState) {
   nextState.cancellations = nextState.cancellations || [];
   nextState.backupHistory = nextState.backupHistory || [];
   nextState.dailySalesTotals = nextState.dailySalesTotals || [];
-  nextState.expenses = nextState.expenses || [];
+  nextState.expenses = (nextState.expenses || []).map((expense) => {
+    const amount = Number(expense.amount || 0);
+    const paidAmount = Number(expense.paidAmount ?? (expense.paid ? amount : 0));
+    return {
+      paymentHistory: [],
+      ...expense,
+      paidAmount: Math.min(amount, Math.max(0, paidAmount)),
+      paid: Boolean(expense.paid || paidAmount >= amount),
+      paidAt: expense.paidAt || (expense.paid || paidAmount >= amount ? new Date().toISOString() : null),
+    };
+  });
   nextState.kitchenOrders = nextState.kitchenOrders || structuredClone(defaultState.kitchenOrders);
   nextState.clients = (nextState.clients || structuredClone(defaultState.clients)).map((client) => ({
     creditLimit: 0,
@@ -1912,14 +1922,18 @@ function mapPurchaseFromDb(row) {
 }
 
 function mapExpenseFromDb(row) {
+  const amount = Number(row.amount || 0);
+  const paidAmount = Number(row.paid_amount ?? (row.paid ? amount : 0));
   return {
     id: row.id,
     createdAt: row.created_at,
     description: row.description,
     category: row.category || "",
-    amount: Number(row.amount || 0),
+    amount,
     dueDate: row.due_date,
-    paid: Boolean(row.paid),
+    paidAmount: Math.min(amount, Math.max(0, paidAmount)),
+    paymentHistory: Array.isArray(row.payment_history) ? row.payment_history : [],
+    paid: Boolean(row.paid || paidAmount >= amount),
     paidAt: row.paid_at || null,
   };
 }
@@ -5528,6 +5542,39 @@ function renderProducts() {
   `;
 }
 
+function expensePaidAmount(expense) {
+  const amount = Number(expense?.amount || 0);
+  const paidAmount = Number(expense?.paidAmount ?? (expense?.paid ? amount : 0));
+  return Math.min(amount, Math.max(0, paidAmount));
+}
+
+function expenseBalance(expense) {
+  return Math.max(0, Number(expense?.amount || 0) - expensePaidAmount(expense));
+}
+
+function expenseStatus(expense) {
+  if (expenseBalance(expense) <= 0 && Number(expense?.amount || 0) > 0) return { label: "Pago", className: "green" };
+  if (expensePaidAmount(expense) > 0) return { label: "Parcial", className: "blue" };
+  return { label: "Aberto", className: "amber" };
+}
+
+function expensePaymentHistory(expense) {
+  return Array.isArray(expense?.paymentHistory) ? expense.paymentHistory : [];
+}
+
+function expensePaymentMethodLabel(method) {
+  return (
+    {
+      cash: "Dinheiro",
+      pix: "Pix",
+      debit: "Debito",
+      credit: "Credito",
+      bank: "Banco",
+      other: "Outro",
+    }[method] || "Outro"
+  );
+}
+
 function renderSuppliers() {
   return `
     <div class="section-title">
@@ -5596,28 +5643,32 @@ function renderSuppliers() {
       <div class="card-head"><h2 class="card-title">Despesas do negocio</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Vencimento</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Status</th><th>Pago em</th><th>Acoes</th></tr></thead>
+          <thead><tr><th>Vencimento</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Ultimo pagamento</th><th>Acoes</th></tr></thead>
           <tbody>
             ${(state.expenses || [])
-              .map(
-                (expense) => `
+              .map((expense) => {
+                const status = expenseStatus(expense);
+                const lastPayment = expensePaymentHistory(expense)[0];
+                return `
                   <tr>
                     <td>${new Date(`${expense.dueDate}T00:00:00`).toLocaleDateString("pt-BR")}</td>
                     <td>${expense.description}</td>
                     <td>${expense.category || "-"}</td>
                     <td>${money(expense.amount)}</td>
-                    <td><span class="status ${expense.paid ? "green" : "amber"}">${expense.paid ? "Pago" : "Aberto"}</span></td>
-                    <td>${expense.paidAt ? dateTime(expense.paidAt) : "-"}</td>
+                    <td>${money(expensePaidAmount(expense))}</td>
+                    <td>${money(expenseBalance(expense))}</td>
+                    <td><span class="status ${status.className}">${status.label}</span></td>
+                    <td>${lastPayment ? `${dateTime(lastPayment.date)} - ${money(lastPayment.amount)}` : "-"}</td>
                     <td>
                       <div class="toolbar">
                         <button class="btn compact secondary" type="button" data-open-modal="expense" data-id="${expense.id}">Editar</button>
+                        <button class="btn compact secondary" type="button" data-open-modal="expensePayment" data-id="${expense.id}" ${expenseBalance(expense) <= 0 ? "disabled" : ""}>Pagar</button>
                         <button class="btn compact danger" type="button" data-remove-expense="${expense.id}">Remover</button>
-                        <button class="btn compact secondary" type="button" data-pay-expense="${expense.id}" ${expense.paid ? "disabled" : ""}>Marcar pago</button>
                       </div>
                     </td>
                   </tr>
-                `,
-              )
+                `;
+              })
               .join("")}
           </tbody>
         </table>
@@ -6082,6 +6133,7 @@ function renderModal() {
     supplier: renderSupplierModal,
     purchase: renderPurchaseModal,
     expense: renderExpenseModal,
+    expensePayment: renderExpensePaymentModal,
     client: renderClientModal,
     clientPayment: renderClientPaymentModal,
     cancelSale: renderCancelSaleModal,
@@ -6620,6 +6672,90 @@ function renderExpenseModal() {
   `;
 }
 
+function renderExpensePaymentModal() {
+  const expense = (state.expenses || []).find((item) => item.id === currentModal.id);
+  if (!expense) {
+    return `
+      <div class="modal-head">
+        <h2>Pagar despesa</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body"><p>Despesa nao encontrada.</p></div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Fechar</button>
+      </div>
+    `;
+  }
+
+  const balance = expenseBalance(expense);
+  const history = expensePaymentHistory(expense);
+  return `
+    <form id="expense-payment-form">
+      <div class="modal-head">
+        <h2>Pagar despesa</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="summary-list">
+          <div class="summary-row"><span>Despesa</span><strong>${escapeHtml(expense.description)}</strong></div>
+          <div class="summary-row"><span>Valor total</span><strong>${money(expense.amount)}</strong></div>
+          <div class="summary-row"><span>Ja pago</span><strong>${money(expensePaidAmount(expense))}</strong></div>
+          <div class="summary-row total"><span>Saldo restante</span><strong>${money(balance)}</strong></div>
+        </div>
+        <div class="form-grid">
+          <label class="field">
+            <span>Valor pago agora</span>
+            <input name="amount" type="number" min="0.01" max="${balance}" step="0.01" required value="${balance || ""}" />
+          </label>
+          <label class="field">
+            <span>Forma</span>
+            <select name="method">
+              <option value="cash">Dinheiro</option>
+              <option value="pix">Pix</option>
+              <option value="debit">Debito</option>
+              <option value="credit">Credito</option>
+              <option value="bank">Banco</option>
+              <option value="other">Outro</option>
+            </select>
+          </label>
+          <label class="field full">
+            <span>Observacao</span>
+            <input name="note" placeholder="Ex.: parcela 1/10, pagamento em dinheiro, Pix..." />
+          </label>
+        </div>
+        ${
+          history.length
+            ? `<div class="table-wrap modal-table-wrap">
+                <table>
+                  <thead><tr><th>Data/hora</th><th>Valor</th><th>Forma</th><th>Usuario</th><th>Obs.</th></tr></thead>
+                  <tbody>
+                    ${history
+                      .map(
+                        (entry) => `
+                          <tr>
+                            <td>${dateTime(entry.date)}</td>
+                            <td>${money(entry.amount)}</td>
+                            <td>${expensePaymentMethodLabel(entry.method)}</td>
+                            <td>${entry.userId ? userName(entry.userId) : "-"}</td>
+                            <td>${escapeHtml(entry.note || "")}</td>
+                          </tr>
+                        `,
+                      )
+                      .join("")}
+                  </tbody>
+                </table>
+              </div>`
+            : '<div class="empty">Nenhum pagamento parcial registrado ainda.</div>'
+        }
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">Registrar pagamento</button>
+      </div>
+    </form>
+  `;
+}
+
 function renderClientModal() {
   const client = state.clients.find((item) => item.id === currentModal.id);
   return `
@@ -7044,6 +7180,7 @@ function bindModalForms() {
   document.querySelector("#supplier-form")?.addEventListener("submit", saveSupplier);
   document.querySelector("#purchase-form")?.addEventListener("submit", savePurchase);
   document.querySelector("#expense-form")?.addEventListener("submit", saveExpense);
+  document.querySelector("#expense-payment-form")?.addEventListener("submit", saveExpensePayment);
   document.querySelector("#client-form")?.addEventListener("submit", saveClient);
   document.querySelector("#client-payment-form")?.addEventListener("submit", saveClientPayment);
   document.querySelector("#cancel-sale-form")?.addEventListener("submit", saveCancelSale);
@@ -7531,16 +7668,33 @@ async function savePurchase(event) {
 async function saveExpense(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  const now = new Date().toISOString();
   const paid = form.get("paid") === "true";
   const existing = (state.expenses || []).find((expense) => expense.id === currentModal.id);
   const isEditing = Boolean(currentModal.id);
+  const amount = Number(form.get("amount"));
+  const currentPaid = existing ? expensePaidAmount(existing) : 0;
+  const paymentHistory = [...expensePaymentHistory(existing)];
+  let paidAmount = paid ? amount : Math.min(amount, currentPaid);
+  if (paid && paidAmount > currentPaid) {
+    paymentHistory.unshift({
+      id: id("expensepay"),
+      date: now,
+      amount: Number((paidAmount - currentPaid).toFixed(2)),
+      method: "other",
+      userId: session?.id || "",
+      note: "Quitacao pela edicao da despesa",
+    });
+  }
   const payload = {
     description: form.get("description").trim(),
     category: form.get("category").trim(),
-    amount: Number(form.get("amount")),
+    amount,
     dueDate: form.get("dueDate"),
-    paid,
-    paidAt: paid ? existing?.paidAt || new Date().toISOString() : null,
+    paidAmount,
+    paymentHistory,
+    paid: paidAmount >= amount,
+    paidAt: paidAmount >= amount ? existing?.paidAt || now : null,
   };
 
   if (isOnlineSession()) {
@@ -7551,12 +7705,18 @@ async function saveExpense(event) {
       due_date: payload.dueDate,
       paid: payload.paid,
       paid_at: payload.paidAt,
+      paid_amount: payload.paidAmount,
+      payment_history: payload.paymentHistory,
     };
     const result = isEditing
       ? await supabaseClient.from("expenses").update(row).eq("id", currentModal.id)
       : await supabaseClient.from("expenses").insert(row);
 
     if (result.error) {
+      if (isExpensePaymentSchemaMissing(result.error)) {
+        notify("Rode a migracao de pagamentos parciais de despesas no Supabase antes de salvar online.");
+        return;
+      }
       notify(`Erro ao salvar despesa online: ${result.error.message}`);
       return;
     }
@@ -7585,12 +7745,37 @@ async function saveExpense(event) {
   renderApp();
 }
 
+function isExpensePaymentSchemaMissing(error) {
+  const message = String(error?.message || "");
+  return message.includes("paid_amount") || message.includes("payment_history");
+}
+
 async function payExpense(expenseId) {
   if (isOnlineSession()) {
     const paidAt = new Date().toISOString();
-    const { error } = await supabaseClient.from("expenses").update({ paid: true, paid_at: paidAt }).eq("id", expenseId);
+    const expense = (state.expenses || []).find((entry) => entry.id === expenseId);
+    const balance = expenseBalance(expense);
+    const history = [
+      {
+        id: id("expensepay"),
+        date: paidAt,
+        amount: balance,
+        method: "other",
+        userId: session?.id || "",
+        note: "Quitacao total",
+      },
+      ...expensePaymentHistory(expense),
+    ];
+    const { error } = await supabaseClient
+      .from("expenses")
+      .update({ paid: true, paid_at: paidAt, paid_amount: Number(expense?.amount || 0), payment_history: history })
+      .eq("id", expenseId);
 
     if (error) {
+      if (isExpensePaymentSchemaMissing(error)) {
+        notify("Rode a migracao de pagamentos parciais de despesas no Supabase antes de pagar online.");
+        return;
+      }
       notify(`Erro ao pagar despesa online: ${error.message}`);
       return;
     }
@@ -7603,11 +7788,101 @@ async function payExpense(expenseId) {
   }
 
   state.expenses = (state.expenses || []).map((expense) =>
-    expense.id === expenseId ? { ...expense, paid: true, paidAt: new Date().toISOString() } : expense,
+    expense.id === expenseId
+      ? {
+          ...expense,
+          paid: true,
+          paidAmount: Number(expense.amount || 0),
+          paidAt: new Date().toISOString(),
+          paymentHistory: [
+            {
+              id: id("expensepay"),
+              date: new Date().toISOString(),
+              amount: expenseBalance(expense),
+              method: "other",
+              userId: session?.id || "",
+              note: "Quitacao total",
+            },
+            ...expensePaymentHistory(expense),
+          ],
+        }
+      : expense,
   );
   logAudit("Despesa paga", expenseId);
   saveState();
   notify("Despesa marcada como paga.");
+  renderApp();
+}
+
+async function saveExpensePayment(event) {
+  event.preventDefault();
+  const expense = (state.expenses || []).find((entry) => entry.id === currentModal.id);
+  if (!expense) return;
+
+  const form = new FormData(event.currentTarget);
+  const amount = Number(form.get("amount") || 0);
+  const balance = expenseBalance(expense);
+  if (amount <= 0 || amount > balance) {
+    notify(`Informe um valor entre R$ 0,01 e ${money(balance)}.`);
+    return;
+  }
+
+  const payment = {
+    id: id("expensepay"),
+    date: new Date().toISOString(),
+    amount: Number(amount.toFixed(2)),
+    method: form.get("method") || "other",
+    userId: session?.id || "",
+    note: String(form.get("note") || "").trim(),
+  };
+  const paidAmount = Number(Math.min(Number(expense.amount || 0), expensePaidAmount(expense) + amount).toFixed(2));
+  const paid = paidAmount >= Number(expense.amount || 0);
+  const paidAt = paid ? new Date().toISOString() : null;
+  const paymentHistory = [payment, ...expensePaymentHistory(expense)];
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient
+      .from("expenses")
+      .update({
+        paid_amount: paidAmount,
+        payment_history: paymentHistory,
+        paid,
+        paid_at: paidAt,
+      })
+      .eq("id", expense.id);
+
+    if (error) {
+      if (isExpensePaymentSchemaMissing(error)) {
+        notify("Rode a migracao de pagamentos parciais de despesas no Supabase antes de registrar pagamento online.");
+        return;
+      }
+      notify(`Erro ao registrar pagamento da despesa online: ${error.message}`);
+      return;
+    }
+
+    currentModal = null;
+    await loadOnlineSupplierData();
+    logAudit("Pagamento parcial de despesa online", `${expense.description}: ${money(amount)}.`);
+    notify(paid ? "Despesa quitada no Supabase." : "Pagamento parcial registrado no Supabase.");
+    renderApp();
+    return;
+  }
+
+  state.expenses = (state.expenses || []).map((entry) =>
+    entry.id === expense.id
+      ? {
+          ...entry,
+          paidAmount,
+          paymentHistory,
+          paid,
+          paidAt,
+        }
+      : entry,
+  );
+  currentModal = null;
+  logAudit("Pagamento parcial de despesa", `${expense.description}: ${money(amount)}.`);
+  saveState();
+  notify(paid ? "Despesa quitada." : "Pagamento parcial registrado.");
   renderApp();
 }
 
