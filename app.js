@@ -2426,6 +2426,12 @@ function bindViewEvents() {
   document.querySelectorAll("[data-pay-expense]").forEach((button) => {
     button.addEventListener("click", () => payExpense(button.dataset.payExpense));
   });
+  document.querySelectorAll("[data-remove-supplier]").forEach((button) => {
+    button.addEventListener("click", () => removeSupplier(button.dataset.removeSupplier));
+  });
+  document.querySelectorAll("[data-remove-expense]").forEach((button) => {
+    button.addEventListener("click", () => removeExpense(button.dataset.removeExpense));
+  });
 
   document.querySelectorAll("[data-pay-client]").forEach((button) => {
     button.addEventListener("click", () => payClient(button.dataset.payClient));
@@ -5550,7 +5556,10 @@ function renderSuppliers() {
                       <td>${supplier.contact || "-"}</td>
                       <td>${supplier.phone || "-"}</td>
                       <td>
-                        <button class="btn compact secondary" type="button" data-open-modal="supplier" data-id="${supplier.id}">Editar</button>
+                        <div class="toolbar">
+                          <button class="btn compact secondary" type="button" data-open-modal="supplier" data-id="${supplier.id}">Editar</button>
+                          <button class="btn compact danger" type="button" data-remove-supplier="${supplier.id}">Remover</button>
+                        </div>
                       </td>
                     </tr>
                   `,
@@ -5602,6 +5611,7 @@ function renderSuppliers() {
                     <td>
                       <div class="toolbar">
                         <button class="btn compact secondary" type="button" data-open-modal="expense" data-id="${expense.id}">Editar</button>
+                        <button class="btn compact danger" type="button" data-remove-expense="${expense.id}">Remover</button>
                         <button class="btn compact secondary" type="button" data-pay-expense="${expense.id}" ${expense.paid ? "disabled" : ""}>Marcar pago</button>
                       </div>
                     </td>
@@ -7601,6 +7611,82 @@ async function payExpense(expenseId) {
   renderApp();
 }
 
+async function removeSupplier(supplierId) {
+  const supplier = state.suppliers.find((entry) => entry.id === supplierId);
+  if (!supplier) return;
+
+  const linkedPurchases = state.purchases.filter((purchase) => purchase.supplierId === supplierId).length;
+  const linkedLots = state.stockLots.filter((lot) => lot.supplierId === supplierId).length;
+  const linkedMessage =
+    linkedPurchases || linkedLots
+      ? `\n\nEste fornecedor esta ligado a ${linkedPurchases} compra(s) e ${linkedLots} lote(s). Esses registros continuarao no historico, mas ficarao sem fornecedor vinculado.`
+      : "";
+
+  if (!confirm(`Remover o fornecedor "${supplier.name}"?${linkedMessage}`)) return;
+
+  if (isOnlineSession()) {
+    const purchasesUpdate = await supabaseClient.from("purchases").update({ supplier_id: null }).eq("supplier_id", supplierId);
+    if (purchasesUpdate.error) {
+      notify(`Erro ao soltar compras do fornecedor: ${purchasesUpdate.error.message}`);
+      return;
+    }
+    const lotsUpdate = await supabaseClient.from("product_lots").update({ supplier_id: null }).eq("supplier_id", supplierId);
+    if (lotsUpdate.error) {
+      notify(`Erro ao soltar lotes do fornecedor: ${lotsUpdate.error.message}`);
+      return;
+    }
+    const { error } = await supabaseClient.from("suppliers").delete().eq("id", supplierId);
+    if (error) {
+      notify(`Erro ao remover fornecedor online: ${error.message}`);
+      return;
+    }
+
+    await loadOnlineSupplierData();
+    await loadOnlineStockData();
+    logAudit("Fornecedor removido online", supplier.name);
+    notify("Fornecedor removido do Supabase.");
+    renderApp();
+    return;
+  }
+
+  state.suppliers = state.suppliers.filter((entry) => entry.id !== supplierId);
+  state.purchases = state.purchases.map((purchase) =>
+    purchase.supplierId === supplierId ? { ...purchase, supplierId: "" } : purchase,
+  );
+  state.stockLots = state.stockLots.map((lot) =>
+    lot.supplierId === supplierId ? { ...lot, supplierId: "" } : lot,
+  );
+  logAudit("Fornecedor removido", supplier.name);
+  saveState();
+  notify("Fornecedor removido.");
+  renderApp();
+}
+
+async function removeExpense(expenseId) {
+  const expense = (state.expenses || []).find((entry) => entry.id === expenseId);
+  if (!expense) return;
+  if (!confirm(`Remover a despesa "${expense.description}" de ${money(expense.amount)}?`)) return;
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient.from("expenses").delete().eq("id", expenseId);
+    if (error) {
+      notify(`Erro ao remover despesa online: ${error.message}`);
+      return;
+    }
+    await loadOnlineSupplierData();
+    logAudit("Despesa removida online", `${expense.description}: ${money(expense.amount)}.`);
+    notify("Despesa removida do Supabase.");
+    renderApp();
+    return;
+  }
+
+  state.expenses = (state.expenses || []).filter((entry) => entry.id !== expenseId);
+  logAudit("Despesa removida", `${expense.description}: ${money(expense.amount)}.`);
+  saveState();
+  notify("Despesa removida.");
+  renderApp();
+}
+
 async function saveClient(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -9395,7 +9481,7 @@ function userName(userId) {
 }
 
 function supplierName(supplierId) {
-  return state.suppliers.find((supplier) => supplier.id === supplierId)?.name || "Fornecedor";
+  return state.suppliers.find((supplier) => supplier.id === supplierId)?.name || "Sem fornecedor";
 }
 
 function ingredientName(ingredientId) {
