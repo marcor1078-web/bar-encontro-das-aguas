@@ -21,6 +21,10 @@ function paymentType(method) {
   return "";
 }
 
+function isPointPaymentMethod(method) {
+  return Boolean(paymentType(method));
+}
+
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["POST"])) return;
   const env = requireMercadoPagoConfig(res);
@@ -30,6 +34,13 @@ module.exports = async function handler(req, res) {
   const amount = Number(body.amount || 0);
   if (!amount || amount <= 0) {
     json(res, 400, { error: "invalid_amount" });
+    return;
+  }
+  if (!isPointPaymentMethod(body.paymentMethod)) {
+    json(res, 400, {
+      error: "invalid_payment_method_for_point",
+      message: "Somente Pix, Debito ou Credito podem ser enviados para a maquininha.",
+    });
     return;
   }
   const terminalId = String(body.terminalId || env.terminalId).trim();
@@ -54,14 +65,12 @@ module.exports = async function handler(req, res) {
   };
 
   const defaultType = paymentType(body.paymentMethod);
-  if (defaultType) {
-    payload.config.payment_method = {
-      default_type: defaultType,
-    };
-    if (defaultType === "credit_card" && env.defaultInstallments > 1) {
-      payload.config.payment_method.default_installments = env.defaultInstallments;
-      payload.config.payment_method.installments_cost = "seller";
-    }
+  payload.config.payment_method = {
+    default_type: defaultType,
+  };
+  if (defaultType === "credit_card" && env.defaultInstallments > 1) {
+    payload.config.payment_method.default_installments = env.defaultInstallments;
+    payload.config.payment_method.installments_cost = "seller";
   }
 
   if (env.integratorId || env.platformId || env.sponsorId) {

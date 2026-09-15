@@ -134,6 +134,7 @@ const categoryMeta = {
 const paymentMethods = ["Pix", "Debito", "Credito", "Dinheiro", "Fiado"];
 const cashPaymentMethods = paymentMethods.filter((method) => method !== "Fiado");
 const checkoutPaymentMethods = [...paymentMethods, "Dividido"];
+const pointPaymentMethods = ["Pix", "Debito", "Credito"];
 const PAYMENT_DETAILS_PREFIX = "PAYMENT_DETAILS:";
 
 const defaultState = {
@@ -838,7 +839,7 @@ async function testSupabaseConnection() {
 }
 
 function isPointPayment(payment) {
-  return payment === "Pix" || payment === "Debito" || payment === "Credito";
+  return pointPaymentMethods.includes(normalizePaymentMethod(payment));
 }
 
 function normalizePaymentMethod(method) {
@@ -854,6 +855,13 @@ function normalizePaymentBreakdown(breakdown = []) {
     }))
     .filter((part) => paymentMethods.includes(part.method) && part.amount > 0)
     .map((part) => ({ ...part, amount: Number(part.amount.toFixed(2)) }));
+}
+
+function pointPaymentPartsForSale({ payment = "", paymentBreakdown = [], total = 0 } = {}) {
+  const parts = normalizePaymentBreakdown(paymentBreakdown);
+  if (parts.length) return parts.filter((part) => isPointPayment(part.method));
+  const method = normalizePaymentMethod(payment);
+  return isPointPayment(method) ? [{ method, amount: Number(total || 0) }] : [];
 }
 
 function normalizeDiscount(discount = {}) {
@@ -1376,12 +1384,7 @@ async function processPointPaymentBeforeSale({ amount, payment, description, ite
 }
 
 async function processPointPaymentsBeforeSale({ payment, paymentBreakdown = [], total = 0, terminalKey = "", items = [], description = "" }) {
-  const parts = normalizePaymentBreakdown(paymentBreakdown);
-  const pointParts = parts.length
-    ? parts.filter((part) => isPointPayment(part.method))
-    : isPointPayment(payment)
-      ? [{ method: payment, amount: Number(total || 0) }]
-      : [];
+  const pointParts = pointPaymentPartsForSale({ payment, paymentBreakdown, total });
   let selectedTerminal = null;
 
   for (const part of pointParts) {
@@ -3020,8 +3023,8 @@ async function confirmSalePayment(event) {
     const paid = paymentBreakdown.reduce((sum, part) => sum + part.amount, 0);
     const cashPart = paymentBreakdown.find((part) => part.method === "Dinheiro")?.amount || 0;
     const splitCashReceivedText = String(form.get("splitCashReceived") || "").trim();
-    cashReceived = cashPart > 0 && splitCashReceivedText ? Number(splitCashReceivedText) : 0;
-    cashChange = cashPart > 0 && splitCashReceivedText ? Math.max(0, cashReceived - cashPart) : 0;
+    cashReceived = cashPart > 0 ? (splitCashReceivedText ? Number(splitCashReceivedText) : cashPart) : 0;
+    cashChange = cashPart > 0 ? Math.max(0, cashReceived - cashPart) : 0;
 
     if (paymentBreakdown.length < 2) {
       notify("Informe pelo menos duas formas de pagamento para dividir a venda.");
