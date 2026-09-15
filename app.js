@@ -969,21 +969,21 @@ function saleReceivedProfit(sale) {
 }
 
 function saleStoredReceivedAmount(sale) {
-  if (sale?.status === "Cancelada") return 0;
+  if (!isFinancialSale(sale)) return 0;
   return salePaymentParts(sale)
     .filter((part) => part.method !== "Fiado")
     .reduce((sum, part) => sum + Number(part.amount || 0), 0);
 }
 
 function saleStoredFiadoAmount(sale) {
-  if (sale?.status === "Cancelada") return 0;
+  if (!isFinancialSale(sale)) return 0;
   return salePaymentParts(sale)
     .filter((part) => part.method === "Fiado")
     .reduce((sum, part) => sum + Number(part.amount || 0), 0);
 }
 
 function saleStoredProfit(sale) {
-  if (sale?.status === "Cancelada") return 0;
+  if (!isFinancialSale(sale)) return 0;
   const total = Number(sale?.total || 0);
   const received = saleStoredReceivedAmount(sale);
   if (!total || !received) return 0;
@@ -9172,9 +9172,10 @@ function salesForDateKey(dateKey, { includeCanceled = false } = {}) {
 }
 
 function buildDailySalesTotal(dateKey, source = "automatico") {
-  const sales = salesForDateKey(dateKey, { includeCanceled: false }).filter(isFinancialSale);
+  const sales = salesForDateKey(dateKey, { includeCanceled: false });
+  const financialSales = sales.filter(isFinancialSale);
   const payments = Object.fromEntries(paymentMethods.map((method) => [method, 0]));
-  sales.forEach((sale) => {
+  financialSales.forEach((sale) => {
     salePaymentParts(sale).forEach((part) => {
       payments[part.method] = Number(payments[part.method] || 0) + Number(part.amount || 0);
     });
@@ -9186,13 +9187,13 @@ function buildDailySalesTotal(dateKey, source = "automatico") {
     updatedAt: new Date().toISOString(),
     source,
     salesCount: sales.length,
-    receivedCount: sales.filter((sale) => saleStoredReceivedAmount(sale) > 0).length,
-    fiadoCount: sales.filter((sale) => saleStoredFiadoAmount(sale) > 0).length,
+    receivedCount: financialSales.filter((sale) => saleStoredReceivedAmount(sale) > 0).length,
+    fiadoCount: financialSales.filter((sale) => saleStoredFiadoAmount(sale) > 0).length,
     itemCount: sales.reduce((sum, sale) => sum + (sale.items || []).reduce((itemSum, item) => itemSum + Number(item.qty || 0), 0), 0),
-    totalSold: sales.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
-    received: sales.reduce((sum, sale) => sum + saleStoredReceivedAmount(sale), 0),
-    fiado: sales.reduce((sum, sale) => sum + saleStoredFiadoAmount(sale), 0),
-    profit: sales.reduce((sum, sale) => sum + saleStoredProfit(sale), 0),
+    totalSold: financialSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
+    received: financialSales.reduce((sum, sale) => sum + saleStoredReceivedAmount(sale), 0),
+    fiado: financialSales.reduce((sum, sale) => sum + saleStoredFiadoAmount(sale), 0),
+    profit: financialSales.reduce((sum, sale) => sum + saleStoredProfit(sale), 0),
     payments,
   };
 }
