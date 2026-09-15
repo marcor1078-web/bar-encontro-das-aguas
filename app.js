@@ -371,8 +371,32 @@ const defaultState = {
     },
   ],
   suppliers: [
-    { id: "sup-001", name: "Distribuidora Central", contact: "compras@central.local", phone: "(11) 99999-0101" },
-    { id: "sup-002", name: "Hortifruti da Vila", contact: "Joao", phone: "(11) 98888-0202" },
+    {
+      id: "sup-001",
+      name: "Distribuidora Central",
+      contact: "Compras",
+      phone: "(11) 99999-0101",
+      phone2: "",
+      phone3: "",
+      phone4: "",
+      phone5: "",
+      email: "compras@central.local",
+      cnpj: "",
+      address: "",
+    },
+    {
+      id: "sup-002",
+      name: "Hortifruti da Vila",
+      contact: "Joao",
+      phone: "(11) 98888-0202",
+      phone2: "",
+      phone3: "",
+      phone4: "",
+      phone5: "",
+      email: "",
+      cnpj: "",
+      address: "",
+    },
   ],
   purchases: [
     {
@@ -559,7 +583,16 @@ function migrateState(nextState) {
     ...sale,
   }));
   nextState.ingredients = nextState.ingredients || structuredClone(defaultState.ingredients);
-  nextState.suppliers = nextState.suppliers || structuredClone(defaultState.suppliers);
+  nextState.suppliers = (nextState.suppliers || structuredClone(defaultState.suppliers)).map((supplier) => ({
+    ...supplier,
+    phone2: supplier.phone2 || "",
+    phone3: supplier.phone3 || "",
+    phone4: supplier.phone4 || "",
+    phone5: supplier.phone5 || "",
+    email: supplier.email || (String(supplier.contact || "").includes("@") ? supplier.contact : ""),
+    cnpj: supplier.cnpj || "",
+    address: supplier.address || "",
+  }));
   nextState.purchases = nextState.purchases || structuredClone(defaultState.purchases);
   nextState.cashSessions = nextState.cashSessions || structuredClone(defaultState.cashSessions);
   nextState.inventoryCounts = nextState.inventoryCounts || structuredClone(defaultState.inventoryCounts);
@@ -1905,6 +1938,13 @@ function mapSupplierFromDb(row) {
     name: row.name,
     contact: row.contact || "",
     phone: row.phone || "",
+    phone2: row.phone_2 || "",
+    phone3: row.phone_3 || "",
+    phone4: row.phone_4 || "",
+    phone5: row.phone_5 || "",
+    email: row.email || "",
+    cnpj: row.cnpj || "",
+    address: row.address || "",
   };
 }
 
@@ -5575,6 +5615,12 @@ function expensePaymentMethodLabel(method) {
   );
 }
 
+function supplierPhones(supplier) {
+  return [supplier?.phone, supplier?.phone2, supplier?.phone3, supplier?.phone4, supplier?.phone5]
+    .map((phone) => String(phone || "").trim())
+    .filter(Boolean);
+}
+
 function renderSuppliers() {
   return `
     <div class="section-title">
@@ -5593,15 +5639,19 @@ function renderSuppliers() {
         <div class="card-head"><h2 class="card-title">Fornecedores</h2></div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Nome</th><th>Contato</th><th>Telefone</th><th>Acoes</th></tr></thead>
+            <thead><tr><th>Nome</th><th>CNPJ</th><th>Contato</th><th>Email</th><th>Telefones</th><th>Endereco</th><th>Acoes</th></tr></thead>
             <tbody>
               ${state.suppliers
-                .map(
-                  (supplier) => `
+                .map((supplier) => {
+                  const phones = supplierPhones(supplier);
+                  return `
                     <tr>
-                      <td>${supplier.name}</td>
-                      <td>${supplier.contact || "-"}</td>
-                      <td>${supplier.phone || "-"}</td>
+                      <td>${escapeHtml(supplier.name)}</td>
+                      <td>${escapeHtml(supplier.cnpj || "-")}</td>
+                      <td>${escapeHtml(supplier.contact || "-")}</td>
+                      <td>${escapeHtml(supplier.email || "-")}</td>
+                      <td>${phones.length ? phones.map(escapeHtml).join("<br>") : "-"}</td>
+                      <td>${escapeHtml(supplier.address || "-")}</td>
                       <td>
                         <div class="toolbar">
                           <button class="btn compact secondary" type="button" data-open-modal="supplier" data-id="${supplier.id}">Editar</button>
@@ -5609,8 +5659,8 @@ function renderSuppliers() {
                         </div>
                       </td>
                     </tr>
-                  `,
-                )
+                  `;
+                })
                 .join("")}
             </tbody>
           </table>
@@ -6602,9 +6652,16 @@ function renderSupplierModal() {
       </div>
       <div class="modal-body">
         <div class="form-grid">
-          <label class="field full"><span>Nome</span><input name="name" required value="${supplier?.name || ""}" /></label>
-          <label class="field"><span>Contato</span><input name="contact" value="${supplier?.contact || ""}" /></label>
-          <label class="field"><span>Telefone</span><input name="phone" value="${supplier?.phone || ""}" /></label>
+          <label class="field full"><span>Nome</span><input name="name" required value="${escapeHtml(supplier?.name || "")}" /></label>
+          <label class="field"><span>Contato</span><input name="contact" value="${escapeHtml(supplier?.contact || "")}" /></label>
+          <label class="field"><span>CNPJ</span><input name="cnpj" value="${escapeHtml(supplier?.cnpj || "")}" placeholder="00.000.000/0000-00" /></label>
+          <label class="field full"><span>Email</span><input name="email" type="email" value="${escapeHtml(supplier?.email || "")}" /></label>
+          <label class="field"><span>Telefone 1</span><input name="phone" value="${escapeHtml(supplier?.phone || "")}" /></label>
+          <label class="field"><span>Telefone 2</span><input name="phone2" value="${escapeHtml(supplier?.phone2 || "")}" /></label>
+          <label class="field"><span>Telefone 3</span><input name="phone3" value="${escapeHtml(supplier?.phone3 || "")}" /></label>
+          <label class="field"><span>Telefone 4</span><input name="phone4" value="${escapeHtml(supplier?.phone4 || "")}" /></label>
+          <label class="field"><span>Telefone 5</span><input name="phone5" value="${escapeHtml(supplier?.phone5 || "")}" /></label>
+          <label class="field full"><span>Endereco</span><input name="address" value="${escapeHtml(supplier?.address || "")}" placeholder="Rua, numero, bairro, cidade" /></label>
         </div>
       </div>
       <div class="modal-actions">
@@ -7582,6 +7639,13 @@ async function saveSupplier(event) {
     name: form.get("name").trim(),
     contact: form.get("contact").trim(),
     phone: form.get("phone").trim(),
+    phone2: form.get("phone2").trim(),
+    phone3: form.get("phone3").trim(),
+    phone4: form.get("phone4").trim(),
+    phone5: form.get("phone5").trim(),
+    email: form.get("email").trim(),
+    cnpj: form.get("cnpj").trim(),
+    address: form.get("address").trim(),
   };
 
   if (isOnlineSession()) {
@@ -7589,12 +7653,23 @@ async function saveSupplier(event) {
       name: supplier.name,
       contact: supplier.contact,
       phone: supplier.phone,
+      phone_2: supplier.phone2,
+      phone_3: supplier.phone3,
+      phone_4: supplier.phone4,
+      phone_5: supplier.phone5,
+      email: supplier.email,
+      cnpj: supplier.cnpj,
+      address: supplier.address,
     };
     const result = isEditing
       ? await supabaseClient.from("suppliers").update(row).eq("id", currentModal.id)
       : await supabaseClient.from("suppliers").insert(row);
 
     if (result.error) {
+      if (isSupplierSchemaMissing(result.error)) {
+        notify("Rode a migracao de cadastro completo de fornecedores no Supabase antes de salvar online.");
+        return;
+      }
       notify(`Erro ao salvar fornecedor online: ${result.error.message}`);
       return;
     }
@@ -7617,6 +7692,11 @@ async function saveSupplier(event) {
   saveState();
   notify("Fornecedor salvo.");
   renderApp();
+}
+
+function isSupplierSchemaMissing(error) {
+  const message = String(error?.message || "");
+  return ["phone_2", "phone_3", "phone_4", "phone_5", "email", "cnpj", "address"].some((field) => message.includes(field));
 }
 
 async function savePurchase(event) {
