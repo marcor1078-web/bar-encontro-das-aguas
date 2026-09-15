@@ -6198,9 +6198,10 @@ function renderModal() {
     productHistory: renderProductHistoryModal,
     stockExpiry: renderStockExpiryModal,
   };
+  const modalClass = currentModal.type === "salePayment" ? "modal sale-payment-modal" : "modal";
   return `
     <div class="modal-backdrop">
-      <section class="modal">
+      <section class="${modalClass}">
         ${renderers[currentModal.type]()}
       </section>
     </div>
@@ -6216,8 +6217,8 @@ function renderSalePaymentModal() {
         <h2>Finalizar venda</h2>
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
-      <div class="modal-body">
-        <div class="summary-list">
+      <div class="modal-body sale-payment-body">
+        <div class="summary-list sale-payment-summary">
           ${tableCheckout ? `<div class="summary-row"><span>Mesa</span><strong>${tableCheckout.name}</strong></div>` : ""}
           ${tableCheckout?.customerName ? `<div class="summary-row"><span>Cliente</span><strong>${escapeHtml(tableCheckout.customerName)}</strong></div>` : ""}
           <div class="summary-row"><span>Itens</span><strong>${cart.reduce((sum, item) => sum + item.qty, 0)}</strong></div>
@@ -6240,15 +6241,17 @@ function renderSalePaymentModal() {
             <input name="discountValue" data-discount-value type="number" min="0" step="0.01" placeholder="0,00" />
           </label>
         </div>
-        ${renderPaymentTerminalField({ inputId: "sale-payment-terminal-id", inputName: "terminalKey" })}
-        <label class="field">
-          <span>Cliente para fiado</span>
-          <select name="clientId">
-            ${state.clients.length
-              ? state.clients.map((client) => `<option value="${client.id}">${client.name}</option>`).join("")
-              : '<option value="">Cadastre um cliente antes de vender fiado</option>'}
-          </select>
-        </label>
+        <div class="sale-payment-meta-grid">
+          ${renderPaymentTerminalField({ inputId: "sale-payment-terminal-id", inputName: "terminalKey" })}
+          <label class="field">
+            <span>Cliente para fiado</span>
+            <select name="clientId">
+              ${state.clients.length
+                ? state.clients.map((client) => `<option value="${client.id}">${client.name}</option>`).join("")
+                : '<option value="">Cadastre um cliente antes de vender fiado</option>'}
+            </select>
+          </label>
+        </div>
         <div class="field">
           <span>Toque na forma de pagamento</span>
           <div class="payment-choice-grid">
@@ -6303,9 +6306,6 @@ function renderSalePaymentModal() {
           <button class="btn primary" type="submit">Finalizar pagamento dividido</button>
         </div>
         <div class="notice compact">Pix, Debito e Credito enviam a cobranca para a maquininha selecionada imediatamente. Dinheiro calcula o troco antes de finalizar. Dividido permite usar mais de uma forma na mesma venda. Fiado exige cliente com limite disponivel.</div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
       </div>
     </form>
   `;

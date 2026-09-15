@@ -491,6 +491,109 @@ button:disabled {
   color: #b91c1c;
 }
 
+.sale-payment-modal {
+  width: min(760px, 100%);
+  overflow: visible;
+}
+
+.sale-payment-modal .modal-head {
+  padding: 11px 12px;
+}
+
+.sale-payment-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.sale-payment-body .field {
+  margin-bottom: 0;
+}
+
+.sale-payment-body .field span {
+  font-size: 0.78rem;
+}
+
+.sale-payment-body .field input,
+.sale-payment-body .field select {
+  padding: 8px 10px;
+}
+
+.sale-payment-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+
+.sale-payment-summary .summary-row {
+  min-height: 0;
+  padding: 7px 8px;
+}
+
+.sale-payment-summary .summary-row.total {
+  grid-column: span 2;
+}
+
+.sale-payment-summary strong {
+  font-size: 1rem;
+}
+
+.sale-payment-summary .summary-row.total strong {
+  font-size: 1.18rem;
+}
+
+.sale-payment-meta-grid,
+#sale-payment-form .discount-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+#sale-payment-form .discount-panel,
+#sale-payment-form .cash-change-panel,
+#sale-payment-form .split-payment-panel {
+  margin: 0;
+  padding: 10px;
+  gap: 8px;
+}
+
+#sale-payment-form .payment-choice-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#sale-payment-form .payment-choice span {
+  min-height: 38px;
+  padding: 8px 6px;
+  font-size: 0.88rem;
+}
+
+#sale-payment-form .split-payment-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+#sale-payment-form .split-payment-panel .summary-list.compact {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#sale-payment-form .split-payment-panel .summary-row {
+  padding: 7px 8px;
+}
+
+#sale-payment-form .cash-action-grid {
+  gap: 8px;
+}
+
+#sale-payment-form .notice.compact {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+
 .demo-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2167,6 +2270,27 @@ body[data-theme="dark"] .notice {
   }
 
   .payment-choice-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sale-payment-modal {
+    max-height: calc(100vh - 20px);
+    overflow: auto;
+  }
+
+  .sale-payment-summary,
+  .sale-payment-meta-grid,
+  #sale-payment-form .discount-panel,
+  #sale-payment-form .split-payment-panel .summary-list.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .sale-payment-summary .summary-row.total {
+    grid-column: auto;
+  }
+
+  #sale-payment-form .payment-choice-grid,
+  #sale-payment-form .split-payment-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
