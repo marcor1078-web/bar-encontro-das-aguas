@@ -2369,6 +2369,9 @@ function bindViewEvents() {
   document.querySelectorAll("[data-print-daily-sales-report]").forEach((button) => {
     button.addEventListener("click", downloadDailySalesReportPdf);
   });
+  document.querySelectorAll("[data-print-sales-period-report]").forEach((button) => {
+    button.addEventListener("click", () => downloadSalesPeriodReportPdf(button.dataset.printSalesPeriodReport));
+  });
   document.querySelectorAll("[data-store-daily-sales-total]").forEach((button) => {
     button.addEventListener("click", () => {
       const summary = storeDailySalesTotal(localDateKey(), "manual");
@@ -3972,13 +3975,16 @@ function combineItems(baseItems, extraItems) {
 
 function renderSales() {
   const sales = state.sales.slice().reverse();
-  const activeSales = sales.filter(isFinancialSale);
-  const receivedSales = activeSales.filter(isReceivedSale);
-  const fiadoSales = activeSales.filter((sale) => saleFiadoAmount(sale) > 0);
-  const total = receivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
-  const profit = receivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
-  const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
   const openCash = getOpenCash();
+  const cashDaySales = salesForOpenCashDay();
+  const cashDayReceivedSales = cashDaySales.filter(isReceivedSale);
+  const cashDayFiadoSales = cashDaySales.filter((sale) => saleFiadoAmount(sale) > 0);
+  const cashDayTotal = cashDayReceivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const cashDayProfit = cashDayReceivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
+  const cashDayFiadoTotal = cashDayFiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
+  const weeklyRange = salesReportPeriodRange("weekly");
+  const weeklySales = salesForRange(weeklyRange.start, weeklyRange.end);
+  const weeklyReceivedTotal = weeklySales.filter(isReceivedSale).reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
   const weeklyTopProducts = topProductsForPeriod(7, 10);
   const todaySales = salesForToday({ includeInactive: true }).slice().reverse();
   const todayFinancialSales = todaySales.filter(isFinancialSale);
@@ -3996,15 +4002,19 @@ function renderSales() {
         <p>${isOnlineSession() ? "Histórico e novas vendas salvando no Supabase." : "Histórico em modo local."}</p>
       </div>
       <div class="toolbar">
-        <button class="btn secondary" type="button" data-print-daily-sales-report>${icon("print")} Relatorio diario</button>
+        <button class="btn secondary" type="button" data-print-sales-period-report="daily">${icon("print")} Diario</button>
+        <button class="btn secondary" type="button" data-print-sales-period-report="weekly">${icon("print")} Semanal</button>
+        <button class="btn secondary" type="button" data-print-sales-period-report="monthly">${icon("print")} Mensal</button>
+        <button class="btn secondary" type="button" data-print-sales-period-report="semester">${icon("print")} Semestral</button>
+        <button class="btn secondary" type="button" data-print-sales-period-report="annual">${icon("print")} Anual</button>
         <button class="btn danger" type="button" data-zero-today-sales ${todayReceivedSales.length ? "" : "disabled"}>Zerar vendas do dia</button>
       </div>
     </div>
     <div class="grid stats">
-      ${metric("Total recebido", money(total), "Sem contar vendas em fiado", "R$")}
-      ${metric("Lucro recebido", money(profit), "Receita recebida menos custo", "%")}
-      ${metric("Tickets", activeSales.length, "Vendas concluidas", "N")}
-      ${metric("Fiado vendido", money(fiadoTotal), `${fiadoSales.length} venda(s) a receber`, "FD")}
+      ${metric("Total recebido do dia", money(cashDayTotal), openCash ? "Caixa atual; zera ao fechar ou virar o dia" : "Caixa fechado; abre um caixa para iniciar", "R$")}
+      ${metric("Total semanal", money(weeklyReceivedTotal), "Ultimos 7 dias, sem contar fiado", "7D")}
+      ${metric("Lucro recebido", money(cashDayProfit), "Receita recebida menos custo", "%")}
+      ${metric("Fiado do dia", money(cashDayFiadoTotal), `${cashDayFiadoSales.length} venda(s) a receber`, "FD")}
     </div>
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
@@ -4465,6 +4475,57 @@ function salesForCashPeriod(cash) {
   });
 }
 
+function salesForRange(start, end, { includeInactive = false } = {}) {
+  const startTime = start instanceof Date ? start.getTime() : new Date(start).getTime();
+  const endTime = end instanceof Date ? end.getTime() : new Date(end).getTime();
+  return state.sales.filter((sale) => {
+    const date = new Date(sale.date).getTime();
+    return (includeInactive || isFinancialSale(sale)) && date >= startTime && date <= endTime;
+  });
+}
+
+function salesForOpenCashDay() {
+  const openCash = getOpenCash();
+  if (!openCash?.openedAt) return [];
+  const start = new Date(Math.max(new Date(openCash.openedAt).getTime(), startOfToday().getTime()));
+  return salesForRange(start, new Date());
+}
+
+function salesReportPeriodRange(period = "daily") {
+  const now = new Date();
+  const start = new Date(now);
+  let title = "Relatorio diario de vendas";
+  let label = "Hoje";
+  let filePart = "diario";
+
+  if (period === "weekly" || period === "7d") {
+    start.setDate(now.getDate() - 6);
+    title = "Relatorio semanal de vendas";
+    label = "Ultimos 7 dias";
+    filePart = "semanal";
+  } else if (period === "monthly") {
+    start.setDate(1);
+    title = "Relatorio mensal de vendas";
+    label = "Mes atual";
+    filePart = "mensal";
+  } else if (period === "semester") {
+    start.setMonth(now.getMonth() < 6 ? 0 : 6, 1);
+    title = "Relatorio semestral de vendas";
+    label = now.getMonth() < 6 ? "1o semestre do ano" : "2o semestre do ano";
+    filePart = "semestral";
+  } else if (period === "annual") {
+    start.setMonth(0, 1);
+    title = "Relatorio anual de vendas";
+    label = "Ano atual";
+    filePart = "anual";
+  } else {
+    start.setHours(0, 0, 0, 0);
+  }
+
+  start.setHours(0, 0, 0, 0);
+  return { start, end: now, title, label, filePart };
+}
+
 function cashSalesPaymentTotals(sales) {
   const totals = Object.fromEntries(cashPaymentMethods.map((method) => [method, 0]));
   sales.forEach((sale) => {
@@ -4742,6 +4803,10 @@ function topProductsFromSales(sales, limit = 10) {
 }
 
 function downloadDailySalesReportPdf() {
+  downloadSalesPeriodReportPdf("daily");
+}
+
+function downloadSalesPeriodReportPdf(period = "daily") {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF) {
     notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
@@ -4754,7 +4819,8 @@ function downloadDailySalesReportPdf() {
     return;
   }
 
-  const sales = dailySales();
+  const periodInfo = salesReportPeriodRange(period);
+  const sales = salesForRange(periodInfo.start, periodInfo.end, { includeInactive: true }).slice().sort((a, b) => new Date(a.date) - new Date(b.date));
   const financialSales = sales.filter(isFinancialSale);
   const receivedSales = financialSales.filter(isReceivedSale);
   const fiadoSales = financialSales.filter((sale) => saleFiadoAmount(sale) > 0);
@@ -4767,12 +4833,11 @@ function downloadDailySalesReportPdf() {
   const paymentTotals = cashSalesPaymentTotals(receivedSales);
   const topProducts = topProductsFromSales(sales);
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
-  const today = new Date().toLocaleDateString("pt-BR");
   const generatedAt = dateTime(new Date().toISOString());
 
   doc.setProperties({
-    title: `${businessName} - Relatorio diario de vendas`,
-    subject: "Relatorio diario de vendas",
+    title: `${businessName} - ${periodInfo.title}`,
+    subject: periodInfo.title,
     author: session?.name || "Usuario",
   });
 
@@ -4780,12 +4845,13 @@ function downloadDailySalesReportPdf() {
   doc.setTextColor(17, 24, 39);
   doc.text(businessName, 40, 42);
   doc.setFontSize(12);
-  doc.text(`Relatorio diario de vendas - ${today}`, 40, 62);
+  doc.text(`${periodInfo.title} - ${periodInfo.label}`, 40, 62);
   doc.setFontSize(8);
   doc.setTextColor(75, 85, 99);
   [
     state.settings.cnpj ? `CNPJ: ${state.settings.cnpj}` : "",
     state.settings.address || "",
+    `Periodo: ${dateTime(periodInfo.start.toISOString())} ate ${dateTime(periodInfo.end.toISOString())}`,
     `Gerado em ${generatedAt} por ${session?.name || "Usuario"}`,
   ]
     .filter(Boolean)
@@ -4822,7 +4888,7 @@ function downloadDailySalesReportPdf() {
     head: [["Produto", "Qtd.", "Valor vendido"]],
     body: topProducts.length
       ? topProducts.map((item) => [item.name, qty(item.qty), money(item.revenue)])
-      : [["Nenhum produto vendido hoje.", "", ""]],
+      : [["Nenhum produto vendido no periodo.", "", ""]],
     startY: (doc.lastAutoTable?.finalY || 190) + 18,
     margin: { left: 40, right: 520 },
     theme: "grid",
@@ -4845,7 +4911,7 @@ function downloadDailySalesReportPdf() {
           money(saleDisplayTotal(sale)),
           money(saleReceivedProfit(sale)),
         ])
-      : [["Nenhuma venda registrada hoje.", "", "", "", "", "", "", "", "", ""]],
+      : [["Nenhuma venda registrada no periodo.", "", "", "", "", "", "", "", "", ""]],
     startY: (doc.lastAutoTable?.finalY || 248) + 24,
     margin: { left: 40, right: 40 },
     theme: "grid",
@@ -4866,8 +4932,8 @@ function downloadDailySalesReportPdf() {
   }
 
   const date = new Date().toISOString().slice(0, 10);
-  doc.save(`vendas-diarias-${safeFileName(businessName)}-${date}.pdf`);
-  logAudit("Relatorio diario baixado", `Vendas do dia ${today}.`);
+  doc.save(`vendas-${periodInfo.filePart}-${safeFileName(businessName)}-${date}.pdf`);
+  logAudit("Relatorio de vendas baixado", `${periodInfo.title} - ${periodInfo.label}.`);
   saveState();
 }
 
@@ -5550,6 +5616,9 @@ function renderReports() {
           <select name="mode">
             <option value="24h" ${reportFilter.mode === "24h" ? "selected" : ""}>Ultimas 24 horas</option>
             <option value="7d" ${reportFilter.mode === "7d" ? "selected" : ""}>Ultimos 7 dias</option>
+            <option value="monthly" ${reportFilter.mode === "monthly" ? "selected" : ""}>Mes atual</option>
+            <option value="semester" ${reportFilter.mode === "semester" ? "selected" : ""}>Semestre atual</option>
+            <option value="annual" ${reportFilter.mode === "annual" ? "selected" : ""}>Ano atual</option>
             <option value="period" ${reportFilter.mode === "period" ? "selected" : ""}>Periodo personalizado</option>
           </select>
         </label>
@@ -8256,6 +8325,11 @@ function reportSales() {
   if (reportFilter.mode === "7d") {
     start = now - 7 * 24 * 60 * 60 * 1000;
   }
+  if (["monthly", "semester", "annual"].includes(reportFilter.mode)) {
+    const range = salesReportPeriodRange(reportFilter.mode);
+    start = range.start.getTime();
+    end = range.end.getTime();
+  }
   if (reportFilter.mode === "period") {
     start = reportFilter.start ? new Date(reportFilter.start).getTime() : 0;
     end = reportFilter.end ? new Date(reportFilter.end).getTime() : now;
@@ -8269,6 +8343,7 @@ function reportSales() {
 
 function reportPeriodLabel() {
   if (reportFilter.mode === "7d") return "Ultimos 7 dias";
+  if (["monthly", "semester", "annual"].includes(reportFilter.mode)) return salesReportPeriodRange(reportFilter.mode).label;
   if (reportFilter.mode === "period") {
     return `${reportFilter.start || "inicio"} ate ${reportFilter.end || "agora"}`;
   }
