@@ -6775,6 +6775,10 @@ function renderExpensePaymentModal() {
               <option value="other">Outro</option>
             </select>
           </label>
+          <label class="field">
+            <span>Data do pagamento</span>
+            <input name="date" type="datetime-local" required value="${datetimeLocalValue()}" />
+          </label>
           <label class="field full">
             <span>Observacao</span>
             <input name="note" placeholder="Ex.: parcela 1/10, pagamento em dinheiro, Pix..." />
@@ -7902,6 +7906,13 @@ async function saveExpensePayment(event) {
   const form = new FormData(event.currentTarget);
   const amount = Number(form.get("amount") || 0);
   const balance = expenseBalance(expense);
+  const rawDate = form.get("date");
+  const paymentDate = rawDate ? new Date(rawDate) : new Date();
+  if (Number.isNaN(paymentDate.getTime())) {
+    notify("Informe uma data valida para o pagamento.");
+    return;
+  }
+  const paymentDateIso = paymentDate.toISOString();
   if (amount <= 0 || amount > balance) {
     notify(`Informe um valor entre R$ 0,01 e ${money(balance)}.`);
     return;
@@ -7909,7 +7920,7 @@ async function saveExpensePayment(event) {
 
   const payment = {
     id: id("expensepay"),
-    date: new Date().toISOString(),
+    date: paymentDateIso,
     amount: Number(amount.toFixed(2)),
     method: form.get("method") || "other",
     userId: session?.id || "",
@@ -7917,7 +7928,7 @@ async function saveExpensePayment(event) {
   };
   const paidAmount = Number(Math.min(Number(expense.amount || 0), expensePaidAmount(expense) + amount).toFixed(2));
   const paid = paidAmount >= Number(expense.amount || 0);
-  const paidAt = paid ? new Date().toISOString() : null;
+  const paidAt = paid ? paymentDateIso : null;
   const paymentHistory = [payment, ...expensePaymentHistory(expense)];
 
   if (isOnlineSession()) {
@@ -9702,6 +9713,12 @@ function nextCashSessionCode() {
 function localDateKey(value = new Date()) {
   const date = new Date(value);
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function datetimeLocalValue(value = new Date()) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return `${localDateKey(date)}T${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function formatDateKeyBr(dateKey) {
