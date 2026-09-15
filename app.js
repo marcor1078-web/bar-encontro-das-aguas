@@ -3987,6 +3987,7 @@ function renderSales() {
   const todayZeroedSales = todaySales.filter(isZeroedSale);
   const todayTotal = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
   const todayProfit = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
+  const todayFiadoTotal = todayFiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
 
   return `
     <div class="section-title">
@@ -4019,6 +4020,7 @@ function renderSales() {
       </div>
       <div class="summary-list">
         <div class="summary-row total"><span>Recebido hoje</span><strong>${money(todayTotal)}</strong></div>
+        <div class="summary-row"><span>Fiado separado hoje</span><strong>${money(todayFiadoTotal)}</strong></div>
         <div class="summary-row"><span>Lucro estimado hoje</span><strong>${money(todayProfit)}</strong></div>
         <div class="summary-row"><span>Vendas recebidas</span><strong>${todayReceivedSales.length}</strong></div>
         <div class="summary-row"><span>Fiado hoje</span><strong>${todayFiadoSales.length}</strong></div>
@@ -4760,6 +4762,8 @@ function downloadDailySalesReportPdf() {
   const cancelledSales = sales.filter((sale) => sale.status === "Cancelada");
   const total = receivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
   const profit = receivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
+  const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
+  const totalLaunched = total + fiadoTotal;
   const paymentTotals = cashSalesPaymentTotals(receivedSales);
   const topProducts = topProductsFromSales(sales);
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
@@ -4789,8 +4793,9 @@ function downloadDailySalesReportPdf() {
 
   doc.autoTable({
     body: [
-      ["Total recebido", money(total), "Lucro estimado", money(profit)],
-      ["Vendas recebidas", receivedSales.length, "Fiado no dia", fiadoSales.length],
+      ["Vendas brutas recebidas", money(total), "Fiado separado", money(fiadoTotal)],
+      ["Total geral lancado", money(totalLaunched), "Lucro recebido", money(profit)],
+      ["Vendas recebidas", receivedSales.length, "Vendas fiado", fiadoSales.length],
       ["Vendas zeradas", zeroedSales.length, "Canceladas", cancelledSales.length],
     ],
     startY: 126,
@@ -4826,7 +4831,7 @@ function downloadDailySalesReportPdf() {
   });
 
   doc.autoTable({
-    head: [["Data", "Produtos", "Pagamento", "Status", "Operador", "Desc.", "Total", "Lucro"]],
+    head: [["Data", "Produtos", "Pagamento", "Status", "Operador", "Desc.", "Recebido", "Fiado", "Total geral", "Lucro recebido"]],
     body: sales.length
       ? sales.map((sale) => [
           dateTime(sale.date),
@@ -4835,10 +4840,12 @@ function downloadDailySalesReportPdf() {
           sale.status || "Concluida",
           userName(sale.cashierId),
           saleDiscountAmount(sale) ? money(saleDiscountAmount(sale)) : "-",
+          money(saleReceivedAmount(sale)),
+          money(saleFiadoAmount(sale)),
           money(saleDisplayTotal(sale)),
-          money(saleDisplayProfit(sale)),
+          money(saleReceivedProfit(sale)),
         ])
-      : [["Nenhuma venda registrada hoje.", "", "", "", "", "", "", ""]],
+      : [["Nenhuma venda registrada hoje.", "", "", "", "", "", "", "", "", ""]],
     startY: (doc.lastAutoTable?.finalY || 248) + 24,
     margin: { left: 40, right: 40 },
     theme: "grid",
@@ -4846,7 +4853,7 @@ function downloadDailySalesReportPdf() {
     headStyles: { fillColor: [15, 118, 110], textColor: [255, 255, 255] },
     alternateRowStyles: { fillColor: [248, 250, 252] },
     columnStyles: {
-      1: { cellWidth: 280 },
+      1: { cellWidth: 230 },
     },
   });
 
@@ -9090,7 +9097,7 @@ function salesForDateKey(dateKey, { includeCanceled = false } = {}) {
 }
 
 function buildDailySalesTotal(dateKey, source = "automatico") {
-  const sales = salesForDateKey(dateKey, { includeCanceled: false });
+  const sales = salesForDateKey(dateKey, { includeCanceled: false }).filter(isFinancialSale);
   const payments = Object.fromEntries(paymentMethods.map((method) => [method, 0]));
   sales.forEach((sale) => {
     salePaymentParts(sale).forEach((part) => {
@@ -9149,9 +9156,9 @@ function renderDailySalesTotalsTable() {
         <thead>
           <tr>
             <th>Dia</th>
-            <th>Total vendido</th>
-            <th>Recebido</th>
-            <th>Fiado</th>
+            <th>Venda bruta recebida</th>
+            <th>Fiado separado</th>
+            <th>Total geral</th>
             <th>Lucro</th>
             <th>Vendas</th>
             <th>Itens</th>
@@ -9168,9 +9175,9 @@ function renderDailySalesTotalsTable() {
               (entry) => `
                 <tr>
                   <td><strong>${formatDateKeyBr(entry.date)}</strong></td>
-                  <td>${money(entry.totalSold)}</td>
                   <td>${money(entry.received)}</td>
                   <td>${money(entry.fiado)}</td>
+                  <td>${money(entry.totalSold)}</td>
                   <td>${money(entry.profit)}</td>
                   <td>${entry.salesCount}</td>
                   <td>${qty(entry.itemCount)}</td>
