@@ -498,6 +498,7 @@ let searchTerm = "";
 let categoryFilter = "Todos";
 let stockSortMode = "default";
 let reportFilter = { mode: "24h", start: "", end: "" };
+let salesDateFilter = "";
 let suppressBroadcast = false;
 let deferredInstallPrompt = null;
 let searchRenderTimer = null;
@@ -2408,6 +2409,9 @@ function bindViewEvents() {
   document.querySelectorAll("[data-zero-today-sales]").forEach((button) => {
     button.addEventListener("click", zeroTodaySales);
   });
+  document.querySelector("#sales-date-filter-form")?.addEventListener("submit", applySalesDateFilter);
+  document.querySelector("[data-clear-sales-date-filter]")?.addEventListener("click", clearSalesDateFilter);
+  document.querySelector("[data-restore-zeroed-sales-date]")?.addEventListener("click", restoreZeroedSalesForSelectedDate);
   document.querySelectorAll("[data-close-cash-sales-report]").forEach((button) => {
     button.addEventListener("click", () => closeCashAndDownloadSalesReport(button.dataset.closeCashSalesReport === "form"));
   });
@@ -3994,6 +3998,8 @@ function renderSales() {
   const todayTotal = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
   const todayProfit = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
   const todayFiadoTotal = todayFiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
+  const filteredDateSales = salesDateFilter ? salesForDateKey(salesDateFilter, { includeCanceled: true }).slice().reverse() : [];
+  const filteredZeroedSales = filteredDateSales.filter(isZeroedSale);
 
   return `
     <div class="section-title">
@@ -4016,6 +4022,36 @@ function renderSales() {
       ${metric("Lucro recebido", money(cashDayProfit), "Receita recebida menos custo", "%")}
       ${metric("Fiado do dia", money(cashDayFiadoTotal), `${cashDayFiadoSales.length} venda(s) a receber`, "FD")}
     </div>
+    <section class="card pad" style="margin-top: 16px;">
+      <form id="sales-date-filter-form" class="form-grid">
+        <label class="field">
+          <span>Buscar vendas por data</span>
+          <input name="salesDate" type="date" value="${salesDateFilter}" />
+        </label>
+        <div class="field-actions">
+          <button class="btn primary" type="submit">Buscar</button>
+          <button class="btn secondary" type="button" data-clear-sales-date-filter ${salesDateFilter ? "" : "disabled"}>Limpar</button>
+          ${
+            filteredZeroedSales.length
+              ? `<button class="btn secondary" type="button" data-restore-zeroed-sales-date>Restaurar zeradas deste dia</button>`
+              : ""
+          }
+        </div>
+      </form>
+      ${
+        salesDateFilter
+          ? `<div style="margin-top: 14px;">
+              <div class="card-head">
+                <div>
+                  <h2 class="card-title">Resultado de ${formatDateKeyBr(salesDateFilter)}</h2>
+                  <p>${filteredDateSales.length} venda(s) encontrada(s), incluindo zeradas e canceladas.</p>
+                </div>
+              </div>
+              ${salesTable(filteredDateSales)}
+            </div>`
+          : ""
+      }
+    </section>
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
         <div>
@@ -4201,6 +4237,54 @@ async function zeroTodaySales() {
   logAudit("Vendas do dia zeradas", `${todayReceivedSales.length} venda(s) mantida(s) no historico.`);
   saveState();
   notify("Vendas recebidas de hoje foram zeradas, sem apagar produtos do historico.");
+  renderApp();
+}
+
+function applySalesDateFilter(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  salesDateFilter = String(form.get("salesDate") || "");
+  renderApp();
+}
+
+function clearSalesDateFilter() {
+  salesDateFilter = "";
+  renderApp();
+}
+
+async function restoreZeroedSalesForSelectedDate() {
+  if (!salesDateFilter) return;
+  const zeroedSales = salesForDateKey(salesDateFilter, { includeCanceled: true }).filter(isZeroedSale);
+  if (!zeroedSales.length) {
+    notify("Nao ha vendas zeradas nessa data para restaurar.");
+    return;
+  }
+
+  if (
+    !confirm(
+      `Restaurar ${zeroedSales.length} venda(s) zerada(s) de ${formatDateKeyBr(salesDateFilter)}? Elas voltarao a contar nos totais e relatorios.`,
+    )
+  ) {
+    return;
+  }
+
+  const saleIds = zeroedSales.map((sale) => sale.id);
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient.from("sales").update({ status: "Concluida" }).in("id", saleIds);
+    if (error) {
+      notify(`Erro ao restaurar vendas online: ${error.message}`);
+      return;
+    }
+    await loadOnlineSalesData();
+  } else {
+    state.sales = state.sales.map((sale) => (saleIds.includes(sale.id) ? { ...sale, status: "Concluida" } : sale));
+  }
+
+  storeDailySalesTotal(salesDateFilter, "restauracao");
+  logAudit("Vendas zeradas restauradas", `${zeroedSales.length} venda(s) de ${formatDateKeyBr(salesDateFilter)}.`);
+  saveState();
+  notify("Vendas restauradas e totais recalculados.");
   renderApp();
 }
 
