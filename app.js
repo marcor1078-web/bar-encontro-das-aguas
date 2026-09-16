@@ -2638,11 +2638,20 @@ function metric(label, value, help, icon) {
 }
 
 function renderPos() {
-  const products = filteredProducts().filter((product) => product.active);
+  const term = searchTerm.trim().toLowerCase();
+  const quickProductsBase = state.products.filter((product) => product.active && product.favorite);
+  const categories = ["Todos", ...new Set(quickProductsBase.map((product) => product.category))];
+  const activeCategoryFilter = categories.includes(categoryFilter) ? categoryFilter : "Todos";
+  const products = quickProductsBase.filter((product) => {
+    if (activeCategoryFilter !== "Todos" && product.category !== activeCategoryFilter) return false;
+    if (!term) return true;
+    return `${product.name} ${product.productCode || ""} ${productBarcodeCodes(product).join(" ")} ${product.category}`
+      .toLowerCase()
+      .includes(term);
+  });
   const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
   const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
   const total = subtotal + serviceFee;
-  const categories = ["Todos", ...new Set(state.products.map((product) => product.category))];
   const lastSaleForTickets = lastSaleForTicketsId ? state.sales.find((sale) => sale.id === lastSaleForTicketsId) : null;
 
   return `
@@ -2680,7 +2689,7 @@ function renderPos() {
           ${categories
             .map(
               (category) => `
-                <button class="category-pill ${categoryFilter === category ? "active" : ""}" type="button" data-category="${category}">
+                <button class="category-pill ${activeCategoryFilter === category ? "active" : ""}" type="button" data-category="${category}">
                   <span>${category === "Todos" ? "TD" : categoryMeta[category]?.icon || category.slice(0, 2).toUpperCase()}</span>
                   ${category}
                 </button>
@@ -2688,27 +2697,20 @@ function renderPos() {
             )
             .join("")}
         </div>
-        <div class="product-grid">
+        <div class="quick-product-grid">
           ${
             products.length
               ? products
                   .map(
                     (product) => `
-                      <button class="product-tile ${categoryMeta[product.category]?.tone || ""}" type="button" data-add-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
-                        <span class="category-badge">${categoryMeta[product.category]?.icon || "IT"}</span>
-                        <div>
-                          <strong>${product.name}</strong>
-                          <span>${product.category} - ${product.station || "Bar"} - ${productStockText(product)}</span>
-                        </div>
-                        <div class="tile-bottom">
-                          <span class="status ${stockStatus(product).className}">${stockStatus(product).label}</span>
-                          <span class="price">${money(product.price)}</span>
-                        </div>
+                      <button class="quick-product-tile" type="button" data-add-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
+                        <strong>${escapeHtml(product.name)}</strong>
+                        <span class="price">${money(product.price)}</span>
                       </button>
                     `,
                   )
                   .join("")
-              : '<div class="empty">Nenhum produto encontrado.</div>'
+              : `<div class="empty">${quickProductsBase.length ? "Nenhum item do menu rapido encontrado." : "Nenhum produto selecionado para o menu rapido. Edite um produto e marque Menu rapido do balcao: Sim."}</div>`
           }
         </div>
       </section>
@@ -6505,7 +6507,7 @@ function renderProductModal() {
             </select>
           </label>
           <label class="field">
-            <span>Favorito no balcao</span>
+            <span>Menu rapido do balcao</span>
             <select name="favorite">
               <option value="true" ${product?.favorite ? "selected" : ""}>Sim</option>
               <option value="false" ${!product?.favorite ? "selected" : ""}>Nao</option>
