@@ -2640,9 +2640,10 @@ function metric(label, value, help, icon) {
 function renderPos() {
   const term = searchTerm.trim().toLowerCase();
   const quickProductsBase = state.products.filter((product) => product.active && product.favorite);
-  const categories = ["Todos", ...new Set(quickProductsBase.map((product) => product.category))];
+  const visibleProductsBase = term ? state.products.filter((product) => product.active) : quickProductsBase;
+  const categories = ["Todos", ...new Set(visibleProductsBase.map((product) => product.category))];
   const activeCategoryFilter = categories.includes(categoryFilter) ? categoryFilter : "Todos";
-  const products = quickProductsBase.filter((product) => {
+  const products = visibleProductsBase.filter((product) => {
     if (activeCategoryFilter !== "Todos" && product.category !== activeCategoryFilter) return false;
     if (!term) return true;
     return `${product.name} ${product.productCode || ""} ${productBarcodeCodes(product).join(" ")} ${product.category}`
@@ -2679,7 +2680,7 @@ function renderPos() {
     <div class="pos-layout">
       <section class="card pad">
         <div class="quick-menu-editor">
-          <strong>Menu rapido</strong>
+          <strong>${term ? "Resultado da busca" : "Menu rapido"}</strong>
           <div>
             <button class="btn compact secondary" type="button" data-open-modal="product">Adicionar item</button>
             <button class="btn compact secondary" type="button" data-view="stock">Editar itens</button>
@@ -2710,7 +2711,7 @@ function renderPos() {
                     `,
                   )
                   .join("")
-              : `<div class="empty">${quickProductsBase.length ? "Nenhum item do menu rapido encontrado." : "Nenhum produto selecionado para o menu rapido. Edite um produto e marque Menu rapido do balcao: Sim."}</div>`
+              : `<div class="empty">${term ? "Nenhum produto encontrado na busca." : quickProductsBase.length ? "Nenhum item do menu rapido encontrado." : "Nenhum produto selecionado para o menu rapido. Edite um produto e marque Menu rapido do balcao: Sim."}</div>`
           }
         </div>
       </section>
