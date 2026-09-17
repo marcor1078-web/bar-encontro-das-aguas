@@ -2137,14 +2137,14 @@ function renderLogin() {
       <section class="login-panel">
         <h2>Acessar sistema</h2>
         <p class="hint">${isSupabaseReady() ? "Login real conectado ao Supabase." : "Entre com uma conta autorizada."}</p>
-        <form id="login-form">
+        <form id="login-form" autocomplete="off">
           <label class="field">
             <span>Nome do usuario</span>
-            <input name="username" type="text" autocomplete="username" required />
+            <input name="username" type="text" autocomplete="off" required />
           </label>
           <label class="field">
             <span>Senha</span>
-            <input name="password" type="password" autocomplete="current-password" required />
+            <input name="password" type="password" autocomplete="off" data-lpignore="true" data-1p-ignore required />
           </label>
           <button class="btn primary" type="submit">Entrar</button>
           ${
@@ -2179,13 +2179,18 @@ function renderLogin() {
   document.querySelector("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    await login(form.get("username").trim(), form.get("password").trim());
+    const username = form.get("username").trim();
+    const password = form.get("password").trim();
+    event.currentTarget.querySelector('input[name="password"]').value = "";
+    await login(username, password);
   });
 
   document.querySelectorAll("[data-fill-login]").forEach((button) => {
     button.addEventListener("click", () => {
       document.querySelector('input[name="username"]').value = button.dataset.fillLogin;
-      document.querySelector('input[name="password"]').focus();
+      const passwordInput = document.querySelector('input[name="password"]');
+      passwordInput.value = "";
+      passwordInput.focus();
     });
   });
   document.querySelector("[data-install-app]")?.addEventListener("click", installApp);
