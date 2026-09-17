@@ -26,6 +26,7 @@ const roles = {
       "stock",
       "suppliers",
       "clients",
+      "catalog",
       "reports",
       "team",
       "settings",
@@ -34,15 +35,15 @@ const roles = {
   },
   manager: {
     label: "Gerente",
-    permissions: ["pos", "tables", "waiter", "kitchen", "sales", "cash", "stock", "suppliers", "clients", "reports"],
+    permissions: ["pos", "tables", "waiter", "kitchen", "sales", "cash", "stock", "suppliers", "clients", "catalog", "reports"],
   },
   cashier: {
     label: "Caixa",
-    permissions: ["pos", "tables", "sales", "cash", "clients"],
+    permissions: ["pos", "tables", "sales", "cash", "clients", "catalog"],
   },
   stock: {
     label: "Estoque",
-    permissions: ["kitchen", "stock", "suppliers"],
+    permissions: ["kitchen", "stock", "suppliers", "catalog"],
   },
 };
 
@@ -57,6 +58,7 @@ const navItems = [
   { id: "stock", label: "Estoque", icon: "boxes" },
   { id: "suppliers", label: "Fornecedores", icon: "suppliers" },
   { id: "clients", label: "Clientes/Fiado", icon: "clients" },
+  { id: "catalog", label: "Catalogo de precos", icon: "tag" },
   { id: "reports", label: "Relatorios", icon: "reports" },
   { id: "team", label: "Equipe", icon: "users" },
   { id: "settings", label: "Configuracoes", icon: "settings" },
@@ -74,6 +76,7 @@ const permissionDescriptions = {
   stock: "Estoque, produtos e inventario",
   suppliers: "Compras e fornecedores",
   clients: "Fiado e clientes",
+  catalog: "Lista de produtos e precos para clientes",
   reports: "Relatorios e backup",
   team: "Gerenciar acessos",
   settings: "Dados do bar e operacao",
@@ -2287,6 +2290,7 @@ function topbarSubtitle(view) {
     products: "Cadastro de itens vendidos no bar.",
     suppliers: "Compras, entradas e fornecedores.",
     clients: "Controle de fiado e clientes.",
+    catalog: "Lista de produtos e precos para apresentar aos clientes.",
     reports: "Analises, exportacao e backup.",
     team: "Usuarios, senhas e permissoes.",
     settings: "Dados do bar, inicio por cargo e backup.",
@@ -2309,6 +2313,7 @@ function renderView() {
     products: renderProducts,
     suppliers: renderSuppliers,
     clients: renderClients,
+    catalog: renderPriceCatalog,
     reports: renderReports,
     team: renderTeam,
     settings: renderSettings,
@@ -2458,6 +2463,7 @@ function bindViewEvents() {
   document.querySelector("[data-print-cash-report]")?.addEventListener("click", () => printReport("cash"));
   document.querySelector("[data-print-stock-report]")?.addEventListener("click", () => printReport("stock"));
   document.querySelector("[data-print-inventory-report]")?.addEventListener("click", downloadInventoryPdf);
+  document.querySelector("[data-download-price-catalog]")?.addEventListener("click", downloadPriceCatalogPdf);
   document.querySelector("[data-print-clients-report]")?.addEventListener("click", () => printReport("clients"));
   document.querySelector("#report-filter-form")?.addEventListener("submit", applyReportFilter);
 
@@ -5822,6 +5828,48 @@ function renderClients() {
               .join("")}
           </tbody>
         </table>
+      </div>
+    </section>
+  `;
+}
+
+function priceCatalogProducts() {
+  return state.products
+    .filter((product) => product.active !== false)
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+}
+
+function renderPriceCatalog() {
+  const products = priceCatalogProducts();
+  return `
+    <div class="section-title">
+      <div>
+        <h2>Catalogo de precos</h2>
+        <p>Produtos ativos com o valor final de venda.</p>
+      </div>
+      <button class="btn primary" type="button" data-download-price-catalog>${icon("download")} Baixar catalogo em PDF</button>
+    </div>
+    <section class="price-catalog-sheet">
+      <div class="price-catalog-heading">
+        <strong>${escapeHtml(state.settings.barName || APP_DISPLAY_NAME)}</strong>
+        <span>${products.length} produtos</span>
+      </div>
+      <div class="price-catalog-grid">
+        ${
+          products.length
+            ? products
+                .map(
+                  (product) => `
+                    <article class="price-catalog-item">
+                      <strong>${escapeHtml(product.name)}</strong>
+                      <span>${money(product.price)}</span>
+                    </article>
+                  `,
+                )
+                .join("")
+            : '<div class="empty-state">Nenhum produto ativo cadastrado.</div>'
+        }
       </div>
     </section>
   `;
@@ -9445,6 +9493,85 @@ function safeFileName(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function downloadPriceCatalogPdf() {
+  const { jsPDF } = window.jspdf || {};
+  if (!jsPDF) {
+    notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
+    return;
+  }
+
+  const products = priceCatalogProducts();
+  if (!products.length) {
+    notify("Cadastre pelo menos um produto ativo para gerar o catalogo.");
+    return;
+  }
+
+  const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
+  const businessName = state.settings.barName || APP_DISPLAY_NAME;
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 36;
+  const columnGap = 10;
+  const rowGap = 10;
+  const cardWidth = (pageWidth - margin * 2 - columnGap * 2) / 3;
+  const cardHeight = 70;
+  const contentTop = 104;
+  const contentBottom = pageHeight - 44;
+  const rowsPerPage = Math.max(1, Math.floor((contentBottom - contentTop + rowGap) / (cardHeight + rowGap)));
+  const productsPerPage = rowsPerPage * 3;
+  const pageCount = Math.ceil(products.length / productsPerPage);
+
+  doc.setProperties({
+    title: `${businessName} - Catalogo de precos`,
+    subject: "Catalogo de produtos e precos",
+    author: session?.name || "Usuario",
+  });
+
+  for (let page = 0; page < pageCount; page += 1) {
+    if (page > 0) doc.addPage();
+
+    doc.setFillColor(15, 118, 110);
+    doc.rect(0, 0, pageWidth, 72, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.text(businessName, margin, 34);
+    doc.setFontSize(11);
+    doc.text("CATALOGO DE PRECOS", margin, 54);
+
+    const pageProducts = products.slice(page * productsPerPage, (page + 1) * productsPerPage);
+    pageProducts.forEach((product, index) => {
+      const column = index % 3;
+      const row = Math.floor(index / 3);
+      const x = margin + column * (cardWidth + columnGap);
+      const y = contentTop + row * (cardHeight + rowGap);
+
+      doc.setFillColor(248, 250, 252);
+      doc.setDrawColor(203, 213, 225);
+      doc.roundedRect(x, y, cardWidth, cardHeight, 4, 4, "FD");
+      doc.setTextColor(17, 24, 39);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      const nameLines = doc.splitTextToSize(String(product.name || "Produto"), cardWidth - 18).slice(0, 2);
+      doc.text(nameLines, x + 9, y + 18);
+      doc.setTextColor(15, 118, 110);
+      doc.setFontSize(15);
+      doc.text(money(product.price), x + 9, y + 57);
+    });
+
+    doc.setTextColor(107, 114, 128);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.text(`Pagina ${page + 1} de ${pageCount}`, pageWidth - margin, pageHeight - 22, { align: "right" });
+  }
+
+  const date = new Date().toISOString().slice(0, 10);
+  doc.save(`catalogo-de-precos-${safeFileName(businessName)}-${date}.pdf`);
+  logAudit("Catalogo de precos baixado", `${products.length} produtos.`);
+  saveState();
+  notify("Catalogo de precos baixado em PDF.");
 }
 
 function addInventoryPdfTable(doc, title, headers, rows, startY) {
