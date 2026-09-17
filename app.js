@@ -895,6 +895,10 @@ function normalizePaymentBreakdown(breakdown = []) {
     .map((part) => ({
       method: normalizePaymentMethod(part.method),
       amount: Number(part.amount || 0),
+      installments:
+        normalizePaymentMethod(part.method) === "Credito"
+          ? Math.min(12, Math.max(1, Math.trunc(Number(part.installments || 1))))
+          : 1,
     }))
     .filter((part) => paymentMethods.includes(part.method) && part.amount > 0)
     .map((part) => ({ ...part, amount: Number(part.amount.toFixed(2)) }));
@@ -951,6 +955,7 @@ function encodePaymentDetails({ payment = "", breakdown = [], cashReceived = 0, 
     payment === "Dividido" ||
     Number(cashReceived || 0) > 0 ||
     Number(cashChange || 0) > 0 ||
+    parts.some((part) => part.method === "Credito") ||
     normalizedDiscount.amount > 0;
   if (!shouldEncode) return normalizePaymentMethod(payment);
   return `${PAYMENT_DETAILS_PREFIX}${JSON.stringify({
@@ -1044,10 +1049,14 @@ function saleStoredProfit(sale) {
 
 function paymentDisplay(sale) {
   const parts = salePaymentParts(sale);
+  const partLabel = (part) =>
+    part.method === "Credito"
+      ? `Credito ${Number(part.installments || 1) === 1 ? "a vista" : `${Number(part.installments)}x`}`
+      : part.method;
   if (parts.length > 1 || sale?.payment === "Dividido") {
-    return parts.map((part) => `${part.method} ${money(part.amount)}`).join(" + ");
+    return parts.map((part) => `${partLabel(part)} ${money(part.amount)}`).join(" + ");
   }
-  return normalizePaymentMethod(sale?.payment) || "-";
+  return parts[0] ? partLabel(parts[0]) : normalizePaymentMethod(sale?.payment) || "-";
 }
 
 function describeMercadoPagoError(payload) {
@@ -1324,7 +1333,7 @@ async function printMercadoPagoCustomTicket({ terminalId, amount, payment, descr
   return data;
 }
 
-async function processMercadoPagoPointPayment({ amount, payment, description, terminalId, items = [] }) {
+async function processMercadoPagoPointPayment({ amount, payment, installments = 1, description, terminalId, items = [] }) {
   const config = await loadMercadoPagoPointStatus();
   if (!config.enabled || !isPointPayment(payment)) return { skipped: true };
   const selectedTerminalId = terminalId || getSelectedPaymentTerminal()?.terminalId || "";
@@ -1336,6 +1345,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description, te
     body: JSON.stringify({
       amount,
       paymentMethod: payment,
+      installments,
       terminalId: selectedTerminalId,
       description,
       externalReference: `sale-${Date.now()}`,
@@ -1387,7 +1397,7 @@ async function processMercadoPagoPointPayment({ amount, payment, description, te
   };
 }
 
-async function processPointPaymentBeforeSale({ amount, payment, description, items = [], terminalKey = "" }) {
+async function processPointPaymentBeforeSale({ amount, payment, installments = 1, description, items = [], terminalKey = "" }) {
   if (!isPointPayment(payment)) return { ok: true, terminal: null };
 
   await loadMercadoPagoPointStatus(true);
@@ -1413,6 +1423,7 @@ async function processPointPaymentBeforeSale({ amount, payment, description, ite
   const pointPayment = await processMercadoPagoPointPayment({
     amount,
     payment,
+    installments,
     terminalId: selectedTerminal.terminalId,
     items,
     description,
@@ -1434,6 +1445,7 @@ async function processPointPaymentsBeforeSale({ payment, paymentBreakdown = [], 
     const result = await processPointPaymentBeforeSale({
       amount: part.amount,
       payment: part.method,
+      installments: part.installments,
       terminalKey,
       items,
       description: pointParts.length > 1 ? `${description} - ${part.method}` : description,
@@ -3070,6 +3082,7 @@ async function confirmSalePayment(event) {
   let cashReceived = payment === "Dinheiro" && (cashExact || !cashReceivedText) ? total : payment === "Dinheiro" ? Number(cashReceivedText) : 0;
   let cashChange = payment === "Dinheiro" && (cashExact || !cashReceivedText) ? 0 : payment === "Dinheiro" ? Math.max(0, cashReceived - total) : 0;
   let paymentBreakdown = [];
+  const creditInstallments = Math.min(12, Math.max(1, Number(form.get("creditInstallments") || 1)));
   if (!payment) {
     notify("Escolha a forma de pagamento para finalizar.");
     return;
@@ -3081,7 +3094,11 @@ async function confirmSalePayment(event) {
   }
   if (payment === "Dividido") {
     paymentBreakdown = paymentMethods
-      .map((method) => ({ method, amount: Number(form.get(`split-${method}`) || 0) }))
+      .map((method) => ({
+        method,
+        amount: Number(form.get(`split-${method}`) || 0),
+        installments: method === "Credito" ? Math.min(12, Math.max(1, Number(form.get("splitCreditInstallments") || 1))) : 1,
+      }))
       .filter((part) => part.amount > 0);
     const paid = paymentBreakdown.reduce((sum, part) => sum + part.amount, 0);
     const cashPart = paymentBreakdown.find((part) => part.method === "Dinheiro")?.amount || 0;
@@ -3104,6 +3121,9 @@ async function confirmSalePayment(event) {
       delete formElement.dataset.submitting;
       return;
     }
+  }
+  if (payment !== "Dividido") {
+    paymentBreakdown = [{ method: payment, amount: total, installments: payment === "Credito" ? creditInstallments : 1 }];
   }
   formElement.dataset.submitting = "true";
 
@@ -3186,7 +3206,10 @@ function updateSplitPaymentPreview(form) {
   const remainingOutput = form.querySelector("[data-split-remaining]");
   const cashChangeOutput = form.querySelector("[data-split-cash-change]");
   const cashReceivedField = form.querySelector("[data-split-cash-field]");
+  const creditInstallmentsField = form.querySelector("[data-split-credit-installments]");
+  const creditPart = Number(form.querySelector('[data-split-amount="Credito"]')?.value || 0);
   if (cashReceivedField) cashReceivedField.hidden = cashPart <= 0;
+  if (creditInstallmentsField) creditInstallmentsField.hidden = creditPart <= 0;
   if (cashReceivedInput && cashPart <= 0) cashReceivedInput.value = "";
   if (paidOutput) paidOutput.textContent = money(paid);
   if (remainingOutput) {
@@ -3205,12 +3228,19 @@ function bindSalePaymentChoice() {
   updateSalePaymentTotalPreview(form);
   updateCashChangePreview(form);
   updateSplitPaymentPreview(form);
+  const updateCreditInstallments = () => {
+    const payment = form.querySelector('input[name="payment"]:checked')?.value || "";
+    const panel = form.querySelector("[data-credit-installments]");
+    if (panel) panel.hidden = payment !== "Credito";
+  };
+  updateCreditInstallments();
   cashInput?.addEventListener("input", () => updateCashChangePreview(form));
   discountInputs.forEach((input) => {
     input.addEventListener("input", () => {
       updateSalePaymentTotalPreview(form);
       updateCashChangePreview(form);
       updateSplitPaymentPreview(form);
+      updateCreditInstallments();
     });
     input.addEventListener("change", () => {
       updateSalePaymentTotalPreview(form);
@@ -3224,12 +3254,17 @@ function bindSalePaymentChoice() {
     input.addEventListener("change", () => {
       updateCashChangePreview(form);
       updateSplitPaymentPreview(form);
+      updateCreditInstallments();
       if (input.value === "Dinheiro") {
         cashInput?.focus();
         return;
       }
       if (input.value === "Dividido") {
         form.querySelector("[data-split-amount]")?.focus();
+        return;
+      }
+      if (input.value === "Credito") {
+        form.querySelector('input[name="creditInstallments"]:checked')?.focus();
         return;
       }
       if (form.dataset.submitting === "true") return;
@@ -6284,6 +6319,24 @@ function renderSalePaymentModal() {
             <button class="btn secondary" type="submit">Finalizar com troco</button>
           </div>
         </div>
+        <div class="credit-installments-panel" data-credit-installments hidden>
+          <div class="field">
+            <span>Parcelas do credito</span>
+            <div class="installment-choice-grid">
+              ${Array.from({ length: 12 }, (_, index) => index + 1)
+                .map(
+                  (installments) => `
+                    <label class="payment-choice installment-choice">
+                      <input type="radio" name="creditInstallments" value="${installments}" ${installments === 1 ? "checked" : ""} />
+                      <span>${installments === 1 ? "A vista" : `${installments}x`}</span>
+                    </label>
+                  `,
+                )
+                .join("")}
+            </div>
+          </div>
+          <button class="btn primary" type="submit">Enviar credito para a maquininha</button>
+        </div>
         <div class="split-payment-panel" data-split-payment-panel hidden>
           <div class="split-payment-grid">
             ${paymentMethods
@@ -6297,6 +6350,14 @@ function renderSalePaymentModal() {
               )
               .join("")}
           </div>
+          <div class="field" data-split-credit-installments hidden>
+            <span>Parcelas da parte paga no credito</span>
+            <select name="splitCreditInstallments">
+              ${Array.from({ length: 12 }, (_, index) => index + 1)
+                .map((installments) => `<option value="${installments}">${installments === 1 ? "A vista" : `${installments}x`}</option>`)
+                .join("")}
+            </select>
+          </div>
           <label class="field" data-split-cash-field hidden>
             <span>Valor recebido em dinheiro, se tiver troco</span>
             <input name="splitCashReceived" data-split-cash-received type="number" min="0" step="0.01" placeholder="Ex.: ${Math.ceil(total).toFixed(2)}" />
@@ -6308,7 +6369,7 @@ function renderSalePaymentModal() {
           </div>
           <button class="btn primary" type="submit">Finalizar pagamento dividido</button>
         </div>
-        <div class="notice compact">Pix, Debito e Credito enviam a cobranca para a maquininha selecionada imediatamente. Dinheiro calcula o troco antes de finalizar. Dividido permite usar mais de uma forma na mesma venda. Fiado exige cliente com limite disponivel.</div>
+        <div class="notice compact">Pix e Debito enviam a cobranca imediatamente. No Credito, escolha de a vista ate 12x antes do envio. Dinheiro calcula o troco. Dividido permite mais de uma forma. Fiado exige cliente com limite disponivel.</div>
       </div>
     </form>
   `;

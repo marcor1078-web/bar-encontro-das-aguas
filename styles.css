@@ -590,6 +590,32 @@ button:disabled {
   gap: 8px;
 }
 
+#sale-payment-form .credit-installments-panel {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+#sale-payment-form .credit-installments-panel[hidden] {
+  display: none;
+}
+
+#sale-payment-form .installment-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#sale-payment-form .installment-choice span {
+  min-height: 34px;
+  padding: 6px 4px;
+  font-size: 0.82rem;
+}
+
 #sale-payment-form .notice.compact {
   margin: 0;
   padding: 8px 10px;
@@ -2340,6 +2366,10 @@ body[data-theme="dark"] .notice {
   #sale-payment-form .payment-choice-grid,
   #sale-payment-form .split-payment-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #sale-payment-form .installment-choice-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .permission-head {

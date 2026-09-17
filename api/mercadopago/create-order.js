@@ -65,11 +65,13 @@ module.exports = async function handler(req, res) {
   };
 
   const defaultType = paymentType(body.paymentMethod);
+  const requestedInstallments = Math.trunc(Number(body.installments || env.defaultInstallments || 1));
+  const installments = Math.min(12, Math.max(1, Number.isFinite(requestedInstallments) ? requestedInstallments : 1));
   payload.config.payment_method = {
     default_type: defaultType,
   };
-  if (defaultType === "credit_card" && env.defaultInstallments > 1) {
-    payload.config.payment_method.default_installments = env.defaultInstallments;
+  if (defaultType === "credit_card") {
+    payload.config.payment_method.default_installments = installments;
     payload.config.payment_method.installments_cost = "seller";
   }
 
