@@ -7074,6 +7074,7 @@ function renderUserModal() {
   const selectedRole = user?.role || "cashier";
   const selectedPermissions = user ? getUserPermissions(user) : roles[selectedRole].permissions;
   const isAdminRole = selectedRole === "admin";
+  const isLocalUser = Boolean(user && !isUuid(user.id));
   const canResetOnlinePassword = isOnlineSession() && session?.role === "admin" && user && isUuid(user.id);
   return `
     <form id="user-form">
@@ -7092,7 +7093,7 @@ function renderUserModal() {
             <input name="email" type="email" required value="${user?.email || ""}" />
           </label>
           ${
-            isOnlineSession()
+            isOnlineSession() && !isLocalUser
               ? `<label class="field full">
                   <span>Nova senha online</span>
                   <input name="password" type="password" minlength="6" ${canResetOnlinePassword ? "" : "disabled"} placeholder="${canResetOnlinePassword ? "Deixe em branco para manter a senha atual" : "Disponivel apenas para usuario online existente"}" />
@@ -7102,10 +7103,11 @@ function renderUserModal() {
                   </small>
                 </label>`
               : `<label class="field">
-                  <span>Senha</span>
+                  <span>Senha ${isLocalUser ? "offline" : ""}</span>
                   <input name="password" type="password" required value="${user?.password || ""}" />
                 </label>`
           }
+          ${isOnlineSession() && isLocalUser ? '<div class="notice compact full">Esta e uma conta offline. As alteracoes ficam somente neste navegador e nao sao enviadas ao Supabase.</div>' : ""}
           <label class="field">
             <span>Cargo</span>
             <select name="role" id="user-role">
@@ -8430,7 +8432,9 @@ async function saveUser(event) {
     return;
   }
 
-  if (isOnlineSession()) {
+  const editingLocalUser = Boolean(currentModal.id && !isUuid(currentModal.id));
+
+  if (isOnlineSession() && !editingLocalUser) {
     if (!currentModal.id || !isUuid(currentModal.id)) {
       notify("Para criar login real, crie primeiro o usuario em Supabase > Authentication > Users e depois o perfil em profiles.");
       return;
@@ -8482,7 +8486,7 @@ async function saveUser(event) {
   currentModal = null;
   logAudit("Usuario salvo", `${payload.name} - ${payload.role}.`);
   saveState();
-  notify("Usuario salvo.");
+  notify(editingLocalUser ? "Conta offline atualizada neste navegador." : "Usuario salvo.");
   renderApp();
 }
 
