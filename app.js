@@ -572,6 +572,7 @@ function migrateState(nextState) {
     return {
       productCode: "",
       barcodeCodes: [],
+      imageUrl: "",
       station: "Bar",
       recipe: [],
       criticalStock: Math.max(1, Math.floor(Number(product.minStock || base.minStock || 1) / 2)),
@@ -1638,6 +1639,7 @@ function mapProductFromDb(row, recipes = []) {
     name: row.name,
     productCode: row.product_code || "",
     barcodeCodes: Array.isArray(row.barcode_codes) ? row.barcode_codes.filter(Boolean) : [],
+    imageUrl: row.image_url || "",
     category: row.category,
     station: row.station || "Bar",
     price: Number(row.price || 0),
@@ -1684,6 +1686,25 @@ function productCodeDisplay(product) {
 function productSearchOptionValue(product) {
   const code = product.productCode || productBarcodeCodes(product)[0] || "";
   return [product.name, code].filter(Boolean).join(" | ");
+}
+
+function productImageUrl(product) {
+  const value = String(product?.imageUrl || "").trim();
+  if (!value) return "";
+  if (value.startsWith("data:image/")) return value;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function productImageMarkup(product, className = "product-photo") {
+  const url = productImageUrl(product);
+  return url
+    ? `<img class="${className}" src="${escapeHtml(url)}" alt="Foto de ${escapeHtml(product.name || "produto")}" loading="lazy" />`
+    : `<span class="${className} product-photo-empty" aria-hidden="true">${escapeHtml(String(product?.name || "P").slice(0, 1).toUpperCase())}</span>`;
 }
 
 function findProductBySearchValue(value) {
@@ -2728,8 +2749,11 @@ function renderPos() {
                   .map(
                     (product) => `
                       <button class="quick-product-tile" type="button" data-add-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
-                        <strong>${escapeHtml(product.name)}</strong>
-                        <span class="price">${money(product.price)}</span>
+                        ${productImageMarkup(product, "quick-product-photo")}
+                        <span class="quick-product-copy">
+                          <strong>${escapeHtml(product.name)}</strong>
+                          <span class="price">${money(product.price)}</span>
+                        </span>
                       </button>
                     `,
                   )
@@ -5232,7 +5256,7 @@ function renderStock() {
               .map(
                 (product) => `
                   <tr class="stock-row ${stockStatus(product).className} expiry-${productExpiryStatus(product).className}">
-                    <td data-label="Produto">${product.name}</td>
+                    <td data-label="Produto"><span class="stock-product-name">${productImageMarkup(product, "stock-product-photo")}<strong>${escapeHtml(product.name)}</strong></span></td>
                     <td data-label="Saldo">${productStockText(product)}</td>
                     <td data-label="Codigo">${productCodeDisplay(product)}</td>
                     <td data-label="Acoes">
@@ -5862,8 +5886,11 @@ function renderPriceCatalog() {
                 .map(
                   (product) => `
                     <article class="price-catalog-item">
-                      <strong>${escapeHtml(product.name)}</strong>
-                      <span>${money(product.price)}</span>
+                      ${productImageMarkup(product, "price-catalog-photo")}
+                      <div>
+                        <strong>${escapeHtml(product.name)}</strong>
+                        <span>${money(product.price)}</span>
+                      </div>
                     </article>
                   `,
                 )
@@ -6597,6 +6624,20 @@ function renderProductModal() {
             <span>Nome</span>
             <input name="name" required value="${product?.name || ""}" />
           </label>
+          <div class="field full product-image-field">
+            <span>Foto do produto (opcional)</span>
+            <div class="product-image-picker">
+              ${productImageMarkup(product, "product-image-preview")}
+              <div>
+                <label class="btn secondary product-image-button">
+                  Escolher foto
+                  <input name="imageFile" data-product-image-input type="file" accept="image/jpeg,image/png,image/webp" />
+                </label>
+                <small class="hint">Use a camera ou escolha uma imagem. Ela sera reduzida automaticamente.</small>
+                ${productImageUrl(product) ? '<label class="check-line"><input name="removeImage" type="checkbox" /> Remover foto atual</label>' : ""}
+              </div>
+            </div>
+          </div>
           <label class="field">
             <span>Codigo do produto</span>
             <input name="productCode" value="${product?.productCode || ""}" placeholder="Ex.: 789123 ou LT600" />
@@ -7373,11 +7414,45 @@ function bindModalForms() {
   bindSalePaymentChoice();
   bindExternalPaymentTotal();
   bindUserPermissionControls();
+  bindProductImagePreview();
+}
+
+function bindProductImagePreview() {
+  const input = document.querySelector("[data-product-image-input]");
+  const preview = document.querySelector(".product-image-preview");
+  if (!input || !preview) return;
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      input.value = "";
+      notify("Escolha um arquivo de imagem.");
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      input.value = "";
+      notify("A foto deve ter no maximo 8 MB.");
+      return;
+    }
+    const objectUrl = URL.createObjectURL(file);
+    if (preview.tagName === "IMG") {
+      preview.src = objectUrl;
+    } else {
+      const image = document.createElement("img");
+      image.className = preview.className.replace("product-photo-empty", "").trim();
+      image.alt = "Pre-visualizacao da foto do produto";
+      image.src = objectUrl;
+      preview.replaceWith(image);
+    }
+  });
 }
 
 async function saveProduct(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  const imageFile = form.get("imageFile");
+  const removeImage = form.get("removeImage") === "on";
+  const currentProduct = state.products.find((product) => product.id === currentModal.id);
   const payload = {
     name: form.get("name").trim(),
     productCode: form.get("productCode").trim(),
@@ -7396,11 +7471,21 @@ async function saveProduct(event) {
     recipe: parseRecipeText(form.get("recipeText")),
     favorite: form.get("favorite") === "true",
     active: form.get("active") === "true",
+    imageUrl: removeImage ? "" : currentProduct?.imageUrl || "",
   };
 
   if (isOnlineSession()) {
-    await saveProductOnline(payload);
+    await saveProductOnline(payload, imageFile?.size ? imageFile : null, removeImage);
     return;
+  }
+
+  if (imageFile?.size) {
+    try {
+      payload.imageUrl = await resizeProductImage(imageFile, "data-url");
+    } catch (error) {
+      notify(`Nao foi possivel preparar a foto: ${error.message}`);
+      return;
+    }
   }
 
   if (currentModal.id) {
@@ -7418,7 +7503,64 @@ async function saveProduct(event) {
   renderApp();
 }
 
-async function saveProductOnline(payload) {
+async function resizeProductImage(file, output = "blob") {
+  if (!file?.type?.startsWith("image/")) throw new Error("arquivo invalido");
+  if (file.size > 8 * 1024 * 1024) throw new Error("a foto deve ter no maximo 8 MB");
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error("imagem nao reconhecida"));
+      element.src = objectUrl;
+    });
+    const maxSide = 1200;
+    const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    if (output === "data-url") return canvas.toDataURL("image/jpeg", 0.84);
+    return await new Promise((resolve, reject) =>
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("falha ao reduzir imagem"))), "image/jpeg", 0.84),
+    );
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+function productImageStoragePath(url) {
+  const marker = "/storage/v1/object/public/product-images/";
+  const index = String(url || "").indexOf(marker);
+  return index >= 0 ? decodeURIComponent(String(url).slice(index + marker.length)) : "";
+}
+
+async function uploadProductImage(productId, file) {
+  const blob = await resizeProductImage(file);
+  const suffix = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const path = `${productId}/${suffix}.jpg`;
+  const upload = await supabaseClient.storage.from("product-images").upload(path, blob, {
+    contentType: "image/jpeg",
+    cacheControl: "31536000",
+    upsert: false,
+  });
+  if (upload.error) throw upload.error;
+  const publicUrl = supabaseClient.storage.from("product-images").getPublicUrl(path).data.publicUrl;
+  return { path, publicUrl };
+}
+
+async function deleteStoredProductImage(url) {
+  const path = productImageStoragePath(url);
+  if (!path) return;
+  await supabaseClient.storage.from("product-images").remove([path]);
+}
+
+async function saveProductOnline(payload, imageFile = null, removeImage = false) {
+  const previousImageUrl = state.products.find((product) => product.id === currentModal.id)?.imageUrl || "";
   const dbPayload = {
     name: payload.name,
     product_code: payload.productCode || null,
@@ -7465,6 +7607,26 @@ async function saveProductOnline(payload) {
   }
 
   const productId = result.data.id;
+  if (imageFile) {
+    try {
+      const uploaded = await uploadProductImage(productId, imageFile);
+      const imageUpdate = await supabaseClient.from("products").update({ image_url: uploaded.publicUrl }).eq("id", productId);
+      if (imageUpdate.error) {
+        await supabaseClient.storage.from("product-images").remove([uploaded.path]);
+        throw imageUpdate.error;
+      }
+      await deleteStoredProductImage(previousImageUrl);
+    } catch (error) {
+      notify(`Produto salvo, mas a foto falhou: ${error.message}. Execute a migracao de imagens no Supabase.`);
+    }
+  } else if (removeImage && previousImageUrl) {
+    const imageUpdate = await supabaseClient.from("products").update({ image_url: null }).eq("id", productId);
+    if (imageUpdate.error) {
+      notify(`Produto salvo, mas nao foi possivel remover a foto: ${imageUpdate.error.message}`);
+    } else {
+      await deleteStoredProductImage(previousImageUrl);
+    }
+  }
   const deleteRecipe = await supabaseClient.from("product_recipes").delete().eq("product_id", productId);
   if (deleteRecipe.error) {
     notify(`Produto salvo, mas falhou ao limpar ficha tecnica: ${deleteRecipe.error.message}`);
@@ -7521,6 +7683,7 @@ async function removeProduct(productId) {
       notify(`Erro ao remover produto online: ${error.message}`);
       return;
     }
+    await deleteStoredProductImage(product.imageUrl);
     cart = cart.filter((item) => item.productId !== productId);
     await loadOnlineStockData();
     logAudit("Produto removido online", product.name);
@@ -9495,7 +9658,21 @@ function safeFileName(value) {
     .replace(/^-+|-+$/g, "");
 }
 
-function downloadPriceCatalogPdf() {
+async function imageUrlToDataUrl(url) {
+  if (!url) return "";
+  if (url.startsWith("data:image/")) return url;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error("imagem indisponivel");
+  const blob = await response.blob();
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("falha ao ler imagem"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function downloadPriceCatalogPdf() {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF) {
     notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
@@ -9508,6 +9685,17 @@ function downloadPriceCatalogPdf() {
     return;
   }
 
+  notify("Preparando o catalogo em PDF...");
+  const productImages = await Promise.all(
+    products.map(async (product) => {
+      try {
+        return await imageUrlToDataUrl(productImageUrl(product));
+      } catch {
+        return "";
+      }
+    }),
+  );
+
   const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -9516,7 +9704,7 @@ function downloadPriceCatalogPdf() {
   const columnGap = 10;
   const rowGap = 10;
   const cardWidth = (pageWidth - margin * 2 - columnGap * 2) / 3;
-  const cardHeight = 70;
+  const cardHeight = 86;
   const contentTop = 104;
   const contentBottom = pageHeight - 44;
   const rowsPerPage = Math.max(1, Math.floor((contentBottom - contentTop + rowGap) / (cardHeight + rowGap)));
@@ -9554,11 +9742,21 @@ function downloadPriceCatalogPdf() {
       doc.setTextColor(17, 24, 39);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(10);
-      const nameLines = doc.splitTextToSize(String(product.name || "Produto"), cardWidth - 18).slice(0, 2);
-      doc.text(nameLines, x + 9, y + 18);
+      const imageData = productImages[page * productsPerPage + index];
+      const textX = imageData ? x + 62 : x + 9;
+      if (imageData) {
+        const format = imageData.startsWith("data:image/png") ? "PNG" : "JPEG";
+        try {
+          doc.addImage(imageData, format, x + 9, y + 9, 44, 44, undefined, "FAST");
+        } catch {
+          // O catalogo continua mesmo quando uma imagem especifica nao pode ser processada.
+        }
+      }
+      const nameLines = doc.splitTextToSize(String(product.name || "Produto"), cardWidth - (textX - x) - 9).slice(0, 3);
+      doc.text(nameLines, textX, y + 18);
       doc.setTextColor(15, 118, 110);
       doc.setFontSize(15);
-      doc.text(money(product.price), x + 9, y + 57);
+      doc.text(money(product.price), x + 9, y + 75);
     });
 
     doc.setTextColor(107, 114, 128);

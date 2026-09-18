@@ -15,6 +15,7 @@ create table if not exists products (
   name text not null,
   product_code text,
   barcode_codes text[] not null default '{}',
+  image_url text,
   category text not null,
   station text not null default 'Bar',
   price numeric(12,2) not null,
