@@ -7277,6 +7277,7 @@ function renderUserModal() {
 function renderMovementModal() {
   const selectedType = currentModal?.movementType || "suprimento";
   const fixedExpense = selectedType === "despesa";
+  const today = localDateKey();
   return `
     <form id="movement-form">
       <div class="modal-head">
@@ -7299,6 +7300,15 @@ function renderMovementModal() {
             <span>Valor</span>
             <input name="amount" type="number" min="0.01" step="0.01" required />
           </label>
+          ${
+            fixedExpense
+              ? `<label class="field">
+                  <span>Data da saida</span>
+                  <input name="movementDate" type="date" max="${today}" required value="${today}" />
+                  <small class="hint">Use uma data anterior para registrar uma retirada esquecida.</small>
+                </label>`
+              : ""
+          }
           <label class="field full">
             <span>${fixedExpense ? "Descricao da despesa" : "Motivo"}</span>
             <input name="reason" required placeholder="${fixedExpense ? "Ex.: compra de gelo, entrega, limpeza" : ""}" />
@@ -8725,7 +8735,23 @@ async function saveMovement(event) {
   const type = form.get("type");
   const amount = Number(form.get("amount"));
   const reason = form.get("reason").trim();
+  const movementDateKey = String(form.get("movementDate") || localDateKey());
+  const now = new Date();
+  const [movementYear, movementMonth, movementDay] = movementDateKey.split("-").map(Number);
+  const movementDate = new Date(
+    movementYear,
+    movementMonth - 1,
+    movementDay,
+    now.getHours(),
+    now.getMinutes(),
+    now.getSeconds(),
+  );
   const openCash = getOpenCash();
+
+  if (Number.isNaN(movementDate.getTime()) || movementDateKey > localDateKey()) {
+    notify("Informe uma data valida, igual ou anterior a hoje.");
+    return;
+  }
 
   if (!openCash) {
     notify("Abra o caixa antes de registrar saida, despesa ou suprimento.");
@@ -8738,6 +8764,7 @@ async function saveMovement(event) {
       type,
       amount,
       reason,
+      created_at: movementDate.toISOString(),
     });
 
     if (error) {
@@ -8747,7 +8774,7 @@ async function saveMovement(event) {
 
     currentModal = null;
     await loadOnlineCashData();
-    logAudit("Movimento de caixa online", `${type} de ${money(amount)}.`);
+    logAudit("Movimento de caixa online", `${type} de ${money(amount)} em ${formatDateKeyBr(movementDateKey)}.`);
     notify("Movimentacao registrada no Supabase.");
     renderApp();
     return;
@@ -8763,7 +8790,7 @@ async function saveMovement(event) {
   });
 
   currentModal = null;
-  logAudit("Movimento de caixa", `${type} de ${money(amount)}.`);
+  logAudit("Movimento de caixa", `${type} de ${money(amount)} em ${formatDateKeyBr(movementDateKey)}.`);
   saveState();
   notify("Movimentacao registrada.");
   renderApp();
@@ -10046,7 +10073,7 @@ async function exportBackup() {
   } else {
     state.backupHistory.unshift({
       id: id("backup"),
-      date: new Date().toISOString(),
+      date: movementDate.toISOString(),
       type: "manual",
       size: JSON.stringify(state).length,
     });
