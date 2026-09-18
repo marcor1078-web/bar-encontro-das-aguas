@@ -614,6 +614,7 @@ function migrateState(nextState) {
     return {
       paymentHistory: [],
       ...expense,
+      expenseDate: expense.expenseDate || String(expense.createdAt || new Date().toISOString()).slice(0, 10),
       paidAmount: Math.min(amount, Math.max(0, paidAmount)),
       paid: Boolean(expense.paid || paidAmount >= amount),
       paidAt: expense.paidAt || (expense.paid || paidAmount >= amount ? new Date().toISOString() : null),
@@ -2006,6 +2007,7 @@ function mapExpenseFromDb(row) {
     description: row.description,
     category: row.category || "",
     amount,
+    expenseDate: row.expense_date || String(row.created_at || "").slice(0, 10),
     dueDate: row.due_date,
     paidAmount: Math.min(amount, Math.max(0, paidAmount)),
     paymentHistory: Array.isArray(row.payment_history) ? row.payment_history : [],
@@ -5766,14 +5768,17 @@ function renderSuppliers() {
       <div class="card-head"><h2 class="card-title">Despesas do negocio</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Vencimento</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Ultimo pagamento</th><th>Acoes</th></tr></thead>
+          <thead><tr><th>Data da despesa</th><th>Vencimento</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Ultimo pagamento</th><th>Acoes</th></tr></thead>
           <tbody>
             ${(state.expenses || [])
+              .slice()
+              .sort((a, b) => String(b.expenseDate || "").localeCompare(String(a.expenseDate || "")))
               .map((expense) => {
                 const status = expenseStatus(expense);
                 const lastPayment = expensePaymentHistory(expense)[0];
                 return `
                   <tr>
+                    <td>${new Date(`${expense.expenseDate || String(expense.createdAt).slice(0, 10)}T00:00:00`).toLocaleDateString("pt-BR")}</td>
                     <td>${new Date(`${expense.dueDate}T00:00:00`).toLocaleDateString("pt-BR")}</td>
                     <td>${expense.description}</td>
                     <td>${expense.category || "-"}</td>
@@ -6858,6 +6863,7 @@ function renderPurchaseModal() {
 
 function renderExpenseModal() {
   const expense = (state.expenses || []).find((item) => item.id === currentModal.id);
+  const defaultExpenseDate = expense?.expenseDate || String(expense?.createdAt || new Date().toISOString()).slice(0, 10);
   return `
     <form id="expense-form">
       <div class="modal-head">
@@ -6869,6 +6875,7 @@ function renderExpenseModal() {
           <label class="field full"><span>Descricao</span><input name="description" required value="${expense?.description || ""}" /></label>
           <label class="field"><span>Categoria</span><input name="category" value="${expense?.category || ""}" /></label>
           <label class="field"><span>Valor</span><input name="amount" type="number" min="0.01" step="0.01" required value="${expense?.amount || ""}" /></label>
+          <label class="field"><span>Data da despesa</span><input name="expenseDate" type="date" required value="${defaultExpenseDate}" /></label>
           <label class="field"><span>Vencimento</span><input name="dueDate" type="date" required value="${expense?.dueDate || ""}" /></label>
           <label class="field">
             <span>Status</span>
@@ -8056,6 +8063,7 @@ async function saveExpense(event) {
     description: form.get("description").trim(),
     category: form.get("category").trim(),
     amount,
+    expenseDate: form.get("expenseDate"),
     dueDate: form.get("dueDate"),
     paidAmount,
     paymentHistory,
@@ -8068,6 +8076,7 @@ async function saveExpense(event) {
       description: payload.description,
       category: payload.category,
       amount: payload.amount,
+      expense_date: payload.expenseDate,
       due_date: payload.dueDate,
       paid: payload.paid,
       paid_at: payload.paidAt,
@@ -8079,6 +8088,10 @@ async function saveExpense(event) {
       : await supabaseClient.from("expenses").insert(row);
 
     if (result.error) {
+      if (String(result.error.message || "").includes("expense_date")) {
+        notify("Rode a migracao de data da despesa no Supabase antes de salvar online.");
+        return;
+      }
       if (isExpensePaymentSchemaMissing(result.error)) {
         notify("Rode a migracao de pagamentos parciais de despesas no Supabase antes de salvar online.");
         return;

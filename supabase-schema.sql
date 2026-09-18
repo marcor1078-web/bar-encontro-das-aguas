@@ -189,6 +189,7 @@ create table if not exists expenses (
   description text not null,
   category text,
   amount numeric(12,2) not null,
+  expense_date date not null default current_date,
   due_date date not null,
   paid boolean not null default false,
   paid_at timestamptz,
