@@ -27,6 +27,7 @@ const roles = {
       "suppliers",
       "clients",
       "catalog",
+      "assistant",
       "reports",
       "team",
       "settings",
@@ -59,6 +60,7 @@ const navItems = [
   { id: "suppliers", label: "Fornecedores", icon: "suppliers" },
   { id: "clients", label: "Clientes/Fiado", icon: "clients" },
   { id: "catalog", label: "Catalogo de precos", icon: "tag" },
+  { id: "assistant", label: "Assistente IA", icon: "sparkles" },
   { id: "reports", label: "Relatorios", icon: "reports" },
   { id: "team", label: "Equipe", icon: "users" },
   { id: "settings", label: "Configuracoes", icon: "settings" },
@@ -77,6 +79,7 @@ const permissionDescriptions = {
   suppliers: "Compras e fornecedores",
   clients: "Fiado e clientes",
   catalog: "Lista de produtos e precos para clientes",
+  assistant: "Assistente inteligente para analises e tarefas",
   reports: "Relatorios e backup",
   team: "Gerenciar acessos",
   settings: "Dados do bar e operacao",
@@ -96,6 +99,8 @@ const iconPaths = {
     '<path d="M4 9l8-4 8 4-8 4-8-4Z"></path><path d="M4 9v6l8 4 8-4V9"></path><path d="M12 13v6"></path><path d="M8 7l8 4"></path>',
   tag:
     '<path d="M20 13l-7 7L4 11V4h7l9 9Z"></path><circle cx="8" cy="8" r="1.5"></circle>',
+  sparkles:
+    '<path d="M12 3l1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z"></path><path d="M18 14l.8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14Z"></path><path d="M5 13l.7 1.8 1.8.7-1.8.7L5 18l-.7-1.8-1.8-.7 1.8-.7L5 13Z"></path>',
   users:
     '<circle cx="9" cy="8" r="3"></circle><path d="M3.5 19a5.5 5.5 0 0 1 11 0"></path><path d="M16 11a2.5 2.5 0 1 0 0-5"></path><path d="M17 15a4.5 4.5 0 0 1 3.5 4"></path>',
   waiter:
@@ -530,6 +535,14 @@ let salesDateFilter = "";
 let suppressBroadcast = false;
 let deferredInstallPrompt = null;
 let searchRenderTimer = null;
+let assistantMessages = [
+  {
+    role: "assistant",
+    content: "Ola! Posso analisar seu negocio e preparar tarefas para voce confirmar. O que deseja fazer?",
+  },
+];
+let assistantPendingAction = null;
+let assistantBusy = false;
 
 const app = document.querySelector("#app");
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("barcontrol-sync") : null;
@@ -2314,6 +2327,7 @@ function topbarSubtitle(view) {
     suppliers: "Compras, entradas e fornecedores.",
     clients: "Controle de fiado e clientes.",
     catalog: "Lista de produtos e precos para apresentar aos clientes.",
+    assistant: "Converse com a IA e confirme tarefas no sistema.",
     reports: "Analises, exportacao e backup.",
     team: "Usuarios, senhas e permissoes.",
     settings: "Dados do bar, inicio por cargo e backup.",
@@ -2337,6 +2351,7 @@ function renderView() {
     suppliers: renderSuppliers,
     clients: renderClients,
     catalog: renderPriceCatalog,
+    assistant: renderAssistant,
     reports: renderReports,
     team: renderTeam,
     settings: renderSettings,
@@ -2371,6 +2386,16 @@ function bindAppEvents() {
 }
 
 function bindViewEvents() {
+  document.querySelector("#assistant-form")?.addEventListener("submit", sendAssistantMessage);
+  document.querySelectorAll("[data-assistant-prompt]").forEach((button) => {
+    button.addEventListener("click", () => askAssistant(button.dataset.assistantPrompt));
+  });
+  document.querySelector("[data-confirm-assistant-action]")?.addEventListener("click", executeAssistantAction);
+  document.querySelector("[data-cancel-assistant-action]")?.addEventListener("click", () => {
+    assistantPendingAction = null;
+    assistantMessages.push({ role: "assistant", content: "Acao cancelada. Nenhum dado foi alterado." });
+    renderApp();
+  });
   const search = document.querySelector("[data-search]");
   if (search) {
     search.value = searchTerm;
@@ -5905,6 +5930,330 @@ function renderPriceCatalog() {
       </div>
     </section>
   `;
+}
+
+function assistantMessageMarkup(message) {
+  const content = escapeHtml(message.content || "").replace(/\n/g, "<br>");
+  return `
+    <div class="assistant-message ${message.role === "user" ? "user" : "ai"}">
+      <span>${message.role === "user" ? escapeHtml(session?.name || "Voce") : "IA"}</span>
+      <div>${content}</div>
+    </div>
+  `;
+}
+
+function assistantActionDetails(action) {
+  if (!action) return "";
+  const payload = action.payload || {};
+  if (action.type === "update_stock") {
+    const product = state.products.find((item) => item.id === payload.product_id);
+    const modes = { add: "Adicionar", remove: "Retirar", set: "Definir saldo" };
+    return `${modes[payload.mode] || "Ajustar"} ${qty(payload.quantity)} de ${product?.name || "produto"}`;
+  }
+  if (action.type === "update_price") {
+    const product = state.products.find((item) => item.id === payload.product_id);
+    return `${product?.name || "Produto"}: novo preco ${money(payload.new_price)}`;
+  }
+  if (action.type === "create_expense") {
+    return `${payload.description || "Despesa"}: ${money(payload.amount)} em ${formatDateKeyBr(payload.expense_date)}`;
+  }
+  if (action.type === "create_cash_expense") {
+    return `${payload.reason || "Saida do caixa"}: ${money(payload.amount)} em ${formatDateKeyBr(payload.date)}`;
+  }
+  if (action.type === "navigate") {
+    return `Abrir ${navItems.find((item) => item.id === payload.view)?.label || payload.view || "area"}`;
+  }
+  return action.summary || "Confira os dados.";
+}
+
+function renderAssistant() {
+  const onlineReady = isOnlineSession();
+  return `
+    <div class="section-title assistant-title">
+      <div>
+        <h2>Assistente IA</h2>
+        <p>Analisa os dados do negocio e prepara tarefas para sua confirmacao.</p>
+      </div>
+      <span class="status ${onlineReady ? "green" : "yellow"}">${onlineReady ? "Conta online conectada" : "Requer login online"}</span>
+    </div>
+
+    <div class="assistant-layout">
+      <aside class="assistant-suggestions">
+        <strong>Sugestoes</strong>
+        <button type="button" data-assistant-prompt="Como estao minhas vendas de hoje?">Vendas de hoje</button>
+        <button type="button" data-assistant-prompt="Quais produtos precisam de reposicao primeiro?">Reposicao de estoque</button>
+        <button type="button" data-assistant-prompt="Quais sao os produtos mais vendidos nos ultimos 7 dias?">Mais vendidos</button>
+        <button type="button" data-assistant-prompt="Resuma as despesas em aberto e os proximos vencimentos.">Despesas em aberto</button>
+        <small>A IA le um resumo atualizado. Qualquer alteracao exige sua confirmacao.</small>
+      </aside>
+
+      <section class="assistant-chat" aria-label="Conversa com o assistente">
+        <div class="assistant-messages" data-assistant-messages>
+          ${assistantMessages.map(assistantMessageMarkup).join("")}
+          ${assistantBusy ? '<div class="assistant-message ai loading"><span>IA</span><div>Analisando os dados...</div></div>' : ""}
+        </div>
+        ${
+          assistantPendingAction
+            ? `<div class="assistant-action">
+                <div class="assistant-action-icon">${icon("sparkles")}</div>
+                <div>
+                  <small>ACAO AGUARDANDO CONFIRMACAO</small>
+                  <strong>${escapeHtml(assistantPendingAction.title)}</strong>
+                  <p>${escapeHtml(assistantPendingAction.summary)}</p>
+                  <span>${escapeHtml(assistantActionDetails(assistantPendingAction))}</span>
+                </div>
+                <div class="assistant-action-buttons">
+                  <button class="btn secondary" type="button" data-cancel-assistant-action>Cancelar</button>
+                  <button class="btn primary" type="button" data-confirm-assistant-action>Confirmar execucao</button>
+                </div>
+              </div>`
+            : ""
+        }
+        <form class="assistant-composer" id="assistant-form">
+          <textarea name="message" rows="2" maxlength="4000" placeholder="Ex.: coloque 24 unidades de Cerveja Pilsen no estoque" ${onlineReady && !assistantBusy ? "" : "disabled"}></textarea>
+          <button class="btn primary" type="submit" ${onlineReady && !assistantBusy ? "" : "disabled"}>Enviar</button>
+        </form>
+        ${!onlineReady ? '<div class="notice compact">Entre com um usuario online do Supabase para usar a IA com seguranca.</div>' : ""}
+      </section>
+    </div>
+  `;
+}
+
+function assistantBusinessContext() {
+  const now = new Date();
+  const todayKey = localDateKey(now);
+  const sevenDaysAgo = new Date(now);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const todaySales = state.sales.filter((sale) => localDateKey(sale.date) === todayKey && isFinancialSale(sale));
+  const recentSales = state.sales.filter((sale) => new Date(sale.date) >= sevenDaysAgo && isFinancialSale(sale));
+  const productTotals = new Map();
+  recentSales.forEach((sale) => {
+    (sale.items || []).forEach((item) => {
+      const current = productTotals.get(item.productId) || { name: item.name, quantity: 0, revenue: 0 };
+      current.quantity += Number(item.qty || 0);
+      current.revenue += Number(item.qty || 0) * Number(item.price || 0);
+      productTotals.set(item.productId, current);
+    });
+  });
+  const openCash = getOpenCash();
+  const cash = cashSummary(openCash);
+
+  return {
+    generated_at: now.toISOString(),
+    business_name: state.settings.barName || APP_DISPLAY_NAME,
+    user: { id: session?.id, name: session?.name, role: session?.role, permissions: getUserPermissions(session) },
+    sales_today: {
+      count: todaySales.length,
+      total: todaySales.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
+      received: todaySales.reduce((sum, sale) => sum + saleStoredReceivedAmount(sale), 0),
+      credit: todaySales.reduce((sum, sale) => sum + saleStoredFiadoAmount(sale), 0),
+    },
+    sales_last_7_days: {
+      count: recentSales.length,
+      total: recentSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
+      top_products: [...productTotals.values()].sort((a, b) => b.quantity - a.quantity).slice(0, 10),
+    },
+    products: state.products
+      .filter((product) => product.active !== false)
+      .slice(0, 300)
+      .map((product) => ({
+        id: product.id,
+        name: product.name,
+        code: product.productCode || "",
+        category: product.category,
+        price: Number(product.price || 0),
+        cost: Number(product.cost || 0),
+        stock: Number(product.stock || 0),
+        minimum_stock: Number(product.minStock || 0),
+        critical_stock: Number(product.criticalStock || 0),
+        expiration_date: product.expiresAt || null,
+      })),
+    cash: {
+      open: Boolean(openCash),
+      code: openCash ? cashSessionCode(openCash) : null,
+      opening_amount: Number(openCash?.openingAmount || 0),
+      movements: cash.movements,
+      expected: cash.expected,
+    },
+    open_expenses: (state.expenses || [])
+      .filter((expense) => expenseBalance(expense) > 0)
+      .slice(0, 100)
+      .map((expense) => ({
+        id: expense.id,
+        description: expense.description,
+        category: expense.category,
+        amount: Number(expense.amount || 0),
+        balance: expenseBalance(expense),
+        expense_date: expense.expenseDate,
+        due_date: expense.dueDate,
+      })),
+    clients_with_debt: state.clients
+      .filter((client) => Number(client.debt || 0) > 0)
+      .slice(0, 50)
+      .map((client) => ({ id: client.id, name: client.name, debt: Number(client.debt || 0) })),
+  };
+}
+
+function scrollAssistantToBottom() {
+  requestAnimationFrame(() => {
+    const messages = document.querySelector("[data-assistant-messages]");
+    if (messages) messages.scrollTop = messages.scrollHeight;
+    document.querySelector("#assistant-form textarea")?.focus();
+  });
+}
+
+async function sendAssistantMessage(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  await askAssistant(String(form.get("message") || "").trim());
+}
+
+async function askAssistant(message) {
+  if (!message || assistantBusy) return;
+  if (!isOnlineSession()) {
+    notify("Entre com uma conta online para usar o assistente.");
+    return;
+  }
+
+  const history = assistantMessages.slice(-10).map((item) => ({ role: item.role, content: item.content }));
+  assistantMessages.push({ role: "user", content: message });
+  assistantPendingAction = null;
+  assistantBusy = true;
+  renderApp();
+  scrollAssistantToBottom();
+
+  try {
+    const { data } = await supabaseClient.auth.getSession();
+    const accessToken = data?.session?.access_token;
+    if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
+
+    const response = await fetch("/api/ai/assistant", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ message, history, context: assistantBusinessContext() }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "Nao foi possivel consultar a IA.");
+
+    assistantMessages.push({ role: "assistant", content: result.answer || "Resposta recebida." });
+    assistantPendingAction = result.action || null;
+  } catch (error) {
+    assistantMessages.push({ role: "assistant", content: `Nao consegui concluir: ${error.message}` });
+  } finally {
+    assistantBusy = false;
+    renderApp();
+    scrollAssistantToBottom();
+  }
+}
+
+function requireAssistantPermission(permission) {
+  if (hasPermission(permission)) return true;
+  throw new Error(`Seu usuario nao possui permissao para a area ${navItems.find((item) => item.id === permission)?.label || permission}.`);
+}
+
+function assistantDateTime(dateKey) {
+  const now = new Date();
+  const [year, month, day] = String(dateKey || "").split("-").map(Number);
+  const result = new Date(year, month - 1, day, now.getHours(), now.getMinutes(), now.getSeconds());
+  if (Number.isNaN(result.getTime())) throw new Error("A IA informou uma data invalida.");
+  return result.toISOString();
+}
+
+async function executeAssistantAction() {
+  const action = assistantPendingAction;
+  if (!action || assistantBusy) return;
+  if (!isOnlineSession()) {
+    notify("Entre com uma conta online para executar a tarefa.");
+    return;
+  }
+
+  assistantBusy = true;
+  renderApp();
+  try {
+    const payload = action.payload || {};
+    if (action.type === "navigate") {
+      requireAssistantPermission(payload.view);
+      assistantPendingAction = null;
+      assistantBusy = false;
+      assistantMessages.push({ role: "assistant", content: `Area ${navItems.find((item) => item.id === payload.view)?.label || payload.view} aberta.` });
+      setView(payload.view);
+      return;
+    }
+
+    if (action.type === "update_stock") {
+      requireAssistantPermission("stock");
+      const product = state.products.find((item) => item.id === payload.product_id);
+      const quantity = Number(payload.quantity);
+      if (!product || !Number.isFinite(quantity) || quantity < 0 || !["add", "remove", "set"].includes(payload.mode)) {
+        throw new Error("Dados de ajuste de estoque invalidos.");
+      }
+      const nextStock = payload.mode === "set" ? quantity : payload.mode === "add" ? Number(product.stock || 0) + quantity : Number(product.stock || 0) - quantity;
+      if (nextStock < 0) throw new Error("A retirada deixaria o estoque negativo.");
+      const result = await supabaseClient.from("products").update({ stock: nextStock }).eq("id", product.id);
+      if (result.error) throw result.error;
+      await loadOnlineStockData();
+      logAudit("IA ajustou estoque", `${product.name}: ${product.stock} para ${nextStock}.`);
+    } else if (action.type === "update_price") {
+      requireAssistantPermission("stock");
+      const product = state.products.find((item) => item.id === payload.product_id);
+      const price = Number(payload.new_price);
+      if (!product || !Number.isFinite(price) || price < 0) throw new Error("Produto ou preco invalido.");
+      const result = await supabaseClient.from("products").update({ price }).eq("id", product.id);
+      if (result.error) throw result.error;
+      await loadOnlineStockData();
+      logAudit("IA alterou preco", `${product.name}: ${money(product.price)} para ${money(price)}.`);
+    } else if (action.type === "create_expense") {
+      requireAssistantPermission("suppliers");
+      const amount = Number(payload.amount);
+      if (!payload.description || !Number.isFinite(amount) || amount <= 0 || !payload.expense_date || !payload.due_date) {
+        throw new Error("Dados da despesa invalidos.");
+      }
+      const result = await supabaseClient.from("expenses").insert({
+        description: String(payload.description).slice(0, 200),
+        category: String(payload.category || "IA").slice(0, 100),
+        amount,
+        expense_date: payload.expense_date,
+        due_date: payload.due_date,
+        paid: false,
+        paid_amount: 0,
+        payment_history: [],
+      });
+      if (result.error) throw result.error;
+      await loadOnlineSupplierData();
+      logAudit("IA cadastrou despesa", `${payload.description}: ${money(amount)}.`);
+    } else if (action.type === "create_cash_expense") {
+      requireAssistantPermission("cash");
+      const amount = Number(payload.amount);
+      if (!getOpenCash()) throw new Error("Abra o caixa antes de registrar a saida.");
+      if (!payload.reason || !Number.isFinite(amount) || amount <= 0 || !payload.date || payload.date > localDateKey()) {
+        throw new Error("Dados da saida de caixa invalidos.");
+      }
+      const result = await supabaseClient.from("cash_movements").insert({
+        user_id: session.id,
+        type: "despesa",
+        amount,
+        reason: String(payload.reason).slice(0, 200),
+        created_at: assistantDateTime(payload.date),
+      });
+      if (result.error) throw result.error;
+      await loadOnlineCashData();
+      logAudit("IA registrou saida do caixa", `${payload.reason}: ${money(amount)}.`);
+    } else {
+      throw new Error("Esta tarefa ainda nao e permitida pelo assistente.");
+    }
+
+    assistantPendingAction = null;
+    assistantMessages.push({ role: "assistant", content: "Tarefa executada com sucesso e dados atualizados." });
+    saveState();
+    notify("Tarefa da IA executada.");
+  } catch (error) {
+    assistantMessages.push({ role: "assistant", content: `Nao foi possivel executar: ${error.message}` });
+    notify(`Falha na tarefa da IA: ${error.message}`);
+  } finally {
+    assistantBusy = false;
+    renderApp();
+    scrollAssistantToBottom();
+  }
 }
 
 function renderReports() {

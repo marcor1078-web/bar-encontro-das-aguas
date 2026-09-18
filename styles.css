@@ -1659,6 +1659,194 @@ tbody tr:hover td {
   font-weight: 900;
 }
 
+.assistant-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 240px) minmax(0, 1fr);
+  gap: 16px;
+  height: calc(100vh - 205px);
+  min-height: 460px;
+  max-height: 760px;
+}
+
+.assistant-suggestions {
+  align-self: start;
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.assistant-suggestions > strong {
+  margin-bottom: 4px;
+}
+
+.assistant-suggestions button {
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--ink);
+  text-align: left;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.assistant-suggestions button:hover {
+  border-color: var(--brand);
+  color: var(--brand-strong);
+}
+
+.assistant-suggestions small {
+  margin-top: 6px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.assistant-chat {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: minmax(320px, 1fr) auto auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.assistant-messages {
+  max-height: 58vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  background: var(--soft);
+}
+
+.assistant-message {
+  max-width: min(78%, 720px);
+  display: grid;
+  gap: 5px;
+}
+
+.assistant-message > span {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.assistant-message > div {
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.assistant-message.user {
+  align-self: flex-end;
+}
+
+.assistant-message.user > span {
+  text-align: right;
+}
+
+.assistant-message.user > div {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.assistant-message.loading > div {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.assistant-action {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-top: 2px solid var(--warning);
+  background: var(--warning-soft, #fff7d6);
+}
+
+body[data-theme="dark"] .assistant-action {
+  background: #3b2f13;
+}
+
+body[data-theme="dark"] .assistant-action small {
+  color: #fbbf24;
+}
+
+.assistant-action-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #f59e0b;
+  color: #111827;
+}
+
+.assistant-action > div:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.assistant-action small {
+  color: #92400e;
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.assistant-action p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.assistant-action > div:nth-child(2) > span {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.assistant-action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.assistant-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.assistant-composer textarea {
+  min-height: 54px;
+  max-height: 140px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.assistant-composer textarea:focus {
+  outline: 2px solid color-mix(in srgb, var(--brand) 25%, transparent);
+  border-color: var(--brand);
+}
+
 .quick-product-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(126px, 1fr));
@@ -2471,6 +2659,56 @@ body[data-theme="dark"] .notice {
 }
 
 @media (max-width: 760px) {
+  .assistant-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+  }
+
+  .assistant-suggestions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .assistant-suggestions > strong,
+  .assistant-suggestions > small {
+    grid-column: 1 / -1;
+  }
+
+  .assistant-chat {
+    grid-template-rows: minmax(340px, 55vh) auto auto;
+  }
+
+  .assistant-messages {
+    max-height: none;
+    padding: 12px;
+  }
+
+  .assistant-message {
+    max-width: 90%;
+  }
+
+  .assistant-action {
+    grid-template-columns: 36px minmax(0, 1fr);
+  }
+
+  .assistant-action-icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .assistant-action-buttons {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .assistant-composer {
+    grid-template-columns: 1fr;
+  }
+
+  .assistant-composer .btn {
+    width: 100%;
+  }
   .login-shell {
     grid-template-columns: 1fr;
   }
