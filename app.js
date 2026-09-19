@@ -1916,12 +1916,26 @@ function mapKitchenOrderFromDb(row) {
   };
 }
 
+async function loadAllOnlineRows(table, orderColumn = "id") {
+  const pageSize = 500;
+  const rows = [];
+
+  for (let offset = 0; ; offset += pageSize) {
+    let query = supabaseClient.from(table).select("*").order(orderColumn, { ascending: true });
+    if (orderColumn !== "id") query = query.order("id", { ascending: true });
+    const result = await query.range(offset, offset + pageSize - 1);
+    if (result.error) return result;
+    rows.push(...(result.data || []));
+    if ((result.data || []).length < pageSize) return { data: rows, error: null };
+  }
+}
+
 async function loadOnlineSalesData() {
   if (!isOnlineSession()) return;
 
   const [salesResult, saleItemsResult, kitchenResult] = await Promise.all([
-    supabaseClient.from("sales").select("*").order("created_at", { ascending: true }),
-    supabaseClient.from("sale_items").select("*"),
+    loadAllOnlineRows("sales", "created_at"),
+    loadAllOnlineRows("sale_items"),
     supabaseClient.from("kitchen_orders").select("*").order("created_at", { ascending: false }),
   ]);
 
@@ -1931,7 +1945,12 @@ async function loadOnlineSalesData() {
     return;
   }
 
-  state.sales = (salesResult.data || []).map((row) => mapSaleFromDb(row, saleItemsResult.data || []));
+  const itemsBySale = new Map();
+  (saleItemsResult.data || []).forEach((item) => {
+    if (!itemsBySale.has(item.sale_id)) itemsBySale.set(item.sale_id, []);
+    itemsBySale.get(item.sale_id).push(item);
+  });
+  state.sales = (salesResult.data || []).map((row) => mapSaleFromDb(row, itemsBySale.get(row.id) || []));
   state.kitchenOrders = (kitchenResult.data || []).map(mapKitchenOrderFromDb);
   saveState();
 }
