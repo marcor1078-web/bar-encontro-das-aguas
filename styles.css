@@ -2503,6 +2503,13 @@ body[data-theme="dark"] .notice {
   grid-column: 1 / -1;
 }
 
+.expense-recurrence input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  accent-color: #0f766e;
+}
+
 .external-products-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 112px;

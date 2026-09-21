@@ -627,6 +627,8 @@ function migrateState(nextState) {
     return {
       paymentHistory: [],
       ...expense,
+      recurring: Boolean(expense.recurring),
+      recurringDay: Number(expense.recurringDay || String(expense.dueDate || "").slice(-2)) || null,
       expenseDate: expense.expenseDate || String(expense.createdAt || new Date().toISOString()).slice(0, 10),
       paidAmount: Math.min(amount, Math.max(0, paidAmount)),
       paid: Boolean(expense.paid || paidAmount >= amount),
@@ -2043,6 +2045,9 @@ function mapExpenseFromDb(row) {
     dueDate: row.due_date,
     paidAmount: Math.min(amount, Math.max(0, paidAmount)),
     paymentHistory: Array.isArray(row.payment_history) ? row.payment_history : [],
+    recurring: Boolean(row.recurring),
+    recurringDay: Number(row.recurring_day || String(row.due_date || "").slice(-2)) || null,
+    recurringFrom: row.recurring_from || null,
     paid: Boolean(row.paid || paidAmount >= amount),
     paidAt: row.paid_at || null,
   };
@@ -2438,6 +2443,7 @@ function bindViewEvents() {
       currentModal = {
         type: button.dataset.openModal,
         id: button.dataset.id || null,
+        recurring: button.dataset.recurring === "true",
         movementType: button.dataset.movementType || null,
       };
       if (button.dataset.openModal === "table" && button.dataset.id) selectedTableId = button.dataset.id;
@@ -5721,6 +5727,35 @@ function expensePaymentHistory(expense) {
   return Array.isArray(expense?.paymentHistory) ? expense.paymentHistory : [];
 }
 
+function nextRecurringDueDate(dueDate, day) {
+  const [year, month] = String(dueDate).split("-").map(Number);
+  const nextMonth = new Date(Date.UTC(year, month, 1));
+  const daysInMonth = new Date(Date.UTC(nextMonth.getUTCFullYear(), nextMonth.getUTCMonth() + 1, 0)).getUTCDate();
+  nextMonth.setUTCDate(Math.min(Number(day), daysInMonth));
+  return nextMonth.toISOString().slice(0, 10);
+}
+
+function renewLocalExpense(expense) {
+  if (!expense?.recurring || !expense.paid || state.expenses.some((entry) => entry.recurringFrom === expense.id)) return;
+  const dueDate = nextRecurringDueDate(expense.dueDate, expense.recurringDay);
+  state.expenses.unshift({
+    id: id("expense"),
+    createdAt: new Date().toISOString(),
+    description: expense.description,
+    category: expense.category,
+    amount: expense.amount,
+    expenseDate: dueDate,
+    dueDate,
+    recurring: true,
+    recurringDay: expense.recurringDay,
+    recurringFrom: expense.id,
+    paid: false,
+    paidAt: null,
+    paidAmount: 0,
+    paymentHistory: [],
+  });
+}
+
 function expensePaymentMethodLabel(method) {
   return (
     {
@@ -5751,6 +5786,7 @@ function renderSuppliers() {
         <button class="btn secondary" type="button" data-open-modal="supplier">Novo fornecedor</button>
         <button class="btn secondary" type="button" data-open-modal="purchase">Registrar compra</button>
         <button class="btn secondary" type="button" data-open-modal="expense">Nova despesa</button>
+        <button class="btn secondary" type="button" data-open-modal="expense" data-recurring="true">Nova recorrente</button>
       </div>
     </div>
     <div class="grid two-col">
@@ -5809,10 +5845,33 @@ function renderSuppliers() {
       </section>
     </div>
     <section class="card" style="margin-top: 16px;">
+      <div class="card-head"><h2 class="card-title">Despesas recorrentes em aberto</h2></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Descricao</th><th>Vencimento</th><th>Valor fixo</th><th>Saldo</th><th>Dia do mes</th><th>Acoes</th></tr></thead>
+          <tbody>
+            ${(state.expenses || []).filter((expense) => expense.recurring && expenseBalance(expense) > 0)
+              .sort((a, b) => String(a.dueDate).localeCompare(String(b.dueDate)))
+              .map((expense) => `<tr>
+                <td>${escapeHtml(expense.description)}</td>
+                <td>${formatDateBr(expense.dueDate)}</td>
+                <td>${money(expense.amount)}</td>
+                <td>${money(expenseBalance(expense))}</td>
+                <td>${expense.recurringDay}</td>
+                <td><div class="toolbar">
+                  <button class="btn compact secondary" type="button" data-open-modal="expense" data-id="${expense.id}">Editar</button>
+                  <button class="btn compact primary" type="button" data-open-modal="expensePayment" data-id="${expense.id}">Pagar</button>
+                </div></td>
+              </tr>`).join("") || '<tr><td colspan="6">Nenhuma despesa recorrente em aberto.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card" style="margin-top: 16px;">
       <div class="card-head"><h2 class="card-title">Despesas do negocio</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Data da despesa</th><th>Vencimento</th><th>Descricao</th><th>Categoria</th><th>Valor</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Ultimo pagamento</th><th>Acoes</th></tr></thead>
+          <thead><tr><th>Data da despesa</th><th>Vencimento</th><th>Descricao</th><th>Tipo</th><th>Categoria</th><th>Valor</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Ultimo pagamento</th><th>Acoes</th></tr></thead>
           <tbody>
             ${(state.expenses || [])
               .slice()
@@ -5824,7 +5883,8 @@ function renderSuppliers() {
                   <tr>
                     <td>${new Date(`${expense.expenseDate || String(expense.createdAt).slice(0, 10)}T00:00:00`).toLocaleDateString("pt-BR")}</td>
                     <td>${new Date(`${expense.dueDate}T00:00:00`).toLocaleDateString("pt-BR")}</td>
-                    <td>${expense.description}</td>
+                    <td>${escapeHtml(expense.description)}</td>
+                    <td>${expense.recurring ? "Mensal" : "Unica"}</td>
                     <td>${expense.category || "-"}</td>
                     <td>${money(expense.amount)}</td>
                     <td>${money(expensePaidAmount(expense))}</td>
@@ -7232,19 +7292,22 @@ function renderPurchaseModal() {
 function renderExpenseModal() {
   const expense = (state.expenses || []).find((item) => item.id === currentModal.id);
   const defaultExpenseDate = expense?.expenseDate || String(expense?.createdAt || new Date().toISOString()).slice(0, 10);
+  const recurring = expense?.recurring ?? currentModal.recurring;
   return `
     <form id="expense-form">
       <div class="modal-head">
-        <h2>${expense ? "Editar despesa" : "Nova despesa"}</h2>
+        <h2>${expense ? "Editar despesa" : recurring ? "Nova despesa recorrente" : "Nova despesa"}</h2>
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body">
         <div class="form-grid">
-          <label class="field full"><span>Descricao</span><input name="description" required value="${expense?.description || ""}" /></label>
-          <label class="field"><span>Categoria</span><input name="category" value="${expense?.category || ""}" /></label>
+          <label class="field full"><span>Descricao</span><input name="description" required value="${escapeHtml(expense?.description || "")}" /></label>
+          <label class="field"><span>Categoria</span><input name="category" value="${escapeHtml(expense?.category || "")}" /></label>
           <label class="field"><span>Valor</span><input name="amount" type="number" min="0.01" step="0.01" required value="${expense?.amount || ""}" /></label>
           <label class="field"><span>Data da despesa</span><input name="expenseDate" type="date" required value="${defaultExpenseDate}" /></label>
           <label class="field"><span>Vencimento</span><input name="dueDate" type="date" required value="${expense?.dueDate || ""}" /></label>
+          <label class="field expense-recurrence"><span>Repetir mensalmente</span><input name="recurring" type="checkbox" ${recurring ? "checked" : ""} /></label>
+          <label class="field"><span>Dia fixo do vencimento</span><input name="recurringDay" type="number" min="1" max="31" value="${expense?.recurringDay || ""}" placeholder="Dia do vencimento" /></label>
           <label class="field">
             <span>Status</span>
             <select name="paid">
@@ -8424,6 +8487,12 @@ async function saveExpense(event) {
   const existing = (state.expenses || []).find((expense) => expense.id === currentModal.id);
   const isEditing = Boolean(currentModal.id);
   const amount = Number(form.get("amount"));
+  const recurring = form.get("recurring") === "on";
+  const recurringDay = Number(form.get("recurringDay") || String(form.get("dueDate") || "").slice(-2));
+  if (recurring && (!Number.isInteger(recurringDay) || recurringDay < 1 || recurringDay > 31)) {
+    notify("Informe um dia fixo de vencimento entre 1 e 31.");
+    return;
+  }
   const currentPaid = existing ? expensePaidAmount(existing) : 0;
   const paymentHistory = [...expensePaymentHistory(existing)];
   let paidAmount = paid ? amount : Math.min(amount, currentPaid);
@@ -8443,6 +8512,8 @@ async function saveExpense(event) {
     amount,
     expenseDate: form.get("expenseDate"),
     dueDate: form.get("dueDate"),
+    recurring,
+    recurringDay: recurring ? recurringDay : null,
     paidAmount,
     paymentHistory,
     paid: paidAmount >= amount,
@@ -8461,11 +8532,19 @@ async function saveExpense(event) {
       paid_amount: payload.paidAmount,
       payment_history: payload.paymentHistory,
     };
+    if (payload.recurring || existing?.recurring) {
+      row.recurring = payload.recurring;
+      row.recurring_day = payload.recurringDay;
+    }
     const result = isEditing
       ? await supabaseClient.from("expenses").update(row).eq("id", currentModal.id)
       : await supabaseClient.from("expenses").insert(row);
 
     if (result.error) {
+      if (isRecurringExpenseSchemaMissing(result.error)) {
+        notify("Rode o arquivo SUPABASE_DESPESAS_RECORRENTES.sql no SQL Editor do Supabase.");
+        return;
+      }
       if (String(result.error.message || "").includes("expense_date")) {
         notify("Rode a migracao de data da despesa no Supabase antes de salvar online.");
         return;
@@ -8494,6 +8573,7 @@ async function saveExpense(event) {
   } else {
     state.expenses.unshift({ id: id("expense"), createdAt: new Date().toISOString(), ...payload });
   }
+  renewLocalExpense(isEditing ? state.expenses.find((expense) => expense.id === currentModal.id) : state.expenses[0]);
 
   currentModal = null;
   logAudit("Despesa salva", `${payload.description}: ${money(payload.amount)}.`);
@@ -8505,6 +8585,10 @@ async function saveExpense(event) {
 function isExpensePaymentSchemaMissing(error) {
   const message = String(error?.message || "");
   return message.includes("paid_amount") || message.includes("payment_history");
+}
+
+function isRecurringExpenseSchemaMissing(error) {
+  return /recurring(_day|_from)?/.test(String(error?.message || ""));
 }
 
 async function payExpense(expenseId) {
@@ -8565,6 +8649,7 @@ async function payExpense(expenseId) {
         }
       : expense,
   );
+  renewLocalExpense(state.expenses.find((expense) => expense.id === expenseId));
   logAudit("Despesa paga", expenseId);
   saveState();
   notify("Despesa marcada como paga.");
@@ -8643,6 +8728,7 @@ async function saveExpensePayment(event) {
         }
       : entry,
   );
+  if (paid) renewLocalExpense(state.expenses.find((entry) => entry.id === expense.id));
   currentModal = null;
   logAudit("Pagamento parcial de despesa", `${expense.description}: ${money(amount)}.`);
   saveState();
