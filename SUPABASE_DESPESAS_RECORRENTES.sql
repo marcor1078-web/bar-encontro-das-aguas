@@ -1,5 +1,25 @@
--- Execute no SQL Editor do Supabase antes de usar despesas recorrentes online.
--- Cada quitacao gera uma nova despesa mensal, preservando o historico anterior.
+-- Execute todo este arquivo no SQL Editor do Supabase.
+-- Pode ser executado novamente sem apagar despesas ou pagamentos existentes.
+-- Inclui as migracoes de data, pagamentos parciais e recorrencia.
+
+begin;
+
+alter table public.expenses
+  add column if not exists expense_date date,
+  add column if not exists paid_amount numeric(12,2) not null default 0,
+  add column if not exists payment_history jsonb not null default '[]'::jsonb;
+
+update public.expenses
+set expense_date = created_at::date
+where expense_date is null;
+
+update public.expenses
+set paid_amount = amount
+where paid = true and paid_amount = 0;
+
+alter table public.expenses
+  alter column expense_date set default current_date,
+  alter column expense_date set not null;
 
 alter table public.expenses
   add column if not exists recurring boolean not null default false,
@@ -48,3 +68,5 @@ drop trigger if exists expenses_renew_paid on public.expenses;
 create trigger expenses_renew_paid
 after insert or update on public.expenses
 for each row execute function public.renew_paid_expense();
+
+commit;

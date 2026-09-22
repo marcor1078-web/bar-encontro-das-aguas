@@ -8541,16 +8541,9 @@ async function saveExpense(event) {
       : await supabaseClient.from("expenses").insert(row);
 
     if (result.error) {
-      if (isRecurringExpenseSchemaMissing(result.error)) {
-        notify("Rode o arquivo SUPABASE_DESPESAS_RECORRENTES.sql no SQL Editor do Supabase.");
-        return;
-      }
-      if (String(result.error.message || "").includes("expense_date")) {
-        notify("Rode a migracao de data da despesa no Supabase antes de salvar online.");
-        return;
-      }
-      if (isExpensePaymentSchemaMissing(result.error)) {
-        notify("Rode a migracao de pagamentos parciais de despesas no Supabase antes de salvar online.");
+      if (isRecurringExpenseSchemaMissing(result.error) || isExpensePaymentSchemaMissing(result.error) ||
+          String(result.error.message || "").includes("expense_date")) {
+        notify(`Execute SUPABASE_DESPESAS_RECORRENTES.sql no SQL Editor do Supabase. Detalhe: ${result.error.message}`);
         return;
       }
       notify(`Erro ao salvar despesa online: ${result.error.message}`);
