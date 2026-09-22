@@ -8536,9 +8536,25 @@ async function saveExpense(event) {
       row.recurring = payload.recurring;
       row.recurring_day = payload.recurringDay;
     }
-    const result = isEditing
-      ? await supabaseClient.from("expenses").update(row).eq("id", currentModal.id)
-      : await supabaseClient.from("expenses").insert(row);
+    const saveOnlineExpenseRow = (data) =>
+      isEditing
+        ? supabaseClient.from("expenses").update(data).eq("id", currentModal.id)
+        : supabaseClient.from("expenses").insert(data);
+    let result = await saveOnlineExpenseRow(row);
+
+    const missingOptionalExpenseColumns =
+      result.error &&
+      (isExpensePaymentSchemaMissing(result.error) || String(result.error.message || "").includes("expense_date"));
+    if (missingOptionalExpenseColumns && !payload.recurring && !existing?.recurring) {
+      result = await saveOnlineExpenseRow({
+        description: payload.description,
+        category: payload.category,
+        amount: payload.amount,
+        due_date: payload.dueDate,
+        paid: payload.paid,
+        paid_at: payload.paidAt,
+      });
+    }
 
     if (result.error) {
       if (isRecurringExpenseSchemaMissing(result.error) || isExpensePaymentSchemaMissing(result.error) ||
@@ -8553,7 +8569,7 @@ async function saveExpense(event) {
     currentModal = null;
     await loadOnlineSupplierData();
     logAudit("Despesa salva online", `${payload.description}: ${money(payload.amount)}.`);
-    notify("Despesa salva no Supabase.");
+    notify(missingOptionalExpenseColumns ? "Despesa comum salva. Execute a migracao para liberar datas e recorrencia." : "Despesa salva no Supabase.");
     renderApp();
     return;
   }
