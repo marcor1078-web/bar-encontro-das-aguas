@@ -1151,12 +1151,13 @@ function mercadoPagoTerminalName(terminal, number = 1) {
 
 function renderPaymentTerminalField({ inputId = "payment-terminal-id", inputName = "" } = {}) {
   const terminals = paymentTerminalOptions();
-  if (!terminals.length) return "";
   const selectedTerminal = getSelectedPaymentTerminal();
+  const enabledTerminals = terminals.filter((terminal) => terminal.enabled);
   return `
     <label class="field">
       <span>Maquininha</span>
       <select id="${inputId}" ${inputName ? `name="${inputName}"` : ""} data-payment-terminal>
+        ${enabledTerminals.length ? "" : '<option value="">Nenhuma maquininha ativa encontrada</option>'}
         ${terminals
           .map(
             (terminal) =>
@@ -1711,6 +1712,41 @@ function mapProductFromDb(row, recipes = []) {
       .filter((recipe) => recipe.product_id === row.id)
       .map((recipe) => ({ ingredientId: recipe.ingredient_id, qty: Number(recipe.qty || 0) })),
   };
+}
+
+async function restoreOnlineSession() {
+  if (!isSupabaseReady()) return false;
+  try {
+    const { data: authData } = await supabaseClient.auth.getSession();
+    const authUser = authData?.session?.user;
+    if (!authUser) return false;
+
+    const { data: profile, error } = await supabaseClient.from("profiles").select("*").eq("id", authUser.id).single();
+    if (error || !profile?.active) return false;
+
+    session = mapProfileToUser(profile);
+    upsertSessionUser(session);
+    await loadOnlineSettings();
+    await loadOnlineStockData();
+    await loadOnlineClientsData();
+    await loadOnlineSalesData();
+    await loadOnlineCashData();
+    await loadOnlineSupplierData();
+    await loadOnlineTableData();
+    await loadOnlineProfilesData();
+    await loadOnlineBackupHistory();
+    const preferredView = state.settings.shiftStartView?.[session.role];
+    currentView = CURRENT_SERVICE_NUMBER > 1 && hasPermission("pos")
+      ? "pos"
+      : preferredView && hasPermission(preferredView)
+        ? preferredView
+        : getUserPermissions(session)[0] || "pos";
+    if (["pos", "waiter", "sales", "cash"].includes(currentView)) await loadMercadoPagoPointStatus(true);
+    renderApp();
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 function normalizeBarcodeCodes(primaryCode, codes = []) {
@@ -3201,8 +3237,12 @@ function changeCartQty(productId, change) {
   renderApp();
 }
 
-function openSalePaymentModal() {
+async function openSalePaymentModal() {
   if (!cart.length) return;
+  if (!mercadoPagoPointStatus.checked || !mercadoPagoPointStatus.terminals.length) {
+    notify("Carregando maquininhas...");
+    await loadMercadoPagoPointStatus(true);
+  }
   currentModal = { type: "salePayment" };
   renderApp();
 }
@@ -10998,3 +11038,4 @@ window.addEventListener("appinstalled", () => {
 });
 
 renderLogin();
+restoreOnlineSession();
