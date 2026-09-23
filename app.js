@@ -3,6 +3,8 @@ const MP_PENDING_ORDER_KEY = "barcontrol:mercadopago-pending-order";
 const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
 const APP_DISPLAY_NAME = "DISTRIBUIDORA AMÉRICA BJ";
+const CURRENT_SERVICE_NUMBER = Math.max(1, Number(new URLSearchParams(window.location.search).get("atendimento")) || 1);
+document.title = `${APP_DISPLAY_NAME} - Atendimento ${CURRENT_SERVICE_NUMBER}`;
 const LEGACY_APP_NAMES = ["BarControl", "BAR ENCONTRO DAS AGUAS"];
 const LOCAL_PASSWORD_RESET_VERSION = 2;
 const DEFAULT_LOCAL_PASSWORDS = {
@@ -1208,47 +1210,64 @@ async function loadMercadoPagoPointStatus(force = false) {
 
 function saveMercadoPagoPendingOrder(order, context = {}) {
   if (!order?.id) return;
-  const previous = getMercadoPagoPendingOrder();
+  const orders = getMercadoPagoPendingOrders();
+  const previous = orders.find((entry) => entry.id === order.id);
+  const next = {
+    id: order.id,
+    terminalId: context.terminalId || previous?.terminalId || "",
+    terminalLabel: context.terminalLabel || previous?.terminalLabel || "",
+    amount: context.amount || 0,
+    payment: context.payment || "",
+    description: context.description || "",
+    createdAt: previous?.createdAt || new Date().toISOString(),
+    status: order.status || previous?.status || "created",
+    statusDetail: order.status_detail || previous?.statusDetail || "",
+    checkedAt: previous?.checkedAt || "",
+  };
   localStorage.setItem(
     MP_PENDING_ORDER_KEY,
-    JSON.stringify({
-      id: order.id,
-      amount: context.amount || 0,
-      payment: context.payment || "",
-      description: context.description || "",
-      createdAt: new Date().toISOString(),
-      status: order.status || previous?.status || "created",
-      statusDetail: order.status_detail || previous?.statusDetail || "",
-      checkedAt: previous?.checkedAt || "",
-    }),
+    JSON.stringify([next, ...orders.filter((entry) => entry.id !== order.id)].slice(0, 20)),
   );
 }
 
-function getMercadoPagoPendingOrder() {
+function getMercadoPagoPendingOrders() {
   try {
-    return JSON.parse(localStorage.getItem(MP_PENDING_ORDER_KEY) || "null");
+    const stored = JSON.parse(localStorage.getItem(MP_PENDING_ORDER_KEY) || "[]");
+    if (Array.isArray(stored)) return stored.filter((entry) => entry?.id);
+    return stored?.id ? [stored] : [];
   } catch (error) {
-    return null;
+    return [];
   }
 }
 
+function getMercadoPagoPendingOrder(orderId = "") {
+  const orders = getMercadoPagoPendingOrders();
+  return (orderId && orders.find((entry) => entry.id === orderId)) || orders[0] || null;
+}
+
 function clearMercadoPagoPendingOrder(orderId = "") {
-  const pending = getMercadoPagoPendingOrder();
-  if (!orderId || pending?.id === orderId) localStorage.removeItem(MP_PENDING_ORDER_KEY);
+  if (!orderId) {
+    localStorage.removeItem(MP_PENDING_ORDER_KEY);
+    return;
+  }
+  const remaining = getMercadoPagoPendingOrders().filter((entry) => entry.id !== orderId);
+  if (remaining.length) localStorage.setItem(MP_PENDING_ORDER_KEY, JSON.stringify(remaining));
+  else localStorage.removeItem(MP_PENDING_ORDER_KEY);
 }
 
 function updateMercadoPagoPendingOrderStatus(statusData) {
   if (!statusData?.id) return;
-  const pending = getMercadoPagoPendingOrder();
-  if (!pending || pending.id !== statusData.id) return;
+  const orders = getMercadoPagoPendingOrders();
+  const pending = orders.find((entry) => entry.id === statusData.id);
+  if (!pending) return;
   localStorage.setItem(
     MP_PENDING_ORDER_KEY,
-    JSON.stringify({
-      ...pending,
-      status: statusData.status || pending.status || "",
-      statusDetail: statusData.status_detail || pending.statusDetail || "",
+    JSON.stringify(orders.map((entry) => entry.id === statusData.id ? {
+      ...entry,
+      status: statusData.status || entry.status || "",
+      statusDetail: statusData.status_detail || entry.statusDetail || "",
       checkedAt: new Date().toISOString(),
-    }),
+    } : entry)),
   );
 }
 
@@ -1265,8 +1284,8 @@ function mercadoPagoStatusLabel(statusData) {
   return `${status}${detail}`;
 }
 
-async function checkMercadoPagoPendingOrder() {
-  const pending = getMercadoPagoPendingOrder();
+async function checkMercadoPagoPendingOrder(orderId = "") {
+  const pending = getMercadoPagoPendingOrder(orderId);
   if (!pending?.id) {
     notify("Nao ha cobranca pendente do Mercado Pago salva neste navegador.");
     return;
@@ -1286,8 +1305,8 @@ async function checkMercadoPagoPendingOrder() {
   renderApp();
 }
 
-async function cancelMercadoPagoPendingOrder() {
-  const pending = getMercadoPagoPendingOrder();
+async function cancelMercadoPagoPendingOrder(orderId = "") {
+  const pending = getMercadoPagoPendingOrder(orderId);
   if (!pending?.id) {
     notify("Nao ha cobranca pendente do Mercado Pago salva neste navegador.");
     return;
@@ -1385,7 +1404,7 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
     return { ok: false, message: `Mercado Pago: ${message}` };
   }
 
-  saveMercadoPagoPendingOrder(order, { amount, payment, description });
+  saveMercadoPagoPendingOrder(order, { amount, payment, description, terminalId: selectedTerminalId });
   notify("Cobranca enviada. Na Point, abra Inserir valor para concluir.");
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -1410,7 +1429,7 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
     }
   }
 
-  const pending = getMercadoPagoPendingOrder();
+  const pending = getMercadoPagoPendingOrder(order.id);
   return {
     ok: false,
     message: `Pagamento ainda nao confirmado. Ultimo status: ${pending?.status || "created"}. Na Point, abra Inserir valor antes de tentar novamente.`,
@@ -2523,6 +2542,14 @@ function bindViewEvents() {
   document.querySelectorAll("[data-finalize-sale]").forEach((button) => {
     button.addEventListener("click", openSalePaymentModal);
   });
+  document.querySelector("[data-new-service]")?.addEventListener("click", () => {
+    const url = new URL(window.location.href);
+    const nextNumber = Math.max(CURRENT_SERVICE_NUMBER + 1, Number(localStorage.getItem("barcontrol:service-counter") || 1) + 1);
+    localStorage.setItem("barcontrol:service-counter", String(nextNumber));
+    url.searchParams.set("atendimento", String(nextNumber));
+    const opened = window.open(url.href, "_blank", "noopener");
+    if (!opened) notify("O navegador bloqueou a nova aba. Libere pop-ups para abrir outro atendimento.");
+  });
   document.querySelector("[data-test-supabase]")?.addEventListener("click", testSupabaseConnection);
   document.querySelector("[data-test-mercadopago]")?.addEventListener("click", async () => {
     await loadMercadoPagoPointStatus(true);
@@ -2536,8 +2563,8 @@ function bindViewEvents() {
   document.querySelectorAll("[data-set-point-terminal-standalone]").forEach((button) => {
     button.addEventListener("click", () => setMercadoPagoTerminalMode("STANDALONE", button.dataset.setPointTerminalStandalone));
   });
-  document.querySelector("[data-check-point-order]")?.addEventListener("click", checkMercadoPagoPendingOrder);
-  document.querySelector("[data-cancel-point-order]")?.addEventListener("click", cancelMercadoPagoPendingOrder);
+  document.querySelector("[data-check-point-order]")?.addEventListener("click", () => checkMercadoPagoPendingOrder());
+  document.querySelector("[data-cancel-point-order]")?.addEventListener("click", () => cancelMercadoPagoPendingOrder());
   document.querySelector("[data-export-backup]")?.addEventListener("click", exportBackup);
   document.querySelector("[data-export-sales]")?.addEventListener("click", exportSalesCsv);
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
@@ -2777,10 +2804,11 @@ function renderPos() {
     <div class="section-title">
       <div>
         <h2>Venda de balcao</h2>
-        <p>Botoes grandes, categorias visuais e fechamento rapido.</p>
+        <p>Atendimento ${CURRENT_SERVICE_NUMBER}. Selecione uma maquininha diferente em cada atendimento simultaneo.</p>
       </div>
       <div class="toolbar">
         <input class="field-input search" data-search type="search" placeholder="Buscar produto" />
+        <button class="btn primary" type="button" data-new-service>Novo atendimento</button>
       </div>
     </div>
     ${
@@ -6625,7 +6653,8 @@ function renderOnline() {
   const keyPreview = supabaseConfig.publishableKey
     ? `${supabaseConfig.publishableKey.slice(0, 18)}...${supabaseConfig.publishableKey.slice(-6)}`
     : "Nao configurada";
-  const pendingPointOrder = getMercadoPagoPendingOrder();
+  const pendingPointOrders = getMercadoPagoPendingOrders();
+  const pendingPointOrder = pendingPointOrders[0] || null;
   const selectedTerminal = mercadoPagoPointStatus.terminals.find(
     (terminal) => terminal.id === mercadoPagoPointStatus.terminalId,
   );
@@ -6694,7 +6723,7 @@ function renderOnline() {
       ${onlineCard(
         "Fila da Point",
         pendingPointOrder
-          ? `Cobranca pendente salva: ${pendingPointOrder.id}. Status: ${pendingPointOrder.status || "created"}${
+          ? `${pendingPointOrders.length} cobranca(s) acompanhada(s). Ultima: ${pendingPointOrder.id}. Status: ${pendingPointOrder.status || "created"}${
               pendingPointOrder.statusDetail ? ` (${pendingPointOrder.statusDetail})` : ""
             }.`
           : "Nenhuma cobranca pendente salva neste navegador.",
