@@ -7522,10 +7522,9 @@ function renderClientModal() {
               ? `<div class="full transaction-log">
                   <strong>Historico</strong>
                   ${client.transactions
-                    .slice(0, 8)
                     .map((entry) => `<span class="transaction-entry">
                       <span>${dateTime(entry.date)} - ${escapeHtml(entry.description)} - ${money(entry.amount)}</span>
-                      ${entry.type === "debito" && Number(entry.amount) > 0 && !entry.saleId
+                      ${entry.type === "debito" && Number(entry.amount) > 0
                         ? `<button class="btn compact danger" type="button" data-open-modal="clientTransactionRemoval" data-id="${entry.id}">Remover</button>`
                         : ""}
                     </span>`)
@@ -7859,6 +7858,7 @@ function renderClientTransactionRemovalModal() {
           <div class="summary-row"><span>Produto</span><strong>${escapeHtml(match.transaction.description)}</strong></div>
           <div class="summary-row total"><span>Retirar do saldo</span><strong>${money(match.transaction.amount)}</strong></div>
         </div>` : '<div class="empty">Lancamento nao encontrado.</div>'}
+        ${match?.transaction.saleId ? '<div class="notice compact">O debito sera removido do cliente. A venda original permanecera preservada no historico de vendas.</div>' : ""}
         <label class="field"><span>Senha de administrador</span><input name="adminPassword" type="password" autocomplete="off" required /></label>
         <label class="field"><span>Motivo da remocao</span><input name="reason" required placeholder="Ex.: produto lancado por engano" /></label>
       </div>
@@ -9082,8 +9082,8 @@ async function saveClientPayment(event) {
 async function removeClientTransaction(event) {
   event.preventDefault();
   const match = clientTransactionById(currentModal.id);
-  if (!match || match.transaction.type !== "debito" || match.transaction.saleId) {
-    notify("Este lancamento nao pode ser removido por aqui. Cancele a venda vinculada para manter o historico correto.");
+  if (!match || match.transaction.type !== "debito") {
+    notify("Lancamento de fiado nao encontrado.");
     return;
   }
 
