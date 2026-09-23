@@ -1178,6 +1178,40 @@ button:disabled {
   background: #f8fafc;
 }
 
+.transaction-log .transaction-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.transaction-log .transaction-entry:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.transaction-log .transaction-entry > span {
+  min-width: 0;
+}
+
+.fiado-confirmation .check-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.fiado-confirmation .check-line input {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  padding: 0;
+  accent-color: #0f766e;
+}
+
 body[data-theme="dark"] .quick-login-btn,
 body[data-theme="dark"] .quick-menu-editor,
 body[data-theme="dark"] .transaction-log {

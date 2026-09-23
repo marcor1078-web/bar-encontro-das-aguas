@@ -1514,6 +1514,28 @@ function findLocalUser(username, password) {
   );
 }
 
+async function authorizeAdminPassword(password) {
+  const typedPassword = String(password || "");
+  if (!typedPassword) return null;
+
+  if (!isOnlineSession()) {
+    return state.users.find((user) => user.role === "admin" && user.password === typedPassword && user.active) || null;
+  }
+
+  const admins = state.users.filter((user) => user.role === "admin" && user.active && user.email);
+  for (const admin of admins) {
+    const verifier = supabaseLibrary.createClient(supabaseConfig.url, supabaseConfig.publishableKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const { error } = await verifier.auth.signInWithPassword({ email: admin.email, password: typedPassword });
+    if (!error) {
+      await verifier.auth.signOut();
+      return admin;
+    }
+  }
+  return null;
+}
+
 function localLogin(username, password) {
   const user = findLocalUser(username, password);
 
@@ -3212,6 +3234,27 @@ async function confirmSalePayment(event) {
   if (payment !== "Dividido") {
     paymentBreakdown = [{ method: payment, amount: total, installments: payment === "Credito" ? creditInstallments : 1 }];
   }
+  const fiadoAmount = payment === "Fiado" ? total : paymentBreakdown.find((part) => part.method === "Fiado")?.amount || 0;
+  if (fiadoAmount > 0) {
+    const clientId = String(form.get("clientId") || "");
+    const client = state.clients.find((entry) => entry.id === clientId);
+    if (!client) {
+      notify("Selecione o cliente que recebera o fiado.");
+      delete formElement.dataset.submitting;
+      return;
+    }
+    if (form.get("confirmFiadoClient") !== "on") {
+      notify(`Confirme que o fiado sera lancado para ${client.name}.`);
+      delete formElement.dataset.submitting;
+      return;
+    }
+    const admin = await authorizeAdminPassword(form.get("adminPassword"));
+    if (!admin) {
+      notify("Senha de administrador invalida.");
+      delete formElement.dataset.submitting;
+      return;
+    }
+  }
   formElement.dataset.submitting = "true";
 
   const finalized = await finalizeSale({
@@ -3304,6 +3347,20 @@ function updateSplitPaymentPreview(form) {
     remainingOutput.className = Math.abs(remaining) <= 0.009 ? "ok" : remaining > 0 ? "warn" : "bad";
   }
   if (cashChangeOutput) cashChangeOutput.textContent = money(Math.max(0, cashReceived - cashPart));
+  updateFiadoAuthorizationPanel(form);
+}
+
+function updateFiadoAuthorizationPanel(form) {
+  const panel = form.querySelector("[data-fiado-authorization]");
+  if (!panel) return;
+  const payment = form.querySelector('input[name="payment"]:checked')?.value || "";
+  const splitFiado = Number(form.querySelector('[data-split-amount="Fiado"]')?.value || 0);
+  const needsAuthorization = payment === "Fiado" || (payment === "Dividido" && splitFiado > 0);
+  panel.hidden = !needsAuthorization;
+  const clientSelect = form.querySelector('[name="clientId"]');
+  const clientName = clientSelect?.selectedOptions?.[0]?.textContent || "cliente selecionado";
+  const confirmation = panel.querySelector("[data-fiado-client-confirmation]");
+  if (confirmation) confirmation.textContent = `Confirmo que o fiado sera lancado para ${clientName}.`;
 }
 
 function bindSalePaymentChoice() {
@@ -3321,6 +3378,7 @@ function bindSalePaymentChoice() {
     if (panel) panel.hidden = payment !== "Credito";
   };
   updateCreditInstallments();
+  updateFiadoAuthorizationPanel(form);
   cashInput?.addEventListener("input", () => updateCashChangePreview(form));
   discountInputs.forEach((input) => {
     input.addEventListener("input", () => {
@@ -3336,6 +3394,7 @@ function bindSalePaymentChoice() {
     });
   });
   splitInputs.forEach((input) => input.addEventListener("input", () => updateSplitPaymentPreview(form)));
+  form.querySelector('[name="clientId"]')?.addEventListener("change", () => updateFiadoAuthorizationPanel(form));
 
   form.querySelectorAll('input[name="payment"]').forEach((input) => {
     input.addEventListener("change", () => {
@@ -3352,6 +3411,11 @@ function bindSalePaymentChoice() {
       }
       if (input.value === "Credito") {
         form.querySelector('input[name="creditInstallments"]:checked')?.focus();
+        return;
+      }
+      if (input.value === "Fiado") {
+        updateFiadoAuthorizationPanel(form);
+        form.querySelector('[name="adminPassword"]')?.focus();
         return;
       }
       if (form.dataset.submitting === "true") return;
@@ -6737,6 +6801,7 @@ function renderModal() {
     expensePayment: renderExpensePaymentModal,
     client: renderClientModal,
     clientPayment: renderClientPaymentModal,
+    clientTransactionRemoval: renderClientTransactionRemovalModal,
     cancelSale: renderCancelSaleModal,
     lot: renderLotModal,
     table: renderTableModal,
@@ -6816,6 +6881,19 @@ function renderSalePaymentModal() {
                 `,
               )
               .join("")}
+          </div>
+        </div>
+        <div class="notice" data-fiado-authorization hidden>
+          <strong>Autorizacao para venda fiado</strong>
+          <div class="form-grid" style="margin-top: 12px;">
+            <label class="field">
+              <span>Senha de administrador</span>
+              <input name="adminPassword" type="password" autocomplete="off" />
+            </label>
+            <label class="field fiado-confirmation">
+              <span>Confirmacao do cliente</span>
+              <span class="check-line"><input name="confirmFiadoClient" type="checkbox" /><span data-fiado-client-confirmation>Confirmo o cliente selecionado.</span></span>
+            </label>
           </div>
         </div>
         <div class="cash-change-panel" data-cash-change-panel hidden>
@@ -7445,7 +7523,12 @@ function renderClientModal() {
                   <strong>Historico</strong>
                   ${client.transactions
                     .slice(0, 8)
-                    .map((entry) => `<span>${dateTime(entry.date)} - ${entry.description} - ${money(entry.amount)}</span>`)
+                    .map((entry) => `<span class="transaction-entry">
+                      <span>${dateTime(entry.date)} - ${escapeHtml(entry.description)} - ${money(entry.amount)}</span>
+                      ${entry.type === "debito" && Number(entry.amount) > 0 && !entry.saleId
+                        ? `<button class="btn compact danger" type="button" data-open-modal="clientTransactionRemoval" data-id="${entry.id}">Remover</button>`
+                        : ""}
+                    </span>`)
                     .join("")}
                 </div>`
               : ""
@@ -7754,6 +7837,39 @@ function renderMovementModal() {
   `;
 }
 
+function clientTransactionById(transactionId) {
+  for (const client of state.clients) {
+    const transaction = (client.transactions || []).find((entry) => entry.id === transactionId);
+    if (transaction) return { client, transaction };
+  }
+  return null;
+}
+
+function renderClientTransactionRemovalModal() {
+  const match = clientTransactionById(currentModal.id);
+  return `
+    <form id="client-transaction-removal-form">
+      <div class="modal-head">
+        <h2>Remover produto do fiado</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        ${match ? `<div class="summary-list">
+          <div class="summary-row"><span>Cliente</span><strong>${escapeHtml(match.client.name)}</strong></div>
+          <div class="summary-row"><span>Produto</span><strong>${escapeHtml(match.transaction.description)}</strong></div>
+          <div class="summary-row total"><span>Retirar do saldo</span><strong>${money(match.transaction.amount)}</strong></div>
+        </div>` : '<div class="empty">Lancamento nao encontrado.</div>'}
+        <label class="field"><span>Senha de administrador</span><input name="adminPassword" type="password" autocomplete="off" required /></label>
+        <label class="field"><span>Motivo da remocao</span><input name="reason" required placeholder="Ex.: produto lancado por engano" /></label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Voltar</button>
+        <button class="btn danger" type="submit" ${match ? "" : "disabled"}>Remover produto</button>
+      </div>
+    </form>
+  `;
+}
+
 function renderExternalPaymentModal() {
   const terminals = paymentTerminalOptions();
   const selectedTerminal = getSelectedPaymentTerminal();
@@ -7852,6 +7968,7 @@ function bindModalForms() {
   document.querySelector("#expense-payment-form")?.addEventListener("submit", saveExpensePayment);
   document.querySelector("#client-form")?.addEventListener("submit", saveClient);
   document.querySelector("#client-payment-form")?.addEventListener("submit", saveClientPayment);
+  document.querySelector("#client-transaction-removal-form")?.addEventListener("submit", removeClientTransaction);
   document.querySelector("#cancel-sale-form")?.addEventListener("submit", saveCancelSale);
   document.querySelector("#lot-form")?.addEventListener("submit", saveLot);
   document.querySelector("#user-form")?.addEventListener("submit", saveUser);
@@ -8959,6 +9076,57 @@ async function saveClientPayment(event) {
   logAudit("Pagamento parcial", money(amount));
   saveState();
   notify("Pagamento registrado.");
+  renderApp();
+}
+
+async function removeClientTransaction(event) {
+  event.preventDefault();
+  const match = clientTransactionById(currentModal.id);
+  if (!match || match.transaction.type !== "debito" || match.transaction.saleId) {
+    notify("Este lancamento nao pode ser removido por aqui. Cancele a venda vinculada para manter o historico correto.");
+    return;
+  }
+
+  const form = new FormData(event.currentTarget);
+  const admin = await authorizeAdminPassword(form.get("adminPassword"));
+  if (!admin) {
+    notify("Senha de administrador invalida.");
+    return;
+  }
+
+  const previousDebt = Number(match.client.debt || 0);
+  const nextDebt = Math.max(0, previousDebt - Number(match.transaction.amount || 0));
+  const reason = String(form.get("reason") || "").trim();
+
+  if (isOnlineSession()) {
+    const update = await supabaseClient.from("clients").update({ debt: nextDebt }).eq("id", match.client.id);
+    if (update.error) {
+      notify(`Erro ao corrigir saldo fiado: ${update.error.message}`);
+      return;
+    }
+    const removal = await supabaseClient.from("client_transactions").delete().eq("id", match.transaction.id);
+    if (removal.error) {
+      await supabaseClient.from("clients").update({ debt: previousDebt }).eq("id", match.client.id);
+      notify(`Erro ao remover produto do fiado: ${removal.error.message}`);
+      return;
+    }
+    currentModal = null;
+    await loadOnlineClientsData();
+  } else {
+    state.clients = state.clients.map((client) =>
+      client.id === match.client.id
+        ? { ...client, debt: nextDebt, transactions: client.transactions.filter((entry) => entry.id !== match.transaction.id) }
+        : client,
+    );
+    currentModal = null;
+    saveState();
+  }
+
+  logAudit(
+    "Produto removido do fiado",
+    `${match.client.name}: ${match.transaction.description}, ${money(match.transaction.amount)}. Autorizado por ${admin.name}. Motivo: ${reason}`,
+  );
+  notify("Produto removido e saldo fiado corrigido.");
   renderApp();
 }
 
