@@ -2,6 +2,7 @@ const {
   json,
   methodAllowed,
   readJson,
+  mercadoPagoEnv,
   requireMercadoPagoConfig,
   mercadoPagoFetch,
   mercadoPagoErrorMessage,
@@ -24,7 +25,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const result = await mercadoPagoFetch("/terminals/v1/setup", {
+  const requestOptions = {
     method: "PATCH",
     body: JSON.stringify({
       terminals: [
@@ -34,7 +35,17 @@ module.exports = async function handler(req, res) {
         },
       ],
     }),
-  }, accountKey);
+  };
+  let result = await mercadoPagoFetch("/terminals/v1/setup", requestOptions, accountKey);
+
+  // Older cached clients did not identify which Mercado Pago account owns the terminal.
+  // Retry a missing terminal against the other configured account before returning an error.
+  if (result.status === 404) {
+    const alternateAccountKey = accountKey === "secondary" ? "primary" : "secondary";
+    if (mercadoPagoEnv(alternateAccountKey).accessToken) {
+      result = await mercadoPagoFetch("/terminals/v1/setup", requestOptions, alternateAccountKey);
+    }
+  }
 
   if (!result.ok) {
     json(res, result.status, {
