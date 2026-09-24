@@ -9,10 +9,10 @@ const {
 
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["POST"])) return;
-  const env = requireMercadoPagoConfig(res);
-  if (!env) return;
-
   const body = await readJson(req);
+  const accountKey = body.accountKey === "secondary" ? "secondary" : "primary";
+  const env = requireMercadoPagoConfig(res, accountKey);
+  if (!env) return;
   const operatingMode = String(body.operatingMode || "PDV").trim().toUpperCase();
   const terminalId = String(body.terminalId || env.terminalId).trim();
   if (!["PDV", "STANDALONE"].includes(operatingMode)) {
@@ -34,7 +34,7 @@ module.exports = async function handler(req, res) {
         },
       ],
     }),
-  });
+  }, accountKey);
 
   if (!result.ok) {
     json(res, result.status, {

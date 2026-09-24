@@ -27,10 +27,10 @@ function isPointPaymentMethod(method) {
 
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["POST"])) return;
-  const env = requireMercadoPagoConfig(res);
-  if (!env) return;
-
   const body = await readJson(req);
+  const accountKey = body.accountKey === "secondary" ? "secondary" : "primary";
+  const env = requireMercadoPagoConfig(res, accountKey);
+  if (!env) return;
   const amount = Number(body.amount || 0);
   if (!amount || amount <= 0) {
     json(res, 400, { error: "invalid_amount" });
@@ -86,7 +86,7 @@ module.exports = async function handler(req, res) {
     method: "POST",
     headers: { "X-Idempotency-Key": idempotencyKey },
     body: JSON.stringify(payload),
-  });
+  }, accountKey);
 
   if (!result.ok) {
     json(res, result.status, {

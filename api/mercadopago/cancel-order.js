@@ -10,9 +10,9 @@ const { randomUUID } = require("crypto");
 
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["POST"])) return;
-  if (!requireMercadoPagoConfig(res)) return;
-
   const body = await readJson(req);
+  const accountKey = body.accountKey === "secondary" ? "secondary" : "primary";
+  if (!requireMercadoPagoConfig(res, accountKey)) return;
   const orderId = String(body.id || "").trim();
   if (!orderId) {
     json(res, 400, { error: "missing_order_id", message: "Informe o ID da cobranca Mercado Pago." });
@@ -25,7 +25,7 @@ module.exports = async function handler(req, res) {
       "X-Idempotency-Key": body.idempotencyKey || randomUUID(),
       "x-allow-cancelable-status": "at_terminal",
     },
-  });
+  }, accountKey);
 
   if (!result.ok) {
     json(res, result.status, {

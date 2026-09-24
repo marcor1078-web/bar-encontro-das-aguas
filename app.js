@@ -1108,6 +1108,7 @@ function paymentTerminalOptions() {
       id: `mp:${terminal.id}`,
       provider: "mercado_pago",
       terminalId: terminal.id,
+      accountKey: terminal.account_key || "primary",
       label: `${mercadoPagoTerminalName(terminal, number)}${terminal.operating_mode === "PDV" ? "" : " (ativar PDV)"}`,
       enabled: terminal.operating_mode === "PDV",
     }));
@@ -1117,6 +1118,7 @@ function paymentTerminalOptions() {
       id: `mp-expected:${entry.serial}`,
       provider: "mercado_pago",
       terminalId: "",
+      accountKey: "secondary",
       label: `Maquininha ${entry.number} - ${entry.label} - ${entry.serial} (aguardando vinculacao)`,
       enabled: false,
     }));
@@ -1245,6 +1247,7 @@ function saveMercadoPagoPendingOrder(order, context = {}) {
     id: order.id,
     terminalId: context.terminalId || previous?.terminalId || "",
     terminalLabel: context.terminalLabel || previous?.terminalLabel || "",
+    accountKey: context.accountKey || previous?.accountKey || "primary",
     amount: context.amount || 0,
     payment: context.payment || "",
     description: context.description || "",
@@ -1321,7 +1324,7 @@ async function checkMercadoPagoPendingOrder(orderId = "") {
   }
 
   try {
-    const response = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(pending.id)}`);
+    const response = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(pending.id)}&accountKey=${encodeURIComponent(pending.accountKey || "primary")}`);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(describeMercadoPagoError(data));
     updateMercadoPagoPendingOrderStatus(data);
@@ -1346,7 +1349,7 @@ async function cancelMercadoPagoPendingOrder(orderId = "") {
     const response = await fetch("/api/mercadopago/cancel-order", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: pending.id }),
+      body: JSON.stringify({ id: pending.id, accountKey: pending.accountKey || "primary" }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(describeMercadoPagoError(data));
@@ -1386,12 +1389,13 @@ function buildMercadoPagoCustomTicket({ amount, payment, description, items }) {
   return content.length < 100 ? `${content}{br}${"-".repeat(100 - content.length)}` : content.slice(0, 4096);
 }
 
-async function printMercadoPagoCustomTicket({ terminalId, amount, payment, description, items, orderId }) {
+async function printMercadoPagoCustomTicket({ terminalId, accountKey = "primary", amount, payment, description, items, orderId }) {
   const response = await fetch("/api/mercadopago/print-ticket", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       terminalId,
+      accountKey,
       externalReference: `ticket-${orderId || Date.now()}`,
       content: buildMercadoPagoCustomTicket({ amount, payment, description, items }),
     }),
@@ -1401,7 +1405,7 @@ async function printMercadoPagoCustomTicket({ terminalId, amount, payment, descr
   return data;
 }
 
-async function processMercadoPagoPointPayment({ amount, payment, installments = 1, description, terminalId, items = [] }) {
+async function processMercadoPagoPointPayment({ amount, payment, installments = 1, description, terminalId, accountKey = "primary", items = [] }) {
   const config = await loadMercadoPagoPointStatus();
   if (!config.enabled || !isPointPayment(payment)) return { skipped: true };
   const selectedTerminalId = terminalId || getSelectedPaymentTerminal()?.terminalId || "";
@@ -1415,6 +1419,7 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
       paymentMethod: payment,
       installments,
       terminalId: selectedTerminalId,
+      accountKey,
       description,
       externalReference: `sale-${Date.now()}`,
     }),
@@ -1433,11 +1438,11 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
     return { ok: false, message: `Mercado Pago: ${message}` };
   }
 
-  saveMercadoPagoPendingOrder(order, { amount, payment, description, terminalId: selectedTerminalId });
+  saveMercadoPagoPendingOrder(order, { amount, payment, description, terminalId: selectedTerminalId, accountKey });
   notify("Cobranca enviada. Na Point, abra Inserir valor para concluir.");
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    const statusResponse = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(order.id)}`);
+    const statusResponse = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(order.id)}&accountKey=${encodeURIComponent(accountKey)}`);
     const statusData = await statusResponse.json().catch(() => ({}));
     if (!statusResponse.ok) {
       return { ok: false, message: statusData.error || "Falha ao consultar pagamento Mercado Pago." };
@@ -1493,6 +1498,7 @@ async function processPointPaymentBeforeSale({ amount, payment, installments = 1
     payment,
     installments,
     terminalId: selectedTerminal.terminalId,
+    accountKey: selectedTerminal.accountKey || "primary",
     items,
     description,
   });
@@ -1534,10 +1540,11 @@ async function setMercadoPagoTerminalMode(operatingMode = "PDV", terminalId = ""
   }
 
   try {
+    const terminal = mercadoPagoPointStatus.terminals.find((entry) => entry.id === terminalId);
     const response = await fetch("/api/mercadopago/set-terminal-mode", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ operatingMode, terminalId }),
+      body: JSON.stringify({ operatingMode, terminalId, accountKey: terminal?.account_key || "primary" }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(describeMercadoPagoError(data));

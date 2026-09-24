@@ -35,12 +35,19 @@ function readJson(req) {
   });
 }
 
-function mercadoPagoEnv() {
+function normalizeMercadoPagoAccountKey(value) {
+  return value === "secondary" ? "secondary" : "primary";
+}
+
+function mercadoPagoEnv(accountKey = "primary") {
+  const normalizedAccountKey = normalizeMercadoPagoAccountKey(accountKey);
+  const secondary = normalizedAccountKey === "secondary";
   const printOnTerminal = String(process.env.MP_PRINT_ON_TERMINAL || "seller_ticket").trim();
   const allowedPrintModes = ["no_ticket", "seller_ticket", "buyer_ticket"];
   return {
-    accessToken: String(process.env.MP_ACCESS_TOKEN || "").trim(),
-    terminalId: String(process.env.MP_TERMINAL_ID || "").trim(),
+    accountKey: normalizedAccountKey,
+    accessToken: String(secondary ? process.env.MP_SECONDARY_ACCESS_TOKEN || "" : process.env.MP_ACCESS_TOKEN || "").trim(),
+    terminalId: String(secondary ? process.env.MP_SECONDARY_TERMINAL_ID || "" : process.env.MP_TERMINAL_ID || "").trim(),
     integratorId: String(process.env.MP_INTEGRATOR_ID || "").trim(),
     platformId: String(process.env.MP_PLATFORM_ID || "").trim(),
     sponsorId: String(process.env.MP_SPONSOR_ID || "").trim(),
@@ -49,20 +56,22 @@ function mercadoPagoEnv() {
   };
 }
 
-function requireMercadoPagoConfig(res) {
-  const env = mercadoPagoEnv();
-  if (!env.accessToken || !env.terminalId) {
+function requireMercadoPagoConfig(res, accountKey = "primary") {
+  const env = mercadoPagoEnv(accountKey);
+  if (!env.accessToken) {
     json(res, 501, {
       error: "mercado_pago_not_configured",
-      message: "Configure MP_ACCESS_TOKEN e MP_TERMINAL_ID nas variaveis de ambiente da Vercel.",
+      message: accountKey === "secondary"
+        ? "Configure MP_SECONDARY_ACCESS_TOKEN nas variaveis de ambiente da Vercel."
+        : "Configure MP_ACCESS_TOKEN nas variaveis de ambiente da Vercel.",
     });
     return null;
   }
   return env;
 }
 
-function requireMercadoPagoAccessToken(res) {
-  const env = mercadoPagoEnv();
+function requireMercadoPagoAccessToken(res, accountKey = "primary") {
+  const env = mercadoPagoEnv(accountKey);
   if (!env.accessToken) {
     json(res, 501, {
       error: "mercado_pago_token_not_configured",
@@ -73,8 +82,8 @@ function requireMercadoPagoAccessToken(res) {
   return env;
 }
 
-async function mercadoPagoFetch(path, options = {}) {
-  const env = mercadoPagoEnv();
+async function mercadoPagoFetch(path, options = {}, accountKey = "primary") {
+  const env = mercadoPagoEnv(accountKey);
   const response = await fetch(`${MP_API_BASE}${path}`, {
     ...options,
     headers: {
@@ -110,6 +119,7 @@ module.exports = {
   methodAllowed,
   readJson,
   mercadoPagoEnv,
+  normalizeMercadoPagoAccountKey,
   requireMercadoPagoConfig,
   requireMercadoPagoAccessToken,
   mercadoPagoFetch,
