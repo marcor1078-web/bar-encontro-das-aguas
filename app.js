@@ -13,6 +13,12 @@ const DEFAULT_LOCAL_PASSWORDS = {
   "u-cashier": "caixa123",
   "u-stock": "estoque123",
 };
+const MERCADO_PAGO_TERMINAL_REGISTRY = [
+  { serial: "N950NCC603875878", number: 1, label: "Atual 1" },
+  { serial: "N950NCC503663738", number: 2, label: "Atual 2" },
+  { serial: "N95NCC704082234", number: 3, label: "Nova Point 1", expected: true },
+  { serial: "N95NCC704084376", number: 4, label: "Nova Point 2", expected: true },
+];
 
 const roles = {
   admin: {
@@ -1094,6 +1100,7 @@ function describeMercadoPagoError(payload) {
 }
 
 function paymentTerminalOptions() {
+  const connectedSerials = new Set(mercadoPagoPointStatus.terminals.map(mercadoPagoTerminalSerial));
   const mpTerminals = mercadoPagoPointStatus.terminals
     .map((terminal, index) => ({ terminal, number: mercadoPagoTerminalNumber(terminal, index) }))
     .sort((a, b) => a.number - b.number || String(a.terminal.id).localeCompare(String(b.terminal.id)))
@@ -1104,11 +1111,21 @@ function paymentTerminalOptions() {
       label: `${mercadoPagoTerminalName(terminal, number)}${terminal.operating_mode === "PDV" ? "" : " (ativar PDV)"}`,
       enabled: terminal.operating_mode === "PDV",
     }));
+  const expectedTerminals = MERCADO_PAGO_TERMINAL_REGISTRY
+    .filter((entry) => entry.expected && !connectedSerials.has(normalizeMercadoPagoSerial(entry.serial)))
+    .map((entry) => ({
+      id: `mp-expected:${entry.serial}`,
+      provider: "mercado_pago",
+      terminalId: "",
+      label: `Maquininha ${entry.number} - ${entry.label} - ${entry.serial} (aguardando vinculacao)`,
+      enabled: false,
+    }));
 
   return [
     ...mpTerminals,
-    { id: "stone:1", provider: "stone", terminalId: "stone-1", label: "Maquininha 3 - Stone (a configurar)", enabled: false },
-    { id: "stone:2", provider: "stone", terminalId: "stone-2", label: "Maquininha 4 - Stone (a configurar)", enabled: false },
+    ...expectedTerminals,
+    { id: "stone:1", provider: "stone", terminalId: "stone-1", label: "Maquininha 5 - Stone (a configurar)", enabled: false },
+    { id: "stone:2", provider: "stone", terminalId: "stone-2", label: "Maquininha 6 - Stone (a configurar)", enabled: false },
   ];
 }
 
@@ -1134,19 +1151,30 @@ function setSelectedPaymentTerminal(terminalKey) {
   }
 }
 
+function normalizeMercadoPagoSerial(value) {
+  const serial = String(value || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+  return serial.replace(/^N95NCC/, "N950NCC");
+}
+
+function mercadoPagoTerminalSerial(terminal) {
+  return normalizeMercadoPagoSerial(String(terminal?.id || "").split("__").pop());
+}
+
+function mercadoPagoTerminalRegistry(terminal) {
+  const serial = mercadoPagoTerminalSerial(terminal);
+  return MERCADO_PAGO_TERMINAL_REGISTRY.find((entry) => normalizeMercadoPagoSerial(entry.serial) === serial) || null;
+}
+
 function mercadoPagoTerminalNumber(terminal, fallbackIndex = 0) {
-  const serial = String(terminal.id || "").split("__").pop().toUpperCase();
-  const stableNumbers = {
-    N950NCC603875878: 1,
-    N950NCC503663738: 2,
-  };
-  return stableNumbers[serial] || fallbackIndex + 1;
+  return mercadoPagoTerminalRegistry(terminal)?.number || fallbackIndex + 7;
 }
 
 function mercadoPagoTerminalName(terminal, number = 1) {
   const serial = String(terminal.id || "").split("__").pop() || terminal.id || "Terminal";
+  const registry = mercadoPagoTerminalRegistry(terminal);
+  const label = registry?.label ? ` - ${registry.label}` : "";
   const mode = terminal.operating_mode ? ` - ${terminal.operating_mode}` : "";
-  return `Maquininha ${number} - ${serial}${mode}`;
+  return `Maquininha ${number}${label} - ${serial}${mode}`;
 }
 
 function renderPaymentTerminalField({ inputId = "payment-terminal-id", inputName = "" } = {}) {
@@ -6721,6 +6749,20 @@ function renderOnline() {
       `;
     })
     .join("");
+  const connectedTerminalSerials = new Set(mercadoPagoPointStatus.terminals.map(mercadoPagoTerminalSerial));
+  const expectedTerminalRows = MERCADO_PAGO_TERMINAL_REGISTRY
+    .filter((entry) => entry.expected && !connectedTerminalSerials.has(normalizeMercadoPagoSerial(entry.serial)))
+    .map((entry) => `
+      <tr>
+        <td>Maquininha ${entry.number} / ${entry.label}</td>
+        <td>${entry.serial}</td>
+        <td>AGUARDANDO</td>
+        <td>-</td>
+        <td>-</td>
+        <td><span class="status amber">Vincular na conta Mercado Pago</span></td>
+      </tr>
+    `)
+    .join("");
   return `
     <div class="section-title">
       <div>
@@ -6759,7 +6801,7 @@ function renderOnline() {
       ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
       ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
       ${onlineCard("Impressao", "A Point imprime comprovante simples. As fichas individuais saem pelo app no Balcao ou em Vendas > Ficha.", "Ativa")}
-      ${onlineCard("Stone", "Maquininha 3 e 4 reservadas. Para ativar, precisamos habilitar Connect 2.0/Pagar.me e obter as credenciais da Stone.", "A configurar")}
+      ${onlineCard("Stone", "Maquininha 5 e 6 reservadas. Para ativar, precisamos habilitar Connect 2.0/Pagar.me e obter as credenciais da Stone.", "A configurar")}
       ${onlineCard(
         "Fila da Point",
         pendingPointOrder
@@ -6796,7 +6838,7 @@ function renderOnline() {
           </thead>
           <tbody>
             ${
-              terminalRows ||
+              `${terminalRows}${expectedTerminalRows}` ||
               `<tr><td colspan="6">Clique em Testar Mercado Pago Point para carregar as maquininhas.</td></tr>`
             }
           </tbody>
