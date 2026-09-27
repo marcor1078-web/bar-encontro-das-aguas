@@ -2563,6 +2563,23 @@ function tableSortValue(table) {
   return number || 9999;
 }
 
+function nextTableNumber() {
+  const highestNumber = state.tables.reduce((highest, table) => {
+    const number = Number(String(table.name || "").match(/\d+/)?.[0] || 0);
+    return Math.max(highest, number);
+  }, 0);
+  return highestNumber + 1;
+}
+
+function tableCreationPreview(count) {
+  const amount = Math.max(1, Math.min(30, Number(count) || 1));
+  const firstNumber = nextTableNumber();
+  const lastNumber = firstNumber + amount - 1;
+  return amount === 1
+    ? `Sera criada a Mesa ${firstNumber}.`
+    : `Serao criadas as mesas ${firstNumber} a ${lastNumber}.`;
+}
+
 async function loadOnlineTableData() {
   if (!isOnlineSession()) return;
 
@@ -3429,6 +3446,8 @@ function renderTables() {
         <p>Abra mesa, adicione itens, acompanhe status e feche a conta. ${isOnlineSession() ? "Salvando no Supabase." : "Modo local."}</p>
       </div>
       <div class="toolbar">
+        <span class="status blue">${state.tables.length} mesas</span>
+        <button class="btn primary" type="button" data-open-modal="addTables">Adicionar mesas</button>
         <button class="btn secondary" type="button" data-clear-table="${selectedTable?.id || ""}" ${selectedTable ? "" : "disabled"}>Liberar selecionada</button>
       </div>
     </div>
@@ -4430,6 +4449,59 @@ function tableTotalValue(table) {
 
 function tableServiceFee(subtotal) {
   return subtotal * (Number(state.settings.serviceFee || 0) / 100);
+}
+
+async function createTables(count) {
+  const amount = Math.trunc(Number(count));
+  if (!Number.isInteger(amount) || amount < 1 || amount > 30) {
+    notify("Informe uma quantidade entre 1 e 30 mesas.");
+    return false;
+  }
+
+  if (session?.online && !isOnlineSession()) {
+    notify("Conecte a internet para cadastrar novas mesas online.");
+    return false;
+  }
+
+  const firstNumber = nextTableNumber();
+  const names = Array.from({ length: amount }, (_, index) => `Mesa ${firstNumber + index}`);
+
+  if (isOnlineSession()) {
+    const rows = names.map((name) => ({ name, customer_name: "" }));
+    const { error } = await supabaseClient.from("bar_tables").insert(rows);
+    if (error) {
+      notify(`Erro ao criar mesas online: ${error.message}`);
+      return false;
+    }
+
+    await loadOnlineTableData();
+    selectedTableId = state.tables.find((table) => table.name === names[0])?.id || selectedTableId;
+    currentModal = null;
+    logAudit("Mesas criadas online", names.join(", "));
+    saveState();
+    notify(`${amount} ${amount === 1 ? "mesa criada" : "mesas criadas"} com sucesso.`);
+    renderApp();
+    return true;
+  }
+
+  const newTables = names.map((name) => ({
+    id: id("table"),
+    name,
+    customerName: "",
+    status: "Livre",
+    openedAt: null,
+    serverId: null,
+    clientId: null,
+    items: [],
+  }));
+  state.tables = [...state.tables, ...newTables].sort((a, b) => tableSortValue(a) - tableSortValue(b));
+  selectedTableId = newTables[0].id;
+  currentModal = null;
+  logAudit("Mesas criadas", names.join(", "));
+  saveState();
+  notify(`${amount} ${amount === 1 ? "mesa criada" : "mesas criadas"} com sucesso.`);
+  renderApp();
+  return true;
 }
 
 async function saveTableCustomerName(tableId, customerName) {
@@ -7390,6 +7462,7 @@ function renderModal() {
     cancelSale: renderCancelSaleModal,
     lot: renderLotModal,
     table: renderTableModal,
+    addTables: renderAddTablesModal,
     user: renderUserModal,
     movement: renderMovementModal,
     externalPayment: renderExternalPaymentModal,
@@ -8169,6 +8242,32 @@ function renderClientPaymentModal() {
   `;
 }
 
+function renderAddTablesModal() {
+  const defaultCount = 4;
+  return `
+    <form id="add-tables-form">
+      <div class="modal-head">
+        <h2>Adicionar mesas</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <p>O sistema tem <strong>${state.tables.length} mesas</strong>. As novas mesas entram livres e nao alteram as comandas existentes.</p>
+        <div class="form-grid">
+          <label class="field full">
+            <span>Quantidade de novas mesas</span>
+            <input name="count" data-table-count type="number" min="1" max="30" step="1" value="${defaultCount}" required />
+            <small data-table-preview>${tableCreationPreview(defaultCount)}</small>
+          </label>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">Criar mesas</button>
+      </div>
+    </form>
+  `;
+}
+
 function renderTableModal() {
   const table = state.tables.find((item) => item.id === currentModal.id);
   const products = filteredProducts().filter((product) => product.active);
@@ -8561,7 +8660,17 @@ function renderExternalPaymentModal() {
   `;
 }
 
+async function saveNewTables(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submitButton = form.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  const created = await createTables(new FormData(form).get("count"));
+  if (!created && document.body.contains(submitButton)) submitButton.disabled = false;
+}
+
 function bindModalForms() {
+  document.querySelector("#add-tables-form")?.addEventListener("submit", saveNewTables);
   document.querySelector("#product-form")?.addEventListener("submit", saveProduct);
   document.querySelector("#stock-form")?.addEventListener("submit", saveStockAdjustment);
   document.querySelector("#ingredient-form")?.addEventListener("submit", saveIngredient);
@@ -8580,6 +8689,11 @@ function bindModalForms() {
   document.querySelector("#external-payment-form")?.addEventListener("submit", saveExternalPayment);
   document.querySelector("#order-form")?.addEventListener("submit", saveOrder);
   document.querySelector("#sale-payment-form")?.addEventListener("submit", confirmSalePayment);
+  const tableCountInput = document.querySelector("[data-table-count]");
+  tableCountInput?.addEventListener("input", () => {
+    const preview = document.querySelector("[data-table-preview]");
+    if (preview) preview.textContent = tableCreationPreview(tableCountInput.value);
+  });
   bindSalePaymentChoice();
   bindExternalPaymentTotal();
   bindUserPermissionControls();
