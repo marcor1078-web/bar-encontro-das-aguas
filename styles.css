@@ -925,6 +925,83 @@ button:disabled {
   gap: 10px;
 }
 
+.connection-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 38px;
+  max-width: 230px;
+  border: 1px solid #86efac;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #166534;
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: left;
+}
+
+.connection-chip .icon {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+}
+
+.connection-chip [data-connection-label] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-chip.offline {
+  border-color: #fca5a5;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.connection-chip.pending {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.connection-chip.syncing {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.connection-chip:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.28);
+  outline-offset: 2px;
+}
+
+body[data-theme="dark"] .connection-chip {
+  border-color: #22c55e;
+  background: #052e16;
+  color: #bbf7d0;
+}
+
+body[data-theme="dark"] .connection-chip.offline {
+  border-color: #ef4444;
+  background: #450a0a;
+  color: #fecaca;
+}
+
+body[data-theme="dark"] .connection-chip.pending {
+  border-color: #f59e0b;
+  background: #451a03;
+  color: #fde68a;
+}
+
+body[data-theme="dark"] .connection-chip.syncing {
+  border-color: #3b82f6;
+  background: #172554;
+  color: #bfdbfe;
+}
+
 .mobile-menu {
   display: none;
 }
@@ -2521,10 +2598,96 @@ body[data-theme="dark"] .table-tile.fechamento em {
   margin-top: -4px;
 }
 
+.offline-sync-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+  border: 1px solid #fbbf24;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #78350f;
+  padding: 14px 16px;
+  box-shadow: 0 8px 20px rgba(146, 64, 14, 0.08);
+}
+
+.offline-sync-panel > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.offline-sync-panel strong {
+  color: #78350f;
+}
+
+.offline-sync-panel span {
+  color: #92400e;
+  font-size: 0.9rem;
+}
+
+.offline-sync-panel .btn {
+  flex: 0 0 auto;
+}
+
+.offline-sale-alert {
+  margin: 0 0 12px;
+  border: 1px solid #fb923c;
+  border-radius: 8px;
+  background: #fff7ed;
+  color: #9a3412;
+  padding: 11px 12px;
+  font-size: 0.9rem;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.offline-sale-alert strong,
+.offline-sale-alert span {
+  display: block;
+}
+
+.offline-sale-alert span {
+  margin-top: 3px;
+}
+
+.offline-payment-panel {
+  margin: 0;
+  border-color: #fbbf24;
+  background: #fffbeb;
+}
+
+.sync-sale-status {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 body[data-theme="dark"] .notice {
   background: rgba(45, 212, 191, 0.12);
   border-color: rgba(45, 212, 191, 0.28);
   color: var(--ink);
+}
+
+body[data-theme="dark"] .offline-sync-panel {
+  border-color: #d97706;
+  background: #3b2105;
+  color: #fef3c7;
+  box-shadow: none;
+}
+
+body[data-theme="dark"] .offline-sync-panel strong,
+body[data-theme="dark"] .offline-sync-panel span {
+  color: #fde68a;
+}
+
+body[data-theme="dark"] .offline-sale-alert,
+body[data-theme="dark"] .offline-payment-panel {
+  border-color: #ea580c;
+  background: #431407;
+  color: #fed7aa;
 }
 
 .form-grid {
@@ -2700,6 +2863,64 @@ body[data-theme="dark"] .notice {
 }
 
 @media (max-width: 760px) {
+  .topbar {
+    display: grid;
+    grid-template-columns: 40px minmax(54px, 1fr) auto;
+    gap: 8px;
+  }
+
+  .topbar > div:first-of-type {
+    min-width: 0;
+  }
+
+  .topbar h1 {
+    overflow: hidden;
+    font-size: 1rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topbar p {
+    display: none;
+  }
+
+  .top-actions {
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .connection-chip {
+    max-width: 112px;
+    min-height: 40px;
+    padding: 7px 8px;
+    font-size: 0.76rem;
+  }
+
+  .connection-chip [data-connection-label] {
+    white-space: normal;
+  }
+
+  #logout {
+    width: 40px;
+    min-width: 40px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  #logout .icon {
+    width: 19px;
+    height: 19px;
+  }
+
+  .offline-sync-panel {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .offline-sync-panel .btn {
+    width: 100%;
+  }
+
   .assistant-layout {
     grid-template-columns: 1fr;
     height: auto;

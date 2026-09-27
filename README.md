@@ -32,6 +32,7 @@ Sistema para bar com operacao local e integracao online via Supabase:
 - Relatorios e backup
 - Impressao/Salvar PDF dos relatorios
 - PWA instalavel
+- Modo de contingencia com fila local de vendas e sincronizacao automatica
 - Sincronizacao local entre abas
 - Produtos
 - Equipe
@@ -97,6 +98,20 @@ O app ja esta configurado para usar Supabase em login real e nas principais area
 Para publicar na internet, siga o arquivo:
 
 - `PUBLICAR_ONLINE.md`
+
+## Modo offline
+
+Execute uma vez o arquivo `SUPABASE_MODO_OFFLINE.sql` no SQL Editor do Supabase.
+Depois, abra o app e entre com a conta online ao menos uma vez em cada aparelho.
+O app podera reabrir sem internet por ate 72 horas e guardara vendas pendentes
+localmente para sincronizar quando a conexao voltar.
+
+Sem internet, Pix, debito e credito nao podem ser enviados pelo app. Faça a
+cobranca diretamente na maquininha, aguarde a aprovacao e registre a mesma forma
+de pagamento no app. A maquininha ainda precisa de conexao propria, como 4G.
+
+Enquanto houver venda marcada como `Aguardando nuvem`, nao limpe os dados do
+navegador nem desinstale o app nesse aparelho.
 
 ## Importante
 

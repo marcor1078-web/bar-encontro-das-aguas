@@ -1,4 +1,6 @@
 const STORAGE_KEY = "barcontrol:v1";
+const OFFLINE_SESSION_KEY = "barcontrol:offline-session";
+const OFFLINE_SESSION_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 const MP_PENDING_ORDER_KEY = "barcontrol:mercadopago-pending-order";
 const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
@@ -365,6 +367,8 @@ const defaultState = {
       cost: 26,
     },
   ],
+  offlineQueue: [],
+  cachedPaymentTerminals: [],
   cashSessions: [
     {
       id: "c-001",
@@ -551,6 +555,13 @@ let assistantMessages = [
 ];
 let assistantPendingAction = null;
 let assistantBusy = false;
+let connectionState = {
+  browserOnline: navigator.onLine !== false,
+  cloudReachable: navigator.onLine !== false,
+  syncing: false,
+  lastSyncAt: null,
+  lastError: "",
+};
 
 const app = document.querySelector("#app");
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("barcontrol-sync") : null;
@@ -605,8 +616,11 @@ function migrateState(nextState) {
   nextState.sales = (nextState.sales || []).map((sale) => ({
     status: "Concluida",
     serviceFee: 0,
+    syncStatus: "synced",
     ...sale,
   }));
+  nextState.offlineQueue = Array.isArray(nextState.offlineQueue) ? nextState.offlineQueue : [];
+  nextState.cachedPaymentTerminals = Array.isArray(nextState.cachedPaymentTerminals) ? nextState.cachedPaymentTerminals : [];
   nextState.ingredients = nextState.ingredients || structuredClone(defaultState.ingredients);
   nextState.suppliers = (nextState.suppliers || structuredClone(defaultState.suppliers)).map((supplier) => ({
     ...supplier,
@@ -722,6 +736,65 @@ function printSafeText(value) {
 
 function id(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function uuid() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
+    const random = Math.floor(Math.random() * 16);
+    const value = character === "x" ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
+function pendingOfflineOperations() {
+  return (state.offlineQueue || []).filter((operation) => operation?.type === "sale" && operation.status !== "synced");
+}
+
+function hasNetworkConnection() {
+  return navigator.onLine !== false && connectionState.browserOnline && connectionState.cloudReachable;
+}
+
+function cacheOfflineSession(user) {
+  if (!user?.online || !isUuid(user.id)) return;
+  localStorage.setItem(
+    OFFLINE_SESSION_KEY,
+    JSON.stringify({
+      verifiedAt: new Date().toISOString(),
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email || "",
+        role: user.role,
+        permissions: getUserPermissions(user),
+        active: user.active !== false,
+        showOnLogin: Boolean(user.showOnLogin),
+        online: true,
+      },
+    }),
+  );
+}
+
+function restoreCachedOfflineSession() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(OFFLINE_SESSION_KEY) || "null");
+    const age = Date.now() - Date.parse(cached?.verifiedAt || "");
+    if (!cached?.user?.id || !cached.user.active || !Number.isFinite(age) || age > OFFLINE_SESSION_MAX_AGE_MS) return false;
+    session = { ...cached.user, offlineCached: true };
+    upsertSessionUser(session);
+    const preferredView = state.settings.shiftStartView?.[session.role];
+    currentView = CURRENT_SERVICE_NUMBER > 1 && hasPermission("pos")
+      ? "pos"
+      : preferredView && hasPermission(preferredView)
+        ? preferredView
+        : getUserPermissions(session)[0] || "pos";
+    logAudit("Sessao de contingencia", `${session.name} acessou usando a autorizacao offline deste aparelho.`);
+    saveState();
+    renderApp();
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 function isUuid(value) {
@@ -870,6 +943,64 @@ function isSupabaseReady() {
   return Boolean(supabaseClient && supabaseConfig.url && supabaseConfig.publishableKey);
 }
 
+function setCloudReachable(reachable, error = "") {
+  connectionState.browserOnline = navigator.onLine !== false;
+  connectionState.cloudReachable = Boolean(reachable && connectionState.browserOnline);
+  connectionState.lastError = connectionState.cloudReachable ? "" : String(error || connectionState.lastError || "Sem conexao.");
+  updateConnectionIndicators();
+}
+
+async function checkCloudConnection(timeoutMs = 5000) {
+  if (navigator.onLine === false) {
+    setCloudReachable(false, "O aparelho esta sem internet.");
+    return false;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    await fetch(`/api/health?at=${Date.now()}`, { cache: "no-store", signal: controller.signal });
+    setCloudReachable(true);
+    return true;
+  } catch (error) {
+    setCloudReachable(false, error.message || "Servidor indisponivel.");
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function connectionPresentation() {
+  const pending = pendingOfflineOperations().length;
+  if (connectionState.syncing) return { tone: "syncing", label: `Sincronizando ${pending}`, title: "Enviando vendas pendentes para a nuvem." };
+  if (!hasNetworkConnection()) {
+    return {
+      tone: "offline",
+      label: pending ? `Offline - ${pending} pendente${pending === 1 ? "" : "s"}` : "Modo offline",
+      title: "As vendas serao guardadas neste aparelho ate a internet voltar.",
+    };
+  }
+  if (pending) {
+    return {
+      tone: "pending",
+      label: `${pending} pendente${pending === 1 ? "" : "s"}`,
+      title: "Clique para sincronizar as vendas salvas neste aparelho.",
+    };
+  }
+  return { tone: "online", label: "Online", title: "Conectado e sem vendas pendentes." };
+}
+
+function updateConnectionIndicators() {
+  const presentation = connectionPresentation();
+  document.querySelectorAll("[data-connection-chip]").forEach((element) => {
+    element.className = `connection-chip ${presentation.tone}`;
+    const label = element.querySelector("[data-connection-label]");
+    if (label) label.textContent = presentation.label;
+    else element.textContent = presentation.label;
+    element.title = presentation.title;
+  });
+}
+
 async function testSupabaseConnection() {
   if (!isSupabaseReady()) {
     supabaseStatus = {
@@ -975,7 +1106,16 @@ function saleTotalsForItems(items = cart, discountInput = {}) {
   };
 }
 
-function encodePaymentDetails({ payment = "", breakdown = [], cashReceived = 0, cashChange = 0, discount = {} } = {}) {
+function encodePaymentDetails({
+  payment = "",
+  breakdown = [],
+  cashReceived = 0,
+  cashChange = 0,
+  discount = {},
+  paymentOrigin = "",
+  manualReference = "",
+  terminalLabel = "",
+} = {}) {
   const parts = normalizePaymentBreakdown(breakdown);
   const normalizedDiscount = normalizeDiscount(discount);
   const shouldEncode =
@@ -984,7 +1124,8 @@ function encodePaymentDetails({ payment = "", breakdown = [], cashReceived = 0, 
     Number(cashReceived || 0) > 0 ||
     Number(cashChange || 0) > 0 ||
     parts.some((part) => part.method === "Credito") ||
-    normalizedDiscount.amount > 0;
+    normalizedDiscount.amount > 0 ||
+    Boolean(paymentOrigin || manualReference || terminalLabel);
   if (!shouldEncode) return normalizePaymentMethod(payment);
   return `${PAYMENT_DETAILS_PREFIX}${JSON.stringify({
     payment: payment || (parts.length > 1 ? "Dividido" : parts[0]?.method || ""),
@@ -992,6 +1133,9 @@ function encodePaymentDetails({ payment = "", breakdown = [], cashReceived = 0, 
     cashReceived: Number(cashReceived || 0),
     cashChange: Number(cashChange || 0),
     discount: normalizedDiscount,
+    paymentOrigin: String(paymentOrigin || ""),
+    manualReference: String(manualReference || ""),
+    terminalLabel: String(terminalLabel || ""),
   })}`;
 }
 
@@ -1005,6 +1149,9 @@ function parsePaymentDetails(value) {
       cashReceived: 0,
       cashChange: 0,
       discount: { type: "none", value: 0, amount: 0 },
+      paymentOrigin: "",
+      manualReference: "",
+      terminalLabel: "",
     };
   }
 
@@ -1017,9 +1164,21 @@ function parsePaymentDetails(value) {
       cashReceived: Number(payload.cashReceived || 0),
       cashChange: Number(payload.cashChange || 0),
       discount: normalizeDiscount(payload.discount),
+      paymentOrigin: String(payload.paymentOrigin || ""),
+      manualReference: String(payload.manualReference || ""),
+      terminalLabel: String(payload.terminalLabel || ""),
     };
   } catch (error) {
-    return { payment: "Indefinido", paymentBreakdown: [], cashReceived: 0, cashChange: 0, discount: { type: "none", value: 0, amount: 0 } };
+    return {
+      payment: "Indefinido",
+      paymentBreakdown: [],
+      cashReceived: 0,
+      cashChange: 0,
+      discount: { type: "none", value: 0, amount: 0 },
+      paymentOrigin: "",
+      manualReference: "",
+      terminalLabel: "",
+    };
   }
 }
 
@@ -1081,10 +1240,13 @@ function paymentDisplay(sale) {
     part.method === "Credito"
       ? `Credito ${Number(part.installments || 1) === 1 ? "a vista" : `${Number(part.installments)}x`}`
       : part.method;
-  if (parts.length > 1 || sale?.payment === "Dividido") {
-    return parts.map((part) => `${partLabel(part)} ${money(part.amount)}`).join(" + ");
-  }
-  return parts[0] ? partLabel(parts[0]) : normalizePaymentMethod(sale?.payment) || "-";
+  const label =
+    parts.length > 1 || sale?.payment === "Dividido"
+      ? parts.map((part) => `${partLabel(part)} ${money(part.amount)}`).join(" + ")
+      : parts[0]
+        ? partLabel(parts[0])
+        : normalizePaymentMethod(sale?.payment) || "-";
+  return sale?.paymentOrigin === "manual_offline" ? `${label} (manual)` : label;
 }
 
 function describeMercadoPagoError(payload) {
@@ -1100,8 +1262,11 @@ function describeMercadoPagoError(payload) {
 }
 
 function paymentTerminalOptions() {
-  const connectedSerials = new Set(mercadoPagoPointStatus.terminals.map(mercadoPagoTerminalSerial));
-  const mpTerminals = mercadoPagoPointStatus.terminals
+  const availableTerminals = mercadoPagoPointStatus.terminals.length
+    ? mercadoPagoPointStatus.terminals
+    : state.cachedPaymentTerminals || [];
+  const connectedSerials = new Set(availableTerminals.map(mercadoPagoTerminalSerial));
+  const mpTerminals = availableTerminals
     .map((terminal, index) => ({ terminal, number: mercadoPagoTerminalNumber(terminal, index) }))
     .sort((a, b) => a.number - b.number || String(a.terminal.id).localeCompare(String(b.terminal.id)))
     .map(({ terminal, number }) => ({
@@ -1225,6 +1390,10 @@ async function loadMercadoPagoPointStatus(force = false) {
           }.`
         : "Configure MP_ACCESS_TOKEN e MP_TERMINAL_ID na Vercel para ativar.",
     };
+    if (terminals.length) {
+      state.cachedPaymentTerminals = terminals;
+      saveState();
+    }
   } catch (error) {
     mercadoPagoPointStatus = {
       checked: true,
@@ -1645,6 +1814,7 @@ async function loginWithSupabase(username, password) {
     const onlineUser = mapProfileToUser(profile);
     upsertSessionUser(onlineUser);
     session = onlineUser;
+    cacheOfflineSession(session);
     await loadOnlineSettings();
     await loadOnlineStockData();
     await loadOnlineClientsData();
@@ -1659,6 +1829,7 @@ async function loginWithSupabase(username, password) {
     logAudit("Login online", `${session.name} acessou pelo Supabase.`);
     saveState();
     renderApp();
+    if (pendingOfflineOperations().length) setTimeout(() => syncPendingOfflineSales(), 500);
     return true;
   } catch (error) {
     supabaseStatus = {
@@ -1723,7 +1894,167 @@ async function loadOnlineSettings() {
 }
 
 function isOnlineSession() {
-  return Boolean(session?.online && isSupabaseReady());
+  return Boolean(session?.online && isSupabaseReady() && hasNetworkConnection());
+}
+
+function pendingOfflineSalePayloads() {
+  return pendingOfflineOperations().map((operation) => operation.payload).filter(Boolean);
+}
+
+function buildOfflineKitchenOrders(sale) {
+  const grouped = {};
+  for (const item of sale.items || []) {
+    const product = state.products.find((entry) => entry.id === item.productId);
+    const station = product?.station || "Bar";
+    if (station !== "Cozinha") continue;
+    if (!grouped[station]) grouped[station] = [];
+    grouped[station].push({ name: item.name, qty: item.qty });
+  }
+  return Object.entries(grouped).map(([station, items]) => ({
+    id: uuid(),
+    saleId: sale.id,
+    date: sale.date,
+    station,
+    status: "Novo",
+    items,
+    userId: sale.cashierId,
+    syncStatus: "pending",
+  }));
+}
+
+function queueOfflineSale(sale, fiadoAmount = 0) {
+  const kitchenOrders = buildOfflineKitchenOrders(sale);
+  const clientTransaction = fiadoAmount > 0 && sale.clientId
+    ? {
+        id: uuid(),
+        clientId: sale.clientId,
+        saleId: sale.id,
+        userId: sale.cashierId,
+        date: sale.date,
+        type: "debito",
+        description: sale.items.map((item) => `${item.qty}x ${item.name}`).join(", "),
+        amount: fiadoAmount,
+      }
+    : null;
+  const payload = {
+    saleId: sale.id,
+    date: sale.date,
+    cashierId: isUuid(sale.cashierId) ? sale.cashierId : "",
+    clientId: isUuid(sale.clientId) ? sale.clientId : "",
+    tableId: isUuid(sale.tableId) ? sale.tableId : "",
+    payment: encodePaymentDetails({
+      payment: sale.payment,
+      breakdown: sale.paymentBreakdown,
+      cashReceived: sale.cashReceived,
+      cashChange: sale.cashChange,
+      discount: sale.discount,
+      paymentOrigin: sale.paymentOrigin,
+      manualReference: sale.manualReference,
+      terminalLabel: sale.terminalLabel,
+    }),
+    serviceFee: Number(sale.serviceFee || 0),
+    total: Number(sale.total || 0),
+    cost: Number(sale.cost || 0),
+    fiadoAmount: Number(fiadoAmount || 0),
+    items: (sale.items || []).map((item) => ({
+      syncId: uuid(),
+      productId: isUuid(item.productId) ? item.productId : "",
+      name: item.name,
+      qty: Number(item.qty || 0),
+      price: Number(item.price || 0),
+      cost: Number(item.cost || 0),
+    })),
+    kitchenOrders,
+    clientTransaction,
+  };
+  state.offlineQueue.push({
+    id: sale.id,
+    type: "sale",
+    status: "pending",
+    createdAt: sale.date,
+    attempts: 0,
+    lastError: "",
+    payload,
+  });
+  state.kitchenOrders.unshift(...kitchenOrders);
+  return { kitchenOrders, clientTransaction };
+}
+
+function applyPendingOfflineOverlays() {
+  pendingOfflineSalePayloads().forEach((payload) => applyCartStock(payload.items || []));
+}
+
+function mutatePendingKitchenOrder(orderId, updater) {
+  for (const operation of pendingOfflineOperations()) {
+    const orders = operation.payload?.kitchenOrders || [];
+    const index = orders.findIndex((order) => order.id === orderId);
+    if (index < 0) continue;
+    const nextOrder = updater(orders[index]);
+    if (nextOrder) orders[index] = nextOrder;
+    else orders.splice(index, 1);
+    return true;
+  }
+  return false;
+}
+
+async function syncPendingOfflineSales({ manual = false } = {}) {
+  const operations = pendingOfflineOperations();
+  if (!operations.length || connectionState.syncing) {
+    if (manual && !operations.length) notify("Nao ha vendas offline pendentes.");
+    return;
+  }
+  if (!session?.online || !isSupabaseReady()) {
+    if (manual) notify("Entre com um usuario online para sincronizar as vendas pendentes.");
+    return;
+  }
+  if (!(await checkCloudConnection())) {
+    if (manual) notify("Ainda estamos sem internet. As vendas continuam protegidas neste aparelho.");
+    return;
+  }
+
+  connectionState.syncing = true;
+  connectionState.lastError = "";
+  updateConnectionIndicators();
+  let synced = 0;
+
+  for (const operation of [...operations]) {
+    operation.attempts = Number(operation.attempts || 0) + 1;
+    operation.lastAttemptAt = new Date().toISOString();
+    saveState();
+    try {
+      const { error } = await supabaseClient.rpc("sync_offline_sale", { payload: operation.payload });
+      if (error) throw error;
+      state.offlineQueue = state.offlineQueue.filter((entry) => entry.id !== operation.id);
+      state.sales = state.sales.map((sale) =>
+        sale.id === operation.id ? { ...sale, syncStatus: "synced", syncedAt: new Date().toISOString() } : sale,
+      );
+      synced += 1;
+      saveState();
+    } catch (error) {
+      operation.lastError = error.message || "Falha desconhecida ao sincronizar.";
+      connectionState.lastError = operation.lastError;
+      if (/failed to fetch|network|load failed/i.test(operation.lastError)) setCloudReachable(false, operation.lastError);
+      saveState();
+      break;
+    }
+  }
+
+  connectionState.syncing = false;
+  if (synced) {
+    connectionState.lastSyncAt = new Date().toISOString();
+    await loadOnlineStockData();
+    await loadOnlineClientsData();
+    await loadOnlineSalesData();
+    await loadOnlineTableData();
+    logAudit("Contingencia sincronizada", `${synced} venda(s) offline enviada(s) ao Supabase.`);
+    saveState();
+    notify(`${synced} venda(s) offline sincronizada(s).`);
+  } else if (manual) {
+    const missingMigration = /sync_offline_sale|schema cache|function/i.test(connectionState.lastError);
+    notify(missingMigration ? "Falta executar a migracao do modo offline no Supabase." : `Sincronizacao pendente: ${connectionState.lastError}`);
+  }
+  if (!currentModal) renderApp();
+  else updateConnectionIndicators();
 }
 
 function mapProductFromDb(row, recipes = []) {
@@ -1761,6 +2092,7 @@ async function restoreOnlineSession() {
 
     session = mapProfileToUser(profile);
     upsertSessionUser(session);
+    cacheOfflineSession(session);
     await loadOnlineSettings();
     await loadOnlineStockData();
     await loadOnlineClientsData();
@@ -1940,6 +2272,7 @@ async function loadOnlineStockData() {
   state.ingredients = (ingredientsResult.data || []).map(mapIngredientFromDb);
   state.stockLots = (lotsResult.data || []).map(mapLotFromDb);
   state.inventoryCounts = (inventoryResult.data || []).map(mapInventoryFromDb);
+  applyPendingOfflineOverlays();
   saveState();
 }
 
@@ -1980,6 +2313,20 @@ async function loadOnlineClientsData() {
   }
 
   state.clients = (clientsResult.data || []).map((row) => mapClientFromDb(row, transactionsResult.data || []));
+  pendingOfflineSalePayloads().forEach((payload) => {
+    if (!payload.clientId || Number(payload.fiadoAmount || 0) <= 0) return;
+    state.clients = state.clients.map((client) =>
+      client.id === payload.clientId
+        ? {
+            ...client,
+            debt: Number(client.debt || 0) + Number(payload.fiadoAmount || 0),
+            transactions: payload.clientTransaction
+              ? [payload.clientTransaction, ...(client.transactions || [])]
+              : client.transactions || [],
+          }
+        : client,
+    );
+  });
   saveState();
 }
 
@@ -2006,7 +2353,11 @@ function mapSaleFromDb(row, items = []) {
     cashReceived: paymentDetails.cashReceived,
     cashChange: paymentDetails.cashChange,
     discount: paymentDetails.discount,
+    paymentOrigin: paymentDetails.paymentOrigin,
+    manualReference: paymentDetails.manualReference,
+    terminalLabel: paymentDetails.terminalLabel,
     discountAmount: Number(paymentDetails.discount?.amount || 0),
+    syncStatus: "synced",
     status: row.status || "Concluida",
     serviceFee: Number(row.service_fee || 0),
     cancelledAt: row.cancelled_at,
@@ -2046,6 +2397,7 @@ async function loadAllOnlineRows(table, orderColumn = "id") {
 
 async function loadOnlineSalesData() {
   if (!isOnlineSession()) return;
+  const pendingLocalSales = state.sales.filter((sale) => sale.syncStatus === "pending");
 
   const [salesResult, saleItemsResult, kitchenResult] = await Promise.all([
     loadAllOnlineRows("sales", "created_at"),
@@ -2064,8 +2416,15 @@ async function loadOnlineSalesData() {
     if (!itemsBySale.has(item.sale_id)) itemsBySale.set(item.sale_id, []);
     itemsBySale.get(item.sale_id).push(item);
   });
-  state.sales = (salesResult.data || []).map((row) => mapSaleFromDb(row, itemsBySale.get(row.id) || []));
-  state.kitchenOrders = (kitchenResult.data || []).map(mapKitchenOrderFromDb);
+  const onlineSales = (salesResult.data || []).map((row) => mapSaleFromDb(row, itemsBySale.get(row.id) || []));
+  const onlineSaleIds = new Set(onlineSales.map((sale) => sale.id));
+  state.sales = [...onlineSales, ...pendingLocalSales.filter((sale) => !onlineSaleIds.has(sale.id))];
+  const onlineKitchenOrders = (kitchenResult.data || []).map(mapKitchenOrderFromDb);
+  const onlineKitchenIds = new Set(onlineKitchenOrders.map((order) => order.id));
+  const pendingKitchenOrders = pendingOfflineSalePayloads()
+    .flatMap((payload) => payload.kitchenOrders || [])
+    .filter((order) => !onlineKitchenIds.has(order.id));
+  state.kitchenOrders = [...onlineKitchenOrders, ...pendingKitchenOrders];
   saveState();
 }
 
@@ -2225,6 +2584,12 @@ async function loadOnlineTableData() {
   }
 
   state.tables = result.data.map(mapTableFromDb).sort((a, b) => tableSortValue(a) - tableSortValue(b));
+  const pendingTableIds = new Set(pendingOfflineSalePayloads().map((payload) => payload.tableId).filter(Boolean));
+  state.tables = state.tables.map((table) =>
+    pendingTableIds.has(table.id)
+      ? { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] }
+      : table,
+  );
   saveState();
 }
 
@@ -2241,7 +2606,10 @@ async function loadOnlineProfilesData() {
   const localOnlyUsers = state.users.filter((user) => !isUuid(user.id));
   state.users = [...onlineUsers, ...localOnlyUsers];
   const currentUser = state.users.find((user) => user.id === session.id);
-  if (currentUser) session = { ...currentUser, online: true };
+  if (currentUser) {
+    session = { ...currentUser, online: true };
+    cacheOfflineSession(session);
+  }
   saveState();
 }
 
@@ -2294,6 +2662,7 @@ async function logout() {
     await supabaseClient.auth.signOut().catch(() => {});
   }
   session = null;
+  localStorage.removeItem(OFFLINE_SESSION_KEY);
   cart = [];
   tableCheckout = null;
   currentView = "dashboard";
@@ -2387,6 +2756,7 @@ function renderApp() {
 
   const nav = visibleNav();
   const title = navItems.find((item) => item.id === currentView)?.label || "Painel";
+  const connection = connectionPresentation();
 
   app.innerHTML = `
     <div class="app-shell">
@@ -2427,6 +2797,9 @@ function renderApp() {
             <p>${topbarSubtitle(currentView)}</p>
           </div>
           <div class="top-actions">
+            <button class="connection-chip ${connection.tone}" type="button" data-connection-chip data-sync-pending title="${connection.title}">
+              ${icon("online")} <span data-connection-label>${connection.label}</span>
+            </button>
             ${
               isStandaloneApp()
                 ? ""
@@ -2515,6 +2888,9 @@ function bindAppEvents() {
     document.querySelector("#sidebar")?.classList.toggle("open");
   });
   document.querySelector("[data-install-app]")?.addEventListener("click", installApp);
+  document.querySelectorAll("[data-sync-pending]").forEach((button) => {
+    button.addEventListener("click", () => syncPendingOfflineSales({ manual: true }));
+  });
 
   document.querySelectorAll("[data-close-modal]").forEach((button) => {
     button.addEventListener("click", closeModal);
@@ -3368,6 +3744,7 @@ async function confirmSalePayment(event) {
     cashChange,
     paymentBreakdown,
     discount,
+    manualReference: String(form.get("manualReference") || "").trim(),
   });
   if (!finalized) {
     delete formElement.dataset.submitting;
@@ -3472,6 +3849,15 @@ function bindSalePaymentChoice() {
   const cashInput = form.querySelector("[data-cash-received]");
   const discountInputs = form.querySelectorAll("[data-discount-type], [data-discount-value]");
   const splitInputs = form.querySelectorAll("[data-split-amount], [data-split-cash-received]");
+  const updateOfflinePaymentPanel = () => {
+    const panel = form.querySelector("[data-offline-payment-panel]");
+    if (!panel) return;
+    const payment = form.querySelector('input[name="payment"]:checked')?.value || "";
+    const splitHasPoint = pointPaymentMethods.some(
+      (method) => Number(form.querySelector(`[data-split-amount="${method}"]`)?.value || 0) > 0,
+    );
+    panel.hidden = hasNetworkConnection() || !(isPointPayment(payment) || (payment === "Dividido" && splitHasPoint));
+  };
   updateSalePaymentTotalPreview(form);
   updateCashChangePreview(form);
   updateSplitPaymentPreview(form);
@@ -3482,6 +3868,7 @@ function bindSalePaymentChoice() {
   };
   updateCreditInstallments();
   updateFiadoAuthorizationPanel(form);
+  updateOfflinePaymentPanel();
   cashInput?.addEventListener("input", () => updateCashChangePreview(form));
   discountInputs.forEach((input) => {
     input.addEventListener("input", () => {
@@ -3496,7 +3883,12 @@ function bindSalePaymentChoice() {
       updateSplitPaymentPreview(form);
     });
   });
-  splitInputs.forEach((input) => input.addEventListener("input", () => updateSplitPaymentPreview(form)));
+  splitInputs.forEach((input) =>
+    input.addEventListener("input", () => {
+      updateSplitPaymentPreview(form);
+      updateOfflinePaymentPanel();
+    }),
+  );
   form.querySelector('[name="clientId"]')?.addEventListener("change", () => updateFiadoAuthorizationPanel(form));
 
   form.querySelectorAll('input[name="payment"]').forEach((input) => {
@@ -3504,6 +3896,7 @@ function bindSalePaymentChoice() {
       updateCashChangePreview(form);
       updateSplitPaymentPreview(form);
       updateCreditInstallments();
+      updateOfflinePaymentPanel();
       if (input.value === "Dinheiro") {
         cashInput?.focus();
         return;
@@ -3522,6 +3915,10 @@ function bindSalePaymentChoice() {
         return;
       }
       if (form.dataset.submitting === "true") return;
+      if (!hasNetworkConnection() && isPointPayment(input.value)) {
+        form.querySelector('[name="manualReference"]')?.focus();
+        return;
+      }
       form.dataset.submitting = "true";
       form.requestSubmit();
     });
@@ -3536,6 +3933,7 @@ async function finalizeSale({
   cashChange = 0,
   paymentBreakdown = [],
   discount = {},
+  manualReference = "",
 } = {}) {
   if (!cart.length) return false;
   if (!payment) {
@@ -3551,6 +3949,7 @@ async function finalizeSale({
   let selectedTerminal = null;
   const paymentParts = normalizePaymentBreakdown(paymentBreakdown);
   const fiadoAmount = payment === "Fiado" ? total : paymentParts.find((part) => part.method === "Fiado")?.amount || 0;
+  const pointParts = pointPaymentPartsForSale({ payment, paymentBreakdown: paymentParts, total });
 
   if (fiadoAmount > 0) {
     const client = state.clients.find((entry) => entry.id === selectedClientId);
@@ -3567,16 +3966,36 @@ async function finalizeSale({
     return false;
   }
 
-  const pointPayment = await processPointPaymentsBeforeSale({
-    total,
-    payment,
-    paymentBreakdown: paymentParts,
-    terminalKey,
-    items: structuredClone(cart),
-    description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
-  });
-  if (!pointPayment.ok) return false;
-  selectedTerminal = pointPayment.terminal;
+  const cloudAvailable = await checkCloudConnection();
+  const manualPointPayment = pointParts.length > 0 && !cloudAvailable;
+  if (manualPointPayment) {
+    selectedTerminal = paymentTerminalOptions().find((terminal) => terminal.id === terminalKey) || getSelectedPaymentTerminal();
+    if (selectedTerminal) setSelectedPaymentTerminal(selectedTerminal.id);
+    if (
+      !confirm(
+        "Sem internet para enviar a cobranca. Confirme somente se o pagamento ja foi aprovado diretamente na maquininha. Deseja registrar a venda em modo de contingencia?",
+      )
+    ) {
+      return false;
+    }
+  } else {
+    try {
+      const pointPayment = await processPointPaymentsBeforeSale({
+        total,
+        payment,
+        paymentBreakdown: paymentParts,
+        terminalKey,
+        items: structuredClone(cart),
+        description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
+      });
+      if (!pointPayment.ok) return false;
+      selectedTerminal = pointPayment.terminal;
+    } catch (error) {
+      notify("A conexao caiu durante o envio. Confira a maquininha antes de tentar novamente para evitar cobranca duplicada.");
+      setCloudReachable(false, error.message || "Falha de rede durante o pagamento.");
+      return false;
+    }
+  }
 
   const printDetails = {
     tableName: tableCheckout?.name || "",
@@ -3598,6 +4017,9 @@ async function finalizeSale({
       cashReceived,
       cashChange,
       discount: totals.discount,
+      paymentOrigin: selectedTerminal ? "integrated" : "",
+      manualReference,
+      terminalLabel: printDetails.terminalLabel,
       tableId: checkout?.id || null,
       clearCart: false,
       renderAfter: false,
@@ -3617,10 +4039,11 @@ async function finalizeSale({
     return true;
   }
 
+  const shouldQueueOffline = !cloudAvailable && Boolean(session?.online || state.settings.syncMode === "supabase");
   applyCartStock(cart);
 
   const sale = {
-    id: id("sale"),
+    id: shouldQueueOffline ? uuid() : id("sale"),
     date: new Date().toISOString(),
     cashierId: session.id,
     payment,
@@ -3630,11 +4053,14 @@ async function finalizeSale({
     tableName: printDetails.tableName,
     customerName: printDetails.customerName,
     terminalLabel: printDetails.terminalLabel,
+    paymentOrigin: manualPointPayment ? "manual_offline" : !cloudAvailable ? "offline" : "",
+    manualReference,
     cashReceived: printDetails.cashReceived,
     cashChange: printDetails.cashChange,
     discount: totals.discount,
     discountAmount: totals.discount.amount,
     status: "Concluida",
+    syncStatus: shouldQueueOffline ? "pending" : "local",
     serviceFee,
     items: structuredClone(cart),
     total,
@@ -3642,7 +4068,8 @@ async function finalizeSale({
   };
 
   state.sales.push(sale);
-  createKitchenOrders(sale);
+  const queuedRelations = shouldQueueOffline ? queueOfflineSale(sale, fiadoAmount) : null;
+  if (!shouldQueueOffline) createKitchenOrders(sale);
   storeDailySalesTotal(localDateKey(sale.date), "automatico");
 
   if (fiadoAmount > 0) {
@@ -3652,7 +4079,7 @@ async function finalizeSale({
             ...client,
             debt: Number(client.debt || 0) + fiadoAmount,
             transactions: [
-              {
+              queuedRelations?.clientTransaction || {
                 id: id("clienttx"),
                 date: sale.date,
                 type: "debito",
@@ -3684,7 +4111,7 @@ async function finalizeSale({
   lastSaleForTicketsId = sale.id;
   currentModal = { type: "printTickets", id: sale.id };
   saveState();
-  notify("Venda finalizada.");
+  notify(shouldQueueOffline ? "Venda salva neste aparelho e aguardando sincronizacao." : "Venda finalizada.");
   renderApp();
   return true;
 }
@@ -3772,6 +4199,8 @@ function createKitchenOrders(sale) {
 }
 
 async function updateKitchenOrder(orderId, status) {
+  const order = state.kitchenOrders.find((entry) => entry.id === orderId);
+  if (!order || order.status === "Entregue") return;
   if (isOnlineSession()) {
     const { error } = await supabaseClient.from("kitchen_orders").update({ status }).eq("id", orderId);
     if (error) {
@@ -3784,7 +4213,12 @@ async function updateKitchenOrder(orderId, status) {
     return;
   }
 
+  if (session?.online && order.syncStatus !== "pending") {
+    notify("Este pedido ja esta online. Aguarde a internet voltar para alterar o status.");
+    return;
+  }
   state.kitchenOrders = state.kitchenOrders.map((order) => (order.id === orderId ? { ...order, status } : order));
+  mutatePendingKitchenOrder(orderId, (pendingOrder) => ({ ...pendingOrder, status }));
   logAudit("Pedido atualizado", `Pedido ${orderId} marcado como ${status}.`);
   saveState();
   renderApp();
@@ -3799,6 +4233,9 @@ async function finalizeSaleOnline({
   cashReceived = 0,
   cashChange = 0,
   discount = {},
+  paymentOrigin = "",
+  manualReference = "",
+  terminalLabel = "",
   saleItems = structuredClone(cart),
   serviceFee = 0,
   tableId = null,
@@ -3814,7 +4251,16 @@ async function finalizeSaleOnline({
   const paymentParts = normalizePaymentBreakdown(paymentBreakdown);
   const normalizedDiscount = normalizeDiscount(discount);
   const fiadoAmount = payment === "Fiado" ? total : paymentParts.find((part) => part.method === "Fiado")?.amount || 0;
-  const encodedPayment = encodePaymentDetails({ payment, breakdown: paymentParts, cashReceived, cashChange, discount: normalizedDiscount });
+  const encodedPayment = encodePaymentDetails({
+    payment,
+    breakdown: paymentParts,
+    cashReceived,
+    cashChange,
+    discount: normalizedDiscount,
+    paymentOrigin,
+    manualReference,
+    terminalLabel,
+  });
   const saleResult = await supabaseClient
     .from("sales")
     .insert({
@@ -3966,7 +4412,12 @@ async function removeKitchenOrder(orderId) {
     return;
   }
 
+  if (session?.online && order.syncStatus !== "pending") {
+    notify("Este pedido ja esta online. Aguarde a internet voltar para remove-lo.");
+    return;
+  }
   state.kitchenOrders = state.kitchenOrders.filter((entry) => entry.id !== orderId);
+  mutatePendingKitchenOrder(orderId, () => null);
   logAudit("Pedido removido", order.items.map((item) => item.name).join(", "));
   saveState();
   notify("Pedido removido da cozinha.");
@@ -4355,12 +4806,13 @@ function renderSales() {
   const todayFiadoTotal = todayFiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
   const filteredDateSales = salesDateFilter ? salesForDateKey(salesDateFilter, { includeCanceled: true }).slice().reverse() : [];
   const filteredZeroedSales = filteredDateSales.filter(isZeroedSale);
+  const pendingOffline = pendingOfflineOperations();
 
   return `
     <div class="section-title">
       <div>
         <h2>Vendas</h2>
-        <p>${isOnlineSession() ? "Histórico e novas vendas salvando no Supabase." : "Histórico em modo local."}</p>
+        <p>${isOnlineSession() ? "Historico e novas vendas salvando no Supabase." : "Modo de contingencia: vendas protegidas neste aparelho."}</p>
       </div>
       <div class="toolbar">
         <button class="btn secondary" type="button" data-print-sales-period-report="daily">${icon("print")} Diario</button>
@@ -4371,6 +4823,18 @@ function renderSales() {
         <button class="btn danger" type="button" data-zero-today-sales ${todayReceivedSales.length ? "" : "disabled"}>Zerar vendas do dia</button>
       </div>
     </div>
+    ${
+      pendingOffline.length
+        ? `<section class="offline-sync-panel">
+            <div>
+              <strong>${pendingOffline.length} venda${pendingOffline.length === 1 ? "" : "s"} aguardando sincronizacao</strong>
+              <span>${hasNetworkConnection() ? "A conexao voltou. Envie agora para o Supabase." : "Elas permanecem salvas neste aparelho ate a internet voltar."}</span>
+              ${connectionState.lastError ? `<small>${escapeHtml(connectionState.lastError)}</small>` : ""}
+            </div>
+            <button class="btn ${hasNetworkConnection() ? "primary" : "secondary"}" type="button" data-sync-pending ${hasNetworkConnection() ? "" : "disabled"}>Sincronizar agora</button>
+          </section>`
+        : ""
+    }
     <div class="grid stats">
       ${metric("Total recebido do dia", money(cashDayTotal), openCash ? "Caixa atual; zera ao fechar ou virar o dia" : "Caixa fechado; abre um caixa para iniciar", "R$")}
       ${metric("Total semanal", money(weeklyReceivedTotal), "Ultimos 7 dias, sem contar fiado", "7D")}
@@ -4499,7 +4963,10 @@ function salesTable(sales) {
                   <td>${dateTime(sale.date)}</td>
                   <td>${saleItemsSummary(sale)}</td>
                   <td><span class="status blue">${paymentDisplay(sale)}</span></td>
-                  <td><span class="status ${saleStatusClass(sale)}">${sale.status || "Concluida"}</span></td>
+                  <td>
+                    <span class="status ${saleStatusClass(sale)}">${sale.status || "Concluida"}</span>
+                    ${sale.syncStatus === "pending" ? '<span class="status amber sync-sale-status">Aguardando nuvem</span>' : ""}
+                  </td>
                   <td>${userName(sale.cashierId)}</td>
                   <td>${saleDiscountAmount(sale) ? money(saleDiscountAmount(sale)) : "-"}</td>
                   <td>${money(saleDisplayTotal(sale))}</td>
@@ -7001,6 +7468,21 @@ function renderSalePaymentModal() {
               .join("")}
           </div>
         </div>
+        ${
+          hasNetworkConnection()
+            ? ""
+            : '<div class="offline-sale-alert"><strong>Modo de contingencia</strong><span>Cartao e Pix devem ser cobrados diretamente na maquininha. Confirme no app somente depois da aprovacao.</span></div>'
+        }
+        <div class="notice offline-payment-panel" data-offline-payment-panel hidden>
+          <strong>Pagamento manual na maquininha</strong>
+          <div class="form-grid" style="margin-top: 12px;">
+            <label class="field full">
+              <span>NSU, autorizacao ou referencia (opcional)</span>
+              <input name="manualReference" type="text" maxlength="80" placeholder="Numero mostrado no comprovante" />
+            </label>
+          </div>
+          <button class="btn primary" type="submit">Confirmar que o pagamento foi aprovado</button>
+        </div>
         <div class="notice" data-fiado-authorization hidden>
           <strong>Autorizacao para venda fiado</strong>
           <div class="form-grid" style="margin-top: 12px;">
@@ -7044,7 +7526,7 @@ function renderSalePaymentModal() {
                 .join("")}
             </div>
           </div>
-          <button class="btn primary" type="submit">Enviar credito para a maquininha</button>
+          <button class="btn primary" type="submit">${hasNetworkConnection() ? "Enviar credito para a maquininha" : "Registrar credito aprovado na maquininha"}</button>
         </div>
         <div class="split-payment-panel" data-split-payment-panel hidden>
           <div class="split-payment-grid">
@@ -7078,7 +7560,11 @@ function renderSalePaymentModal() {
           </div>
           <button class="btn primary" type="submit">Finalizar pagamento dividido</button>
         </div>
-        <div class="notice compact">Pix e Debito enviam a cobranca imediatamente. No Credito, escolha de a vista ate 12x antes do envio. Dinheiro calcula o troco. Dividido permite mais de uma forma. Fiado exige cliente com limite disponivel.</div>
+        <div class="notice compact">${
+          hasNetworkConnection()
+            ? "Pix e Debito enviam a cobranca imediatamente. No Credito, escolha de a vista ate 12x antes do envio."
+            : "Sem internet, Pix, Debito e Credito sao registrados como pagamentos manuais depois da aprovacao na maquininha."
+        } Dinheiro calcula o troco. Dividido permite mais de uma forma. Fiado exige cliente com limite disponivel.</div>
       </div>
     </form>
   `;
@@ -8422,11 +8908,17 @@ async function saveOrder(event) {
     return;
   }
 
+  const pendingOrder = state.kitchenOrders.find((order) => order.id === currentModal.id);
+  if (session?.online && pendingOrder?.syncStatus !== "pending") {
+    notify("Este pedido ja esta online. Aguarde a internet voltar para edita-lo.");
+    return;
+  }
   state.kitchenOrders = state.kitchenOrders.map((order) =>
     order.id === currentModal.id && order.status !== "Entregue"
       ? { ...order, status: form.get("status"), items }
       : order,
   );
+  mutatePendingKitchenOrder(currentModal.id, (order) => ({ ...order, status: form.get("status"), items }));
   currentModal = null;
   logAudit("Pedido editado", "Itens/status da cozinha atualizados.");
   saveState();
@@ -11059,8 +11551,13 @@ bindViewEvents = function patchedBindViewEvents() {
   bindModalForms();
 };
 
-setInterval(() => {
+setInterval(async () => {
   if (session) runScheduledBackup();
+  if (session?.online && pendingOfflineOperations().length && navigator.onLine !== false && !connectionState.syncing) {
+    await syncPendingOfflineSales();
+  } else if (navigator.onLine !== false && !connectionState.cloudReachable) {
+    await checkCloudConnection(3000);
+  }
 }, 60 * 1000);
 
 syncChannel?.addEventListener("message", (event) => {
@@ -11086,5 +11583,33 @@ window.addEventListener("appinstalled", () => {
   else renderLogin();
 });
 
-renderLogin();
-restoreOnlineSession();
+window.addEventListener("offline", () => {
+  connectionState.browserOnline = false;
+  setCloudReachable(false, "O aparelho esta sem internet.");
+  if (session) notify("Modo offline ativado. As proximas vendas ficarao guardadas neste aparelho.");
+});
+
+window.addEventListener("online", async () => {
+  connectionState.browserOnline = true;
+  updateConnectionIndicators();
+  const reachable = await checkCloudConnection();
+  if (!reachable) return;
+  if (session?.offlineCached) await restoreOnlineSession();
+  if (session && pendingOfflineOperations().length) await syncPendingOfflineSales();
+  else if (session) notify("Conexao restabelecida.");
+});
+
+async function bootstrapApp() {
+  renderLogin();
+  connectionState.browserOnline = navigator.onLine !== false;
+  let restored = false;
+  if (connectionState.browserOnline && (await checkCloudConnection())) {
+    restored = await restoreOnlineSession();
+  }
+  if (!restored) restoreCachedOfflineSession();
+  if (session?.online && pendingOfflineOperations().length && hasNetworkConnection()) {
+    setTimeout(() => syncPendingOfflineSales(), 800);
+  }
+}
+
+bootstrapApp();
