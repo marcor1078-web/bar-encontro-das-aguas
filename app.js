@@ -6430,6 +6430,10 @@ function expenseStatus(expense) {
 }
 
 function expensePaymentHistory(expense) {
+  return expenseMovementHistory(expense).filter((entry) => entry.type !== "charge");
+}
+
+function expenseMovementHistory(expense) {
   return Array.isArray(expense?.paymentHistory) ? expense.paymentHistory : [];
 }
 
@@ -6577,7 +6581,7 @@ function renderSuppliers() {
       <div class="card-head"><h2 class="card-title">Despesas do negocio</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Data da despesa</th><th>Vencimento</th><th>Descricao</th><th>Tipo</th><th>Categoria</th><th>Valor</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Ultimo pagamento</th><th>Acoes</th></tr></thead>
+          <thead><tr><th>Data da despesa</th><th>Vencimento</th><th>Descricao</th><th>Tipo</th><th>Categoria</th><th>Valor acumulado</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Ultimo pagamento</th><th>Acoes</th></tr></thead>
           <tbody>
             ${(state.expenses || [])
               .slice()
@@ -6599,6 +6603,7 @@ function renderSuppliers() {
                     <td>${lastPayment ? `${dateTime(lastPayment.date)} - ${money(lastPayment.amount)}` : "-"}</td>
                     <td>
                       <div class="toolbar">
+                        ${expense.recurring ? "" : `<button class="btn compact primary" type="button" data-open-modal="expenseCharge" data-id="${expense.id}">Nova fatura</button>`}
                         <button class="btn compact secondary" type="button" data-open-modal="expense" data-id="${expense.id}">Editar</button>
                         <button class="btn compact secondary" type="button" data-open-modal="expensePayment" data-id="${expense.id}" ${expenseBalance(expense) <= 0 ? "disabled" : ""}>Pagar</button>
                         <button class="btn compact danger" type="button" data-remove-expense="${expense.id}">Remover</button>
@@ -7455,6 +7460,7 @@ function renderModal() {
     supplier: renderSupplierModal,
     purchase: renderPurchaseModal,
     expense: renderExpenseModal,
+    expenseCharge: renderExpenseChargeModal,
     expensePayment: renderExpensePaymentModal,
     client: renderClientModal,
     clientPayment: renderClientPaymentModal,
@@ -8080,6 +8086,62 @@ function renderExpenseModal() {
   `;
 }
 
+function renderExpenseChargeModal() {
+  const expense = (state.expenses || []).find((item) => item.id === currentModal.id);
+  if (!expense) {
+    return `
+      <div class="modal-head">
+        <h2>Adicionar nova fatura</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body"><p>Despesa nao encontrada.</p></div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Fechar</button>
+      </div>
+    `;
+  }
+
+  return `
+    <form id="expense-charge-form">
+      <div class="modal-head">
+        <h2>Adicionar nova fatura</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="summary-list">
+          <div class="summary-row"><span>Empresa ou despesa</span><strong>${escapeHtml(expense.description)}</strong></div>
+          <div class="summary-row"><span>Valor acumulado</span><strong>${money(expense.amount)}</strong></div>
+          <div class="summary-row"><span>Ja pago</span><strong>${money(expensePaidAmount(expense))}</strong></div>
+          <div class="summary-row total"><span>Saldo atual</span><strong>${money(expenseBalance(expense))}</strong></div>
+        </div>
+        <div class="form-grid">
+          <label class="field">
+            <span>Valor da nova fatura</span>
+            <input name="amount" type="number" min="0.01" step="0.01" required />
+          </label>
+          <label class="field">
+            <span>Data e hora da fatura</span>
+            <input name="date" type="datetime-local" required value="${datetimeLocalValue()}" />
+          </label>
+          <label class="field">
+            <span>Novo vencimento (opcional)</span>
+            <input name="dueDate" type="date" value="${expense.dueDate || ""}" />
+          </label>
+          <label class="field full">
+            <span>Descricao ou numero da fatura</span>
+            <input name="note" required placeholder="Ex.: NF 1234, novo pedido de bebidas..." />
+          </label>
+        </div>
+        <div class="notice compact">O valor informado sera somado ao valor acumulado e ao saldo pendente desta despesa.</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">Somar nova fatura</button>
+      </div>
+    </form>
+  `;
+}
+
 function renderExpensePaymentModal() {
   const expense = (state.expenses || []).find((item) => item.id === currentModal.id);
   if (!expense) {
@@ -8096,7 +8158,7 @@ function renderExpensePaymentModal() {
   }
 
   const balance = expenseBalance(expense);
-  const history = expensePaymentHistory(expense);
+  const history = expenseMovementHistory(expense);
   return `
     <form id="expense-payment-form">
       <div class="modal-head">
@@ -8139,15 +8201,16 @@ function renderExpensePaymentModal() {
           history.length
             ? `<div class="table-wrap modal-table-wrap">
                 <table>
-                  <thead><tr><th>Data/hora</th><th>Valor</th><th>Forma</th><th>Usuario</th><th>Obs.</th></tr></thead>
+                  <thead><tr><th>Data/hora</th><th>Movimento</th><th>Valor</th><th>Forma</th><th>Usuario</th><th>Obs.</th></tr></thead>
                   <tbody>
                     ${history
                       .map(
                         (entry) => `
                           <tr>
                             <td>${dateTime(entry.date)}</td>
-                            <td>${money(entry.amount)}</td>
-                            <td>${expensePaymentMethodLabel(entry.method)}</td>
+                            <td>${entry.type === "charge" ? "Nova fatura" : "Pagamento"}</td>
+                            <td>${entry.type === "charge" ? "+ " : "- "}${money(entry.amount)}</td>
+                            <td>${entry.type === "charge" ? "-" : expensePaymentMethodLabel(entry.method)}</td>
                             <td>${entry.userId ? userName(entry.userId) : "-"}</td>
                             <td>${escapeHtml(entry.note || "")}</td>
                           </tr>
@@ -8157,7 +8220,7 @@ function renderExpensePaymentModal() {
                   </tbody>
                 </table>
               </div>`
-            : '<div class="empty">Nenhum pagamento parcial registrado ainda.</div>'
+            : '<div class="empty">Nenhuma movimentacao registrada ainda.</div>'
         }
       </div>
       <div class="modal-actions">
@@ -8678,6 +8741,7 @@ function bindModalForms() {
   document.querySelector("#supplier-form")?.addEventListener("submit", saveSupplier);
   document.querySelector("#purchase-form")?.addEventListener("submit", savePurchase);
   document.querySelector("#expense-form")?.addEventListener("submit", saveExpense);
+  document.querySelector("#expense-charge-form")?.addEventListener("submit", saveExpenseCharge);
   document.querySelector("#expense-payment-form")?.addEventListener("submit", saveExpensePayment);
   document.querySelector("#client-form")?.addEventListener("submit", saveClient);
   document.querySelector("#client-payment-form")?.addEventListener("submit", saveClientPayment);
@@ -9335,11 +9399,12 @@ async function saveExpense(event) {
     return;
   }
   const currentPaid = existing ? expensePaidAmount(existing) : 0;
-  const paymentHistory = [...expensePaymentHistory(existing)];
+  const paymentHistory = [...expenseMovementHistory(existing)];
   let paidAmount = paid ? amount : Math.min(amount, currentPaid);
   if (paid && paidAmount > currentPaid) {
     paymentHistory.unshift({
       id: id("expensepay"),
+      type: "payment",
       date: now,
       amount: Number((paidAmount - currentPaid).toFixed(2)),
       method: "other",
@@ -9449,13 +9514,14 @@ async function payExpense(expenseId) {
     const history = [
       {
         id: id("expensepay"),
+        type: "payment",
         date: paidAt,
         amount: balance,
         method: "other",
         userId: session?.id || "",
         note: "Quitacao total",
       },
-      ...expensePaymentHistory(expense),
+      ...expenseMovementHistory(expense),
     ];
     const { error } = await supabaseClient
       .from("expenses")
@@ -9488,13 +9554,14 @@ async function payExpense(expenseId) {
           paymentHistory: [
             {
               id: id("expensepay"),
+              type: "payment",
               date: new Date().toISOString(),
               amount: expenseBalance(expense),
               method: "other",
               userId: session?.id || "",
               note: "Quitacao total",
             },
-            ...expensePaymentHistory(expense),
+            ...expenseMovementHistory(expense),
           ],
         }
       : expense,
@@ -9503,6 +9570,104 @@ async function payExpense(expenseId) {
   logAudit("Despesa paga", expenseId);
   saveState();
   notify("Despesa marcada como paga.");
+  renderApp();
+}
+
+async function saveExpenseCharge(event) {
+  event.preventDefault();
+  const expense = (state.expenses || []).find((entry) => entry.id === currentModal.id);
+  if (!expense) return;
+  if (expense.recurring) {
+    notify("Despesas recorrentes devem manter o valor fixo mensal.");
+    return;
+  }
+  if (session?.online && !isOnlineSession()) {
+    notify("Conecte a internet para somar a nova fatura na despesa online.");
+    return;
+  }
+
+  const form = new FormData(event.currentTarget);
+  const amount = Number(form.get("amount") || 0);
+  const rawDate = form.get("date");
+  const chargeDate = rawDate ? new Date(rawDate) : new Date();
+  const note = String(form.get("note") || "").trim();
+  if (!Number.isFinite(amount) || amount <= 0) {
+    notify("Informe um valor maior que zero para a nova fatura.");
+    return;
+  }
+  if (Number.isNaN(chargeDate.getTime())) {
+    notify("Informe uma data valida para a nova fatura.");
+    return;
+  }
+  if (!note) {
+    notify("Informe a descricao ou o numero da nova fatura.");
+    return;
+  }
+
+  const chargeAmount = Number(amount.toFixed(2));
+  const totalAmount = Number((Number(expense.amount || 0) + chargeAmount).toFixed(2));
+  const paidAmount = Number(expensePaidAmount(expense).toFixed(2));
+  const dueDate = String(form.get("dueDate") || expense.dueDate || "");
+  const movement = {
+    id: id("expensecharge"),
+    type: "charge",
+    date: chargeDate.toISOString(),
+    amount: chargeAmount,
+    dueDate,
+    userId: session?.id || "",
+    note,
+  };
+  const paymentHistory = [movement, ...expenseMovementHistory(expense)];
+  const paid = paidAmount >= totalAmount;
+  const paidAt = paid ? expense.paidAt : null;
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient
+      .from("expenses")
+      .update({
+        amount: totalAmount,
+        due_date: dueDate,
+        paid_amount: paidAmount,
+        payment_history: paymentHistory,
+        paid,
+        paid_at: paidAt,
+      })
+      .eq("id", expense.id);
+
+    if (error) {
+      if (isExpensePaymentSchemaMissing(error)) {
+        notify("Rode a migracao de pagamentos parciais de despesas no Supabase antes de adicionar novas faturas.");
+        return;
+      }
+      notify(`Erro ao adicionar a nova fatura online: ${error.message}`);
+      return;
+    }
+
+    currentModal = null;
+    await loadOnlineSupplierData();
+    logAudit("Nova fatura adicionada online", `${expense.description}: +${money(chargeAmount)}.`);
+    notify(`Nova fatura somada. Saldo pendente: ${money(totalAmount - paidAmount)}.`);
+    renderApp();
+    return;
+  }
+
+  state.expenses = (state.expenses || []).map((entry) =>
+    entry.id === expense.id
+      ? {
+          ...entry,
+          amount: totalAmount,
+          dueDate,
+          paidAmount,
+          paymentHistory,
+          paid,
+          paidAt,
+        }
+      : entry,
+  );
+  currentModal = null;
+  logAudit("Nova fatura adicionada", `${expense.description}: +${money(chargeAmount)}.`);
+  saveState();
+  notify(`Nova fatura somada. Saldo pendente: ${money(totalAmount - paidAmount)}.`);
   renderApp();
 }
 
@@ -9528,6 +9693,7 @@ async function saveExpensePayment(event) {
 
   const payment = {
     id: id("expensepay"),
+    type: "payment",
     date: paymentDateIso,
     amount: Number(amount.toFixed(2)),
     method: form.get("method") || "other",
@@ -9537,7 +9703,7 @@ async function saveExpensePayment(event) {
   const paidAmount = Number(Math.min(Number(expense.amount || 0), expensePaidAmount(expense) + amount).toFixed(2));
   const paid = paidAmount >= Number(expense.amount || 0);
   const paidAt = paid ? paymentDateIso : null;
-  const paymentHistory = [payment, ...expensePaymentHistory(expense)];
+  const paymentHistory = [payment, ...expenseMovementHistory(expense)];
 
   if (isOnlineSession()) {
     const { error } = await supabaseClient
