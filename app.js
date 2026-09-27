@@ -2948,6 +2948,7 @@ function bindViewEvents() {
       currentModal = {
         type: button.dataset.openModal,
         id: button.dataset.id || null,
+        invoiceId: button.dataset.invoiceId || null,
         recurring: button.dataset.recurring === "true",
         movementType: button.dataset.movementType || null,
       };
@@ -6437,6 +6438,90 @@ function expenseMovementHistory(expense) {
   return Array.isArray(expense?.paymentHistory) ? expense.paymentHistory : [];
 }
 
+function expenseChargeHistory(expense) {
+  return expenseMovementHistory(expense).filter((entry) => entry.type === "charge");
+}
+
+function expenseInitialInvoiceId(expense) {
+  return `initial:${expense?.id || "expense"}`;
+}
+
+function expenseInitialInvoiceAmount(expense) {
+  const addedInvoicesTotal = expenseChargeHistory(expense).reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  return Number(Math.max(0, Number(expense?.amount || 0) - addedInvoicesTotal).toFixed(2));
+}
+
+function expenseInvoiceSortKey(invoice) {
+  return `${String(invoice?.date || "9999-12-31").slice(0, 10)}|${invoice?.dueDate || "9999-12-31"}`;
+}
+
+function expenseInvoices(expense) {
+  if (!expense) return [];
+  const initialAmount = expenseInitialInvoiceAmount(expense);
+  const invoices = [];
+  if (initialAmount > 0 || !expenseChargeHistory(expense).length) {
+    invoices.push({
+      id: expenseInitialInvoiceId(expense),
+      date: expense.expenseDate || String(expense.createdAt || "").slice(0, 10),
+      dueDate: expense.dueDate || "",
+      note: "Fatura inicial",
+      amount: initialAmount,
+      initial: true,
+    });
+  }
+  expenseChargeHistory(expense).forEach((entry) => {
+    invoices.push({
+      id: entry.id,
+      date: entry.date,
+      dueDate: entry.dueDate || expense.dueDate || "",
+      note: entry.note || "Nova fatura",
+      amount: Number(entry.amount || 0),
+      initial: false,
+    });
+  });
+
+  const paidByInvoice = new Map(invoices.map((invoice) => [invoice.id, 0]));
+  let paidBudget = expensePaidAmount(expense);
+  expensePaymentHistory(expense)
+    .filter((payment) => payment.invoiceId && paidByInvoice.has(payment.invoiceId))
+    .forEach((payment) => {
+      if (paidBudget <= 0) return;
+      const invoice = invoices.find((entry) => entry.id === payment.invoiceId);
+      const currentPaid = paidByInvoice.get(invoice.id) || 0;
+      const allocated = Math.min(Number(payment.amount || 0), paidBudget, Math.max(0, invoice.amount - currentPaid));
+      paidByInvoice.set(invoice.id, currentPaid + allocated);
+      paidBudget -= allocated;
+    });
+
+  [...invoices]
+    .sort((a, b) => expenseInvoiceSortKey(a).localeCompare(expenseInvoiceSortKey(b)))
+    .forEach((invoice) => {
+      if (paidBudget <= 0) return;
+      const currentPaid = paidByInvoice.get(invoice.id) || 0;
+      const allocated = Math.min(paidBudget, Math.max(0, invoice.amount - currentPaid));
+      paidByInvoice.set(invoice.id, currentPaid + allocated);
+      paidBudget -= allocated;
+    });
+
+  return invoices
+    .map((invoice) => {
+      const paidAmount = Number((paidByInvoice.get(invoice.id) || 0).toFixed(2));
+      const balance = Number(Math.max(0, invoice.amount - paidAmount).toFixed(2));
+      return {
+        ...invoice,
+        paidAmount,
+        balance,
+        status: balance <= 0 && invoice.amount > 0 ? "Pago" : paidAmount > 0 ? "Parcial" : "Aberto",
+      };
+    })
+    .sort((a, b) => expenseInvoiceSortKey(a).localeCompare(expenseInvoiceSortKey(b)));
+}
+
+function expenseInvoiceLabel(invoice) {
+  if (!invoice) return "Fatura";
+  return invoice.initial ? "Fatura inicial" : invoice.note || "Nova fatura";
+}
+
 function nextRecurringDueDate(dueDate, day) {
   const [year, month] = String(dueDate).split("-").map(Number);
   const nextMonth = new Date(Date.UTC(year, month, 1));
@@ -6581,38 +6666,48 @@ function renderSuppliers() {
       <div class="card-head"><h2 class="card-title">Despesas do negocio</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Data da despesa</th><th>Vencimento</th><th>Descricao</th><th>Tipo</th><th>Categoria</th><th>Valor acumulado</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Ultimo pagamento</th><th>Acoes</th></tr></thead>
+          <thead><tr><th>Empresa / despesa</th><th>Data da fatura</th><th>Vencimento</th><th>Fatura</th><th>Categoria</th><th>Valor</th><th>Pago</th><th>Saldo</th><th>Status</th><th>Acoes</th></tr></thead>
           <tbody>
             ${(state.expenses || [])
               .slice()
               .sort((a, b) => String(b.expenseDate || "").localeCompare(String(a.expenseDate || "")))
               .map((expense) => {
-                const status = expenseStatus(expense);
-                const lastPayment = expensePaymentHistory(expense)[0];
-                return `
-                  <tr>
-                    <td>${new Date(`${expense.expenseDate || String(expense.createdAt).slice(0, 10)}T00:00:00`).toLocaleDateString("pt-BR")}</td>
-                    <td>${new Date(`${expense.dueDate}T00:00:00`).toLocaleDateString("pt-BR")}</td>
-                    <td>${escapeHtml(expense.description)}</td>
-                    <td>${expense.recurring ? "Mensal" : "Unica"}</td>
-                    <td>${expense.category || "-"}</td>
-                    <td>${money(expense.amount)}</td>
-                    <td>${money(expensePaidAmount(expense))}</td>
-                    <td>${money(expenseBalance(expense))}</td>
-                    <td><span class="status ${status.className}">${status.label}</span></td>
-                    <td>${lastPayment ? `${dateTime(lastPayment.date)} - ${money(lastPayment.amount)}` : "-"}</td>
-                    <td>
-                      <div class="toolbar">
-                        ${expense.recurring ? "" : `<button class="btn compact primary" type="button" data-open-modal="expenseCharge" data-id="${expense.id}">Nova fatura</button>`}
-                        <button class="btn compact secondary" type="button" data-open-modal="expense" data-id="${expense.id}">Editar</button>
-                        <button class="btn compact secondary" type="button" data-open-modal="expensePayment" data-id="${expense.id}" ${expenseBalance(expense) <= 0 ? "disabled" : ""}>Pagar</button>
-                        <button class="btn compact danger" type="button" data-remove-expense="${expense.id}">Remover</button>
-                      </div>
-                    </td>
-                  </tr>
-                `;
+                const invoices = expenseInvoices(expense);
+                return invoices
+                  .map((invoice, index) => {
+                    const statusClass = invoice.status === "Pago" ? "green" : invoice.status === "Parcial" ? "blue" : "amber";
+                    return `
+                      <tr class="${index === 0 ? "expense-group-start" : ""}">
+                        <td>
+                          <strong>${escapeHtml(expense.description)}</strong>
+                          ${index === 0 ? `<small>${expense.recurring ? "Mensal" : `${invoices.length} fatura(s)`}<br>Saldo total: ${money(expenseBalance(expense))}</small>` : ""}
+                        </td>
+                        <td>${formatDateBr(String(invoice.date || "").slice(0, 10))}</td>
+                        <td>${formatDateBr(invoice.dueDate)}</td>
+                        <td>${escapeHtml(expenseInvoiceLabel(invoice))}</td>
+                        <td>${escapeHtml(expense.category || "-")}</td>
+                        <td>${money(invoice.amount)}</td>
+                        <td>${money(invoice.paidAmount)}</td>
+                        <td>${money(invoice.balance)}</td>
+                        <td><span class="status ${statusClass}">${invoice.status}</span></td>
+                        <td>
+                          <div class="toolbar">
+                            <button class="btn compact primary" type="button" data-open-modal="expensePayment" data-id="${expense.id}" data-invoice-id="${invoice.id}" ${invoice.balance <= 0 ? "disabled" : ""}>Pagar esta</button>
+                            ${
+                              index === 0
+                                ? `${expense.recurring ? "" : `<button class="btn compact secondary" type="button" data-open-modal="expenseCharge" data-id="${expense.id}">Nova fatura</button>`}
+                                  <button class="btn compact secondary" type="button" data-open-modal="expense" data-id="${expense.id}">Editar</button>
+                                  <button class="btn compact danger" type="button" data-remove-expense="${expense.id}">Remover conta</button>`
+                                : ""
+                            }
+                          </div>
+                        </td>
+                      </tr>
+                    `;
+                  })
+                  .join("");
               })
-              .join("")}
+              .join("") || '<tr><td colspan="10">Nenhuma despesa cadastrada.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -8054,6 +8149,7 @@ function renderExpenseModal() {
   const expense = (state.expenses || []).find((item) => item.id === currentModal.id);
   const defaultExpenseDate = expense?.expenseDate || String(expense?.createdAt || new Date().toISOString()).slice(0, 10);
   const recurring = expense?.recurring ?? currentModal.recurring;
+  const initialInvoiceAmount = expense ? expenseInitialInvoiceAmount(expense) : "";
   return `
     <form id="expense-form">
       <div class="modal-head">
@@ -8064,7 +8160,7 @@ function renderExpenseModal() {
         <div class="form-grid">
           <label class="field full"><span>Descricao</span><input name="description" required value="${escapeHtml(expense?.description || "")}" /></label>
           <label class="field"><span>Categoria</span><input name="category" value="${escapeHtml(expense?.category || "")}" /></label>
-          <label class="field"><span>Valor</span><input name="amount" type="number" min="0.01" step="0.01" required value="${expense?.amount || ""}" /></label>
+          <label class="field"><span>Valor da fatura inicial</span><input name="amount" type="number" min="0.01" step="0.01" required value="${initialInvoiceAmount}" /></label>
           <label class="field"><span>Data da despesa</span><input name="expenseDate" type="date" required value="${defaultExpenseDate}" /></label>
           <label class="field"><span>Vencimento</span><input name="dueDate" type="date" required value="${expense?.dueDate || ""}" /></label>
           <label class="field expense-recurrence"><span>Repetir mensalmente</span><input name="recurring" type="checkbox" ${recurring ? "checked" : ""} /></label>
@@ -8077,6 +8173,7 @@ function renderExpenseModal() {
             </select>
           </label>
         </div>
+        ${expenseChargeHistory(expense).length ? '<div class="notice compact">As demais faturas permanecem separadas e nao serao alteradas por este formulario.</div>' : ""}
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
@@ -8132,11 +8229,11 @@ function renderExpenseChargeModal() {
             <input name="note" required placeholder="Ex.: NF 1234, novo pedido de bebidas..." />
           </label>
         </div>
-        <div class="notice compact">O valor informado sera somado ao valor acumulado e ao saldo pendente desta despesa.</div>
+        <div class="notice compact">A nova fatura ficara em uma linha separada por data e vencimento. O saldo total da conta tambem sera atualizado.</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
-        <button class="btn primary" type="submit">Somar nova fatura</button>
+        <button class="btn primary" type="submit">Criar fatura separada</button>
       </div>
     </form>
   `;
@@ -8157,22 +8254,39 @@ function renderExpensePaymentModal() {
     `;
   }
 
-  const balance = expenseBalance(expense);
+  const invoices = expenseInvoices(expense);
+  const invoice = invoices.find((entry) => entry.id === currentModal.invoiceId) || invoices.find((entry) => entry.balance > 0) || invoices[0];
+  if (!invoice) {
+    return `
+      <div class="modal-head">
+        <h2>Pagar fatura</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body"><p>Nenhuma fatura encontrada para esta despesa.</p></div>
+      <div class="modal-actions"><button class="btn secondary" type="button" data-close-modal>Fechar</button></div>
+    `;
+  }
+
+  const balance = invoice.balance;
   const history = expenseMovementHistory(expense);
   return `
     <form id="expense-payment-form">
       <div class="modal-head">
-        <h2>Pagar despesa</h2>
+        <h2>Pagar fatura</h2>
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body">
         <div class="summary-list">
-          <div class="summary-row"><span>Despesa</span><strong>${escapeHtml(expense.description)}</strong></div>
-          <div class="summary-row"><span>Valor total</span><strong>${money(expense.amount)}</strong></div>
-          <div class="summary-row"><span>Ja pago</span><strong>${money(expensePaidAmount(expense))}</strong></div>
-          <div class="summary-row total"><span>Saldo restante</span><strong>${money(balance)}</strong></div>
+          <div class="summary-row"><span>Empresa ou despesa</span><strong>${escapeHtml(expense.description)}</strong></div>
+          <div class="summary-row"><span>Fatura escolhida</span><strong>${escapeHtml(expenseInvoiceLabel(invoice))}</strong></div>
+          <div class="summary-row"><span>Data / vencimento</span><strong>${formatDateBr(String(invoice.date || "").slice(0, 10))} / ${formatDateBr(invoice.dueDate)}</strong></div>
+          <div class="summary-row"><span>Valor da fatura</span><strong>${money(invoice.amount)}</strong></div>
+          <div class="summary-row"><span>Pago nesta fatura</span><strong>${money(invoice.paidAmount)}</strong></div>
+          <div class="summary-row total"><span>Saldo desta fatura</span><strong>${money(balance)}</strong></div>
+          <div class="summary-row"><span>Saldo total da conta</span><strong>${money(expenseBalance(expense))}</strong></div>
         </div>
         <div class="form-grid">
+          <input name="invoiceId" type="hidden" value="${invoice.id}" />
           <label class="field">
             <span>Valor pago agora</span>
             <input name="amount" type="number" min="0.01" max="${balance}" step="0.01" required value="${balance || ""}" />
@@ -8201,21 +8315,23 @@ function renderExpensePaymentModal() {
           history.length
             ? `<div class="table-wrap modal-table-wrap">
                 <table>
-                  <thead><tr><th>Data/hora</th><th>Movimento</th><th>Valor</th><th>Forma</th><th>Usuario</th><th>Obs.</th></tr></thead>
+                  <thead><tr><th>Data/hora</th><th>Movimento</th><th>Fatura</th><th>Valor</th><th>Forma</th><th>Usuario</th><th>Obs.</th></tr></thead>
                   <tbody>
                     ${history
-                      .map(
-                        (entry) => `
+                      .map((entry) => {
+                        const historyInvoice = invoices.find((item) => item.id === (entry.type === "charge" ? entry.id : entry.invoiceId));
+                        return `
                           <tr>
                             <td>${dateTime(entry.date)}</td>
                             <td>${entry.type === "charge" ? "Nova fatura" : "Pagamento"}</td>
+                            <td>${historyInvoice ? escapeHtml(expenseInvoiceLabel(historyInvoice)) : entry.type === "charge" ? escapeHtml(entry.note || "Nova fatura") : "Distribuido automaticamente"}</td>
                             <td>${entry.type === "charge" ? "+ " : "- "}${money(entry.amount)}</td>
                             <td>${entry.type === "charge" ? "-" : expensePaymentMethodLabel(entry.method)}</td>
                             <td>${entry.userId ? userName(entry.userId) : "-"}</td>
                             <td>${escapeHtml(entry.note || "")}</td>
                           </tr>
-                        `,
-                      )
+                        `;
+                      })
                       .join("")}
                   </tbody>
                 </table>
@@ -9391,7 +9507,11 @@ async function saveExpense(event) {
   const paid = form.get("paid") === "true";
   const existing = (state.expenses || []).find((expense) => expense.id === currentModal.id);
   const isEditing = Boolean(currentModal.id);
-  const amount = Number(form.get("amount"));
+  const initialInvoiceAmount = Number(form.get("amount"));
+  const addedInvoicesTotal = existing
+    ? expenseChargeHistory(existing).reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
+    : 0;
+  const amount = Number((initialInvoiceAmount + addedInvoicesTotal).toFixed(2));
   const recurring = form.get("recurring") === "on";
   const recurringDay = Number(form.get("recurringDay") || String(form.get("dueDate") || "").slice(-2));
   if (recurring && (!Number.isInteger(recurringDay) || recurringDay < 1 || recurringDay > 31)) {
@@ -9626,7 +9746,6 @@ async function saveExpenseCharge(event) {
       .from("expenses")
       .update({
         amount: totalAmount,
-        due_date: dueDate,
         paid_amount: paidAmount,
         payment_history: paymentHistory,
         paid,
@@ -9646,7 +9765,7 @@ async function saveExpenseCharge(event) {
     currentModal = null;
     await loadOnlineSupplierData();
     logAudit("Nova fatura adicionada online", `${expense.description}: +${money(chargeAmount)}.`);
-    notify(`Nova fatura somada. Saldo pendente: ${money(totalAmount - paidAmount)}.`);
+    notify(`Nova fatura criada separadamente. Saldo total pendente: ${money(totalAmount - paidAmount)}.`);
     renderApp();
     return;
   }
@@ -9656,7 +9775,6 @@ async function saveExpenseCharge(event) {
       ? {
           ...entry,
           amount: totalAmount,
-          dueDate,
           paidAmount,
           paymentHistory,
           paid,
@@ -9667,7 +9785,7 @@ async function saveExpenseCharge(event) {
   currentModal = null;
   logAudit("Nova fatura adicionada", `${expense.description}: +${money(chargeAmount)}.`);
   saveState();
-  notify(`Nova fatura somada. Saldo pendente: ${money(totalAmount - paidAmount)}.`);
+  notify(`Nova fatura criada separadamente. Saldo total pendente: ${money(totalAmount - paidAmount)}.`);
   renderApp();
 }
 
@@ -9677,8 +9795,14 @@ async function saveExpensePayment(event) {
   if (!expense) return;
 
   const form = new FormData(event.currentTarget);
+  const invoiceId = String(form.get("invoiceId") || "");
+  const invoice = expenseInvoices(expense).find((entry) => entry.id === invoiceId);
+  if (!invoice) {
+    notify("A fatura escolhida nao foi encontrada.");
+    return;
+  }
   const amount = Number(form.get("amount") || 0);
-  const balance = expenseBalance(expense);
+  const balance = invoice.balance;
   const rawDate = form.get("date");
   const paymentDate = rawDate ? new Date(rawDate) : new Date();
   if (Number.isNaN(paymentDate.getTime())) {
@@ -9694,6 +9818,7 @@ async function saveExpensePayment(event) {
   const payment = {
     id: id("expensepay"),
     type: "payment",
+    invoiceId: invoice.id,
     date: paymentDateIso,
     amount: Number(amount.toFixed(2)),
     method: form.get("method") || "other",
@@ -9727,8 +9852,8 @@ async function saveExpensePayment(event) {
 
     currentModal = null;
     await loadOnlineSupplierData();
-    logAudit("Pagamento parcial de despesa online", `${expense.description}: ${money(amount)}.`);
-    notify(paid ? "Despesa quitada no Supabase." : "Pagamento parcial registrado no Supabase.");
+    logAudit("Pagamento de fatura online", `${expense.description} / ${expenseInvoiceLabel(invoice)}: ${money(amount)}.`);
+    notify(paid ? "Todas as faturas foram quitadas no Supabase." : "Pagamento registrado na fatura escolhida.");
     renderApp();
     return;
   }
@@ -9746,9 +9871,9 @@ async function saveExpensePayment(event) {
   );
   if (paid) renewLocalExpense(state.expenses.find((entry) => entry.id === expense.id));
   currentModal = null;
-  logAudit("Pagamento parcial de despesa", `${expense.description}: ${money(amount)}.`);
+  logAudit("Pagamento de fatura", `${expense.description} / ${expenseInvoiceLabel(invoice)}: ${money(amount)}.`);
   saveState();
-  notify(paid ? "Despesa quitada." : "Pagamento parcial registrado.");
+  notify(paid ? "Todas as faturas foram quitadas." : "Pagamento registrado na fatura escolhida.");
   renderApp();
 }
 
@@ -9806,7 +9931,8 @@ async function removeSupplier(supplierId) {
 async function removeExpense(expenseId) {
   const expense = (state.expenses || []).find((entry) => entry.id === expenseId);
   if (!expense) return;
-  if (!confirm(`Remover a despesa "${expense.description}" de ${money(expense.amount)}?`)) return;
+  const invoiceCount = expenseInvoices(expense).length;
+  if (!confirm(`Remover a conta "${expense.description}" e suas ${invoiceCount} fatura(s), no total de ${money(expense.amount)}?`)) return;
 
   if (isOnlineSession()) {
     const { error } = await supabaseClient.from("expenses").delete().eq("id", expenseId);

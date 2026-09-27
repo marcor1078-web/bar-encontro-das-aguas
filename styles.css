@@ -1394,6 +1394,17 @@ tbody tr:hover td {
   background: #fbfdff;
 }
 
+tbody tr.expense-group-start td {
+  border-top: 3px solid var(--brand);
+}
+
+tr.expense-group-start td:first-child small {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 .status {
   display: inline-flex;
   align-items: center;
