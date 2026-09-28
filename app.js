@@ -2954,7 +2954,7 @@ function bindViewEvents() {
       };
       if (button.dataset.openModal === "table" && button.dataset.id) selectedTableId = button.dataset.id;
       renderApp();
-      if (button.dataset.openModal === "externalPayment" && !mercadoPagoPointStatus.checked) {
+      if (["externalPayment", "manualCharge"].includes(button.dataset.openModal) && !mercadoPagoPointStatus.checked) {
         loadMercadoPagoPointStatus(true).then(() => renderApp());
       }
     });
@@ -3273,6 +3273,7 @@ function renderPos() {
       </div>
       <div class="toolbar">
         <input class="field-input search" data-search type="search" placeholder="Buscar produto" />
+        <button class="btn secondary" type="button" data-open-modal="manualCharge">${icon("cash")} Cobranca avulsa</button>
         <button class="btn primary" type="button" data-new-service>Novo atendimento</button>
       </div>
     </div>
@@ -5047,7 +5048,7 @@ function salesTable(sales) {
                   <td>
                     <div class="toolbar">
                       <button class="btn compact secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
-                      ${(sale.items || []).length ? `<button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>` : ""}
+                      ${(sale.items || []).length && !isManualChargeSale(sale) ? `<button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>` : ""}
                       ${
                         !isFinancialSale(sale)
                           ? ""
@@ -5522,6 +5523,10 @@ function isExternalPaymentSale(sale) {
   return sale?.status === "Pagamento externo";
 }
 
+function isManualChargeSale(sale) {
+  return sale?.status === "Cobranca avulsa" || sale?.paymentOrigin === "manual_charge";
+}
+
 function isZeroedSale(sale) {
   return sale?.status === "Zerada";
 }
@@ -5548,6 +5553,7 @@ function saleDisplayProfit(sale) {
 
 function saleItemsLabel(sale) {
   const count = (sale.items || []).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+  if (isManualChargeSale(sale)) return "Cobranca avulsa";
   if (isExternalPaymentSale(sale) && count > 0) return `${qty(count)} ${count === 1 ? "item" : "itens"} (externo)`;
   if (isExternalPaymentSale(sale)) return "Pagamento externo da maquininha";
   return `${qty(count)} ${count === 1 ? "item" : "itens"}`;
@@ -5555,6 +5561,7 @@ function saleItemsLabel(sale) {
 
 function saleItemsDescription(sale) {
   const itemsText = (sale.items || []).map((item) => `${qty(item.qty)}x ${item.name}`).join(", ");
+  if (isManualChargeSale(sale)) return itemsText || sale.manualReference || "Cobranca avulsa";
   if (isExternalPaymentSale(sale) && itemsText) return `${itemsText} (pagamento externo)`;
   if (isExternalPaymentSale(sale)) return "Pagamento externo da maquininha";
   return itemsText;
@@ -5567,7 +5574,7 @@ function saleItemsSummary(sale) {
 function saleStatusClass(sale) {
   if (sale.status === "Cancelada") return "red";
   if (isZeroedSale(sale)) return "amber";
-  if (isExternalPaymentSale(sale)) return "blue";
+  if (isExternalPaymentSale(sale) || isManualChargeSale(sale)) return "blue";
   return "green";
 }
 
@@ -5579,6 +5586,7 @@ function topProductsForPeriod(days = 7, limit = 10) {
     if (!isFinancialSale(sale) || new Date(sale.date).getTime() < start) return;
 
     (sale.items || []).forEach((item) => {
+      if (!item.productId) return;
       const product = state.products.find((entry) => entry.id === item.productId);
       const key = item.productId || item.name;
       const current = totals.get(key) || {
@@ -7566,6 +7574,7 @@ function renderModal() {
     addTables: renderAddTablesModal,
     user: renderUserModal,
     movement: renderMovementModal,
+    manualCharge: renderManualChargeModal,
     externalPayment: renderExternalPaymentModal,
     order: renderOrderModal,
     salePayment: renderSalePaymentModal,
@@ -8752,6 +8761,74 @@ function renderClientTransactionRemovalModal() {
   `;
 }
 
+function renderManualChargeModal() {
+  const hasActiveTerminal = paymentTerminalOptions().some((terminal) => terminal.enabled);
+  return `
+    <form id="manual-charge-form">
+      <div class="modal-head">
+        <h2>Cobranca avulsa</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="notice compact">
+          Use para receber um valor que nao corresponde a um produto cadastrado. O lancamento entra em Vendas, mas nao altera o estoque.
+        </div>
+        <div class="form-grid manual-charge-grid">
+          <label class="field full">
+            <span>Descricao do que esta sendo recebido</span>
+            <input name="description" type="text" maxlength="120" placeholder="Ex.: taxa, encomenda ou item especial" required autofocus />
+          </label>
+          <label class="field">
+            <span>Valor</span>
+            <input name="amount" data-manual-charge-amount type="number" min="0.01" step="0.01" placeholder="0,00" required />
+          </label>
+          ${renderPaymentTerminalField({ inputId: "manual-charge-terminal-id", inputName: "terminalKey" })}
+          <div class="field full">
+            <span>Forma de pagamento</span>
+            <div class="payment-choice-grid manual-charge-payment-grid">
+              ${pointPaymentMethods
+                .map(
+                  (method) => `
+                    <label class="payment-choice">
+                      <input type="radio" name="payment" value="${method}" required />
+                      <span>${method}</span>
+                    </label>
+                  `,
+                )
+                .join("")}
+            </div>
+          </div>
+          <label class="field full" data-manual-charge-installments hidden>
+            <span>Parcelas do credito</span>
+            <select name="creditInstallments">
+              ${Array.from({ length: 12 }, (_, index) => index + 1)
+                .map((installments) => `<option value="${installments}">${installments === 1 ? "A vista" : `${installments}x`}</option>`)
+                .join("")}
+            </select>
+          </label>
+          <label class="field full">
+            <span>Senha de administrador</span>
+            <input name="adminPassword" type="password" autocomplete="off" required />
+            <small>A cobranca so sera enviada depois da autorizacao.</small>
+          </label>
+        </div>
+        <div class="summary-list compact manual-charge-summary">
+          <div class="summary-row total"><span>Valor a cobrar</span><strong data-manual-charge-total>${money(0)}</strong></div>
+        </div>
+        ${
+          hasNetworkConnection()
+            ? ""
+            : '<div class="offline-sale-alert"><strong>Internet necessaria</strong><span>A cobranca avulsa integrada nao pode ser enviada enquanto o app estiver offline.</span></div>'
+        }
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit" ${hasActiveTerminal && hasNetworkConnection() ? "" : "disabled"}>Enviar para maquininha</button>
+      </div>
+    </form>
+  `;
+}
+
 function renderExternalPaymentModal() {
   const terminals = paymentTerminalOptions();
   const selectedTerminal = getSelectedPaymentTerminal();
@@ -8866,6 +8943,7 @@ function bindModalForms() {
   document.querySelector("#lot-form")?.addEventListener("submit", saveLot);
   document.querySelector("#user-form")?.addEventListener("submit", saveUser);
   document.querySelector("#movement-form")?.addEventListener("submit", saveMovement);
+  document.querySelector("#manual-charge-form")?.addEventListener("submit", saveManualCharge);
   document.querySelector("#external-payment-form")?.addEventListener("submit", saveExternalPayment);
   document.querySelector("#order-form")?.addEventListener("submit", saveOrder);
   document.querySelector("#sale-payment-form")?.addEventListener("submit", confirmSalePayment);
@@ -8875,9 +8953,28 @@ function bindModalForms() {
     if (preview) preview.textContent = tableCreationPreview(tableCountInput.value);
   });
   bindSalePaymentChoice();
+  bindManualChargeControls();
   bindExternalPaymentTotal();
   bindUserPermissionControls();
   bindProductImagePreview();
+}
+
+function bindManualChargeControls() {
+  const form = document.querySelector("#manual-charge-form");
+  if (!form) return;
+
+  const amountInput = form.querySelector("[data-manual-charge-amount]");
+  const totalOutput = form.querySelector("[data-manual-charge-total]");
+  const installmentsPanel = form.querySelector("[data-manual-charge-installments]");
+  const update = () => {
+    const payment = form.querySelector('input[name="payment"]:checked')?.value || "";
+    if (installmentsPanel) installmentsPanel.hidden = payment !== "Credito";
+    if (totalOutput) totalOutput.textContent = money(Math.max(0, Number(amountInput?.value || 0)));
+  };
+
+  amountInput?.addEventListener("input", update);
+  form.querySelectorAll('input[name="payment"]').forEach((input) => input.addEventListener("change", update));
+  update();
 }
 
 function bindProductImagePreview() {
@@ -10521,6 +10618,202 @@ function bindExternalPaymentTotal() {
   });
 
   updateTotal();
+}
+
+function buildManualChargeSale({ description, amount, payment, installments, terminalLabel, syncStatus }) {
+  const date = new Date().toISOString();
+  return {
+    id: uuid(),
+    date,
+    cashierId: session.id,
+    clientId: null,
+    tableId: null,
+    payment,
+    paymentBreakdown: [{ method: payment, amount, installments }],
+    paymentOrigin: "manual_charge",
+    manualReference: description,
+    terminalLabel,
+    status: "Cobranca avulsa",
+    syncStatus,
+    serviceFee: 0,
+    total: amount,
+    cost: 0,
+    items: [
+      {
+        productId: null,
+        name: description,
+        qty: 1,
+        price: amount,
+        cost: 0,
+      },
+    ],
+  };
+}
+
+function storeManualChargeLocally(sale, queueForSync = false) {
+  state.sales.push(sale);
+  if (queueForSync) queueOfflineSale(sale, 0);
+  storeDailySalesTotal(localDateKey(sale.date), "automatico");
+  saveState();
+}
+
+async function recordManualCharge({ description, amount, payment, installments, terminal }) {
+  const terminalLabel = ticketTerminalLabel(terminal);
+  const shouldSyncLater = Boolean(session?.online && isSupabaseReady());
+  const sale = buildManualChargeSale({
+    description,
+    amount,
+    payment,
+    installments,
+    terminalLabel,
+    syncStatus: shouldSyncLater ? "pending" : "local",
+  });
+
+  if (!isOnlineSession()) {
+    storeManualChargeLocally(sale, shouldSyncLater);
+    return { ok: true, saleId: sale.id, pending: shouldSyncLater };
+  }
+
+  const encodedPayment = encodePaymentDetails({
+    payment,
+    breakdown: sale.paymentBreakdown,
+    paymentOrigin: sale.paymentOrigin,
+    manualReference: description,
+    terminalLabel,
+  });
+  const saleResult = await supabaseClient
+    .from("sales")
+    .insert({
+      id: sale.id,
+      cashier_id: session.id,
+      client_id: null,
+      payment: encodedPayment,
+      status: sale.status,
+      service_fee: 0,
+      total: amount,
+      cost: 0,
+      created_at: sale.date,
+    })
+    .select("*")
+    .single();
+
+  if (saleResult.error) {
+    storeManualChargeLocally(sale, true);
+    return { ok: true, saleId: sale.id, pending: true, error: saleResult.error.message };
+  }
+
+  const itemResult = await supabaseClient.from("sale_items").insert({
+    sale_id: sale.id,
+    product_id: null,
+    name: description,
+    qty: 1,
+    price: amount,
+    cost: 0,
+  });
+
+  await loadOnlineSalesData();
+  attachSalePrintDetails(sale.id, { terminalLabel });
+  storeDailySalesTotal(localDateKey(sale.date), "automatico");
+  saveState();
+  return { ok: true, saleId: sale.id, itemWarning: itemResult.error?.message || "" };
+}
+
+async function saveManualCharge(event) {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  if (formElement.dataset.submitting === "true") return;
+
+  const form = new FormData(formElement);
+  const description = String(form.get("description") || "").trim();
+  const amount = Number(form.get("amount") || 0);
+  const payment = normalizePaymentMethod(form.get("payment"));
+  const installments = payment === "Credito" ? Math.min(12, Math.max(1, Number(form.get("creditInstallments") || 1))) : 1;
+  const terminalKey = String(form.get("terminalKey") || "");
+  const terminal = paymentTerminalOptions().find((entry) => entry.id === terminalKey);
+
+  if (!description) {
+    notify("Informe a descricao da cobranca.");
+    return;
+  }
+  if (!amount || amount <= 0) {
+    notify("Informe um valor maior que zero.");
+    return;
+  }
+  if (!pointPaymentMethods.includes(payment)) {
+    notify("Escolha Pix, Debito ou Credito.");
+    return;
+  }
+  if (!terminal?.enabled) {
+    notify("Selecione uma maquininha ativa.");
+    return;
+  }
+  if (!hasNetworkConnection()) {
+    notify("A cobranca avulsa na maquininha precisa de internet.");
+    return;
+  }
+
+  formElement.dataset.submitting = "true";
+  const submitButton = formElement.querySelector('button[type="submit"]');
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.textContent = "Autorizando...";
+  }
+
+  try {
+    const admin = await authorizeAdminPassword(form.get("adminPassword"));
+    if (!admin) {
+      notify("Senha de administrador invalida.");
+      return;
+    }
+
+    if (submitButton) submitButton.textContent = "Aguardando maquininha...";
+    const pointPayment = await processPointPaymentBeforeSale({
+      amount,
+      payment,
+      installments,
+      terminalKey,
+      items: [],
+      description: `Cobranca avulsa - ${description}`,
+    });
+    if (!pointPayment.ok) return;
+
+    if (submitButton) submitButton.textContent = "Registrando...";
+    const result = await recordManualCharge({
+      description,
+      amount,
+      payment,
+      installments,
+      terminal: pointPayment.terminal || terminal,
+    });
+    if (!result.ok) return;
+
+    currentModal = null;
+    logAudit(
+      result.pending ? "Cobranca avulsa aguardando nuvem" : "Cobranca avulsa online",
+      `${money(amount)} em ${payment}${payment === "Credito" ? ` ${installments}x` : ""} na ${ticketTerminalLabel(
+        pointPayment.terminal || terminal,
+      )}. Autorizado por ${admin.name}. Descricao: ${description}.`,
+    );
+    saveState();
+    if (result.pending) {
+      notify("Pagamento aprovado e salvo neste aparelho. O registro aguardara sincronizacao.");
+    } else if (result.itemWarning) {
+      notify("Pagamento aprovado e valor registrado, mas a descricao nao foi salva como item.");
+    } else {
+      notify("Cobranca avulsa aprovada e registrada em Vendas.");
+    }
+    renderApp();
+  } catch (error) {
+    notify(`Falha na cobranca avulsa: ${error.message || "erro inesperado"}. Confira a maquininha antes de tentar novamente.`);
+  } finally {
+    if (currentModal?.type === "manualCharge" && document.body.contains(formElement)) {
+      delete formElement.dataset.submitting;
+      if (submitButton) {
+        submitButton.disabled = false;
+        submitButton.textContent = "Enviar para maquininha";
+      }
+    }
+  }
 }
 
 async function saveExternalPayment(event) {

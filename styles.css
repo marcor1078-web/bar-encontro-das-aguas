@@ -2746,6 +2746,45 @@ body[data-theme="dark"] .offline-payment-panel {
   font-size: 1.08rem;
 }
 
+.manual-charge-grid {
+  margin-top: 12px;
+}
+
+.manual-charge-payment-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+[data-manual-charge-installments][hidden] {
+  display: none;
+}
+
+.manual-charge-summary {
+  margin-top: 12px;
+}
+
+#manual-charge-form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(820px, 92vh);
+}
+
+#manual-charge-form .modal-body {
+  overflow-y: auto;
+}
+
+#manual-charge-form .modal-actions {
+  background: #ffffff;
+}
+
+body[data-theme="dark"] #manual-charge-form .modal-actions {
+  background: #0f172a;
+}
+
+#manual-charge-form[data-submitting="true"] .payment-choice span {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .table-product-search {
   margin-bottom: 12px;
 }
@@ -3164,6 +3203,10 @@ body[data-theme="dark"] .offline-payment-panel {
 @media (max-width: 440px) {
   .payment-choice-grid {
     grid-template-columns: 1fr;
+  }
+
+  .manual-charge-payment-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .product-grid,
