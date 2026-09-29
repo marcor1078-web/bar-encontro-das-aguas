@@ -1759,7 +1759,7 @@ async function authorizeAdminPassword(password) {
     });
     const { error } = await verifier.auth.signInWithPassword({ email: admin.email, password: typedPassword });
     if (!error) {
-      await verifier.auth.signOut();
+      await verifier.auth.signOut({ scope: "local" });
       return admin;
     }
   }
@@ -2711,7 +2711,7 @@ async function recordOnlineBackup(type) {
 
 async function logout() {
   if (isSupabaseReady()) {
-    await supabaseClient.auth.signOut().catch(() => {});
+    await supabaseClient.auth.signOut({ scope: "local" }).catch(() => {});
   }
   session = null;
   localStorage.removeItem(OFFLINE_SESSION_KEY);
