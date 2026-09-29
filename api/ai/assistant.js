@@ -138,7 +138,7 @@ module.exports = async function handler(req, res) {
     : [];
   const businessContext = body.context && typeof body.context === "object" ? body.context : {};
 
-  const instructions = `Voce e o assistente operacional da DISTRIBUIDORA AMERICA BJ. Responda sempre em portugues do Brasil, de forma objetiva e cuidadosa.
+  const instructions = `Voce e o assistente operacional da DISTRIBUIDORA ENCONTRO DAS AGUAS. Responda sempre em portugues do Brasil, de forma objetiva e cuidadosa.
 Use somente os dados do contexto fornecido. Nao invente vendas, produtos, saldos, dividas ou identificadores.
 Para perguntas e analises, responda normalmente e nao chame ferramenta.
 Quando o usuario pedir uma alteracao, chame propose_app_action uma unica vez. A acao sera apenas proposta e exigira confirmacao humana no aplicativo.

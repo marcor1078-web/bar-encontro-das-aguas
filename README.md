@@ -1,6 +1,6 @@
-# DISTRIBUIDORA AMÉRICA BJ
+# DISTRIBUIDORA ENCONTRO DAS ÁGUAS
 
-Sistema para bar com operacao local e integracao online via Supabase:
+Sistema para distribuidora com operacao local e integracao online via Supabase:
 
 - Login por perfil
 - Permissoes configuraveis pelo administrador
@@ -14,7 +14,7 @@ Sistema para bar com operacao local e integracao online via Supabase:
 - Estoque com ficha tecnica por insumo
 - Fornecedores e compras
 - Produtos favoritos no balcao
-- Configuracoes do bar
+- Configuracoes da distribuidora
 - Alertas por nivel baixo/critico
 - Lotes e validade
 - Inventario fisico
@@ -77,7 +77,7 @@ O `Painel admin` e a area `Internet` sao exclusivos do cargo Administrador.
 
 - Use `Mesas` para abrir comandas, adicionar itens, transferir/juntar mesas e fechar conta.
 - Use `Vendas` para imprimir recibo ou cancelar venda com senha de administrador.
-- Use `Configuracoes` para ajustar nome do bar, taxa de servico, recibo, backup e tela inicial por cargo.
+- Use `Configuracoes` para ajustar nome da distribuidora, taxa de servico, recibo, backup e tela inicial por cargo.
 - Use `Relatorios` para ver lucratividade, turnos por operador, auditoria e backups.
 - Em `Relatorios`, use `Imprimir/PDF` e escolha `Salvar como PDF` na janela de impressao do navegador.
 

@@ -4,10 +4,17 @@ const OFFLINE_SESSION_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 const MP_PENDING_ORDER_KEY = "barcontrol:mercadopago-pending-order";
 const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
-const APP_DISPLAY_NAME = "DISTRIBUIDORA AMÉRICA BJ";
+const APP_DISPLAY_NAME = "DISTRIBUIDORA ENCONTRO DAS ÁGUAS";
+const BRAND_LOGO_URL = "/icons/distribuidora-encontro-das-aguas.jpeg";
+const BRAND_ICON_URL = "/icons/icon-192.png";
 const CURRENT_SERVICE_NUMBER = Math.max(1, Number(new URLSearchParams(window.location.search).get("atendimento")) || 1);
 document.title = `${APP_DISPLAY_NAME} - Atendimento ${CURRENT_SERVICE_NUMBER}`;
-const LEGACY_APP_NAMES = ["BarControl", "BAR ENCONTRO DAS AGUAS"];
+const LEGACY_APP_NAMES = [
+  "BarControl",
+  "BAR ENCONTRO DAS AGUAS",
+  "DISTRIBUIDORA AMÉRICA BJ",
+  "DISTRIBUIDORA AMERICA BJ",
+];
 const LOCAL_PASSWORD_RESET_VERSION = 2;
 const DEFAULT_LOCAL_PASSWORDS = {
   "u-admin": "admin123",
@@ -92,7 +99,7 @@ const permissionDescriptions = {
   assistant: "Assistente inteligente para analises e tarefas",
   reports: "Relatorios e backup",
   team: "Gerenciar acessos",
-  settings: "Dados do bar e operacao",
+  settings: "Dados da distribuidora e operacao",
   online: "Publicacao e banco real",
 };
 
@@ -717,7 +724,11 @@ function dateTime(value) {
 
 function normalizeBarName(value) {
   const name = String(value || "").trim();
-  if (!name || LEGACY_APP_NAMES.includes(name)) return APP_DISPLAY_NAME;
+  const normalizedName = name.toLocaleLowerCase("pt-BR");
+  const isLegacyName = LEGACY_APP_NAMES.some(
+    (legacyName) => legacyName.toLocaleLowerCase("pt-BR") === normalizedName,
+  );
+  if (!name || isLegacyName) return APP_DISPLAY_NAME;
   return name;
 }
 
@@ -1880,10 +1891,11 @@ async function loadOnlineSettings() {
 
   if (error || !data) return;
 
+  const normalizedBarName = normalizeBarName(data.bar_name || state.settings.barName);
   state.settings = {
     ...state.settings,
     syncMode: "supabase",
-    barName: normalizeBarName(data.bar_name || state.settings.barName),
+    barName: normalizedBarName,
     cnpj: data.cnpj || "",
     address: data.address || "",
     serviceFee: Number(data.service_fee || 0),
@@ -1899,6 +1911,10 @@ async function loadOnlineSettings() {
     ok: true,
     message: `Conectado ao banco: ${state.settings.barName}.`,
   };
+
+  if (session?.role === "admin" && data.bar_name !== normalizedBarName) {
+    await supabaseClient.from("app_settings").update({ bar_name: normalizedBarName }).eq("id", "main");
+  }
 }
 
 function isOnlineSession() {
@@ -2727,8 +2743,9 @@ function renderLogin() {
   app.innerHTML = `
     <main class="login-shell">
       <section class="login-brand">
+        <img class="login-logo" src="${BRAND_LOGO_URL}" alt="Logo ${APP_DISPLAY_NAME}" />
         <h1>${state.settings.barName || APP_DISPLAY_NAME}</h1>
-        <p>Caixa, estoque, vendas e equipe em uma operacao unica para bares.</p>
+        <p>Caixa, estoque, vendas e equipe em uma operacao unica para a distribuidora.</p>
       </section>
       <section class="login-panel">
         <h2>Acessar sistema</h2>
@@ -2814,7 +2831,7 @@ function renderApp() {
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
         <div class="brand-block">
-          <div class="brand-mark">B</div>
+          <img class="brand-mark" src="${BRAND_ICON_URL}" alt="" />
           <strong>${state.settings.barName || APP_DISPLAY_NAME}</strong>
           <span>${roles[session.role].label}</span>
         </div>
@@ -2884,14 +2901,14 @@ function topbarSubtitle(view) {
     cash: "Abertura, movimentacoes e fechamento do caixa.",
     stock: "Controle de saldo e reposicao.",
     inventory: "Contagem fisica e divergencias.",
-    products: "Cadastro de itens vendidos no bar.",
+    products: "Cadastro de itens vendidos pela distribuidora.",
     suppliers: "Compras, entradas e fornecedores.",
     clients: "Controle de fiado e clientes.",
     catalog: "Lista de produtos e precos para apresentar aos clientes.",
     assistant: "Converse com a IA e confirme tarefas no sistema.",
     reports: "Analises, exportacao e backup.",
     team: "Usuarios, senhas e permissoes.",
-    settings: "Dados do bar, inicio por cargo e backup.",
+    settings: "Dados da distribuidora, inicio por cargo e backup.",
     online: "Checklist para login real, internet e tempo real.",
   };
   return subtitles[view] || "";
@@ -3216,7 +3233,7 @@ function renderDashboard() {
     <div class="hero-admin">
       <div>
         <span>Painel exclusivo do administrador</span>
-        <h2>Operacao do bar em tempo real</h2>
+        <h2>Operacao da distribuidora em tempo real</h2>
         <p>Vendas, caixa, estoque, cozinha, fiado e auditoria em uma unica visao.</p>
       </div>
       <div class="hero-admin-actions">
@@ -5691,11 +5708,11 @@ async function closeCashAndDownloadSalesReport(useFormValues = false) {
   const closedCash = await closeOpenCash({ counted, notes });
   if (!closedCash) return;
 
-  downloadSalesReportPdf(closedCash);
+  await downloadSalesReportPdf(closedCash);
   renderApp();
 }
 
-function downloadSalesReportPdf(cash) {
+async function downloadSalesReportPdf(cash) {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF) {
     notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
@@ -5707,6 +5724,7 @@ function downloadSalesReportPdf(cash) {
     notify("Tabela do PDF ainda nao carregou. Atualize a pagina e tente novamente.");
     return;
   }
+  const brandIconData = await getBrandIconDataUrl();
 
   const sales = salesForCashPeriod(cash);
   const activeSales = sales.filter(isReceivedSale);
@@ -5730,6 +5748,7 @@ function downloadSalesReportPdf(cash) {
   doc.text(businessName, 40, 42);
   doc.setFontSize(12);
   doc.text(title, 40, 62);
+  addPdfBrandIcon(doc, brandIconData);
   doc.setFontSize(8);
   doc.setTextColor(75, 85, 99);
   [
@@ -5827,10 +5846,10 @@ function topProductsFromSales(sales, limit = 10) {
 }
 
 function downloadDailySalesReportPdf() {
-  downloadSalesPeriodReportPdf("daily");
+  return downloadSalesPeriodReportPdf("daily");
 }
 
-function downloadSalesPeriodReportPdf(period = "daily") {
+async function downloadSalesPeriodReportPdf(period = "daily") {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF) {
     notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
@@ -5842,6 +5861,7 @@ function downloadSalesPeriodReportPdf(period = "daily") {
     notify("Tabela do PDF ainda nao carregou. Atualize a pagina e tente novamente.");
     return;
   }
+  const brandIconData = await getBrandIconDataUrl();
 
   const periodInfo = salesReportPeriodRange(period);
   const sales = salesForRange(periodInfo.start, periodInfo.end, { includeInactive: true }).slice().sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -5870,6 +5890,7 @@ function downloadSalesPeriodReportPdf(period = "daily") {
   doc.text(businessName, 40, 42);
   doc.setFontSize(12);
   doc.text(`${periodInfo.title} - ${periodInfo.label}`, 40, 62);
+  addPdfBrandIcon(doc, brandIconData);
   doc.setFontSize(8);
   doc.setTextColor(75, 85, 99);
   [
@@ -7348,7 +7369,7 @@ function renderSettings() {
   return `
     <div class="section-title">
       <div>
-        <h2>Configuracoes do bar</h2>
+        <h2>Configuracoes da distribuidora</h2>
         <p>Dados do estabelecimento, taxa de servico, recibo e tela inicial por cargo.</p>
       </div>
     </div>
@@ -7356,7 +7377,7 @@ function renderSettings() {
       <form id="settings-form">
         <div class="form-grid">
           <label class="field">
-            <span>Nome do bar</span>
+            <span>Nome da distribuidora</span>
             <input name="barName" value="${state.settings.barName || ""}" required />
           </label>
           <label class="field">
@@ -11383,6 +11404,7 @@ function printSaleTicketsIndividual(saleId) {
     .map(
       (item, index) => `
         <section class="ticket">
+          <img class="ticket-logo" src="${BRAND_ICON_URL}" alt="" />
           <h1>${escapeHtml(state.settings.barName || APP_DISPLAY_NAME)}</h1>
           ${state.settings.cnpj ? `<div class="cnpj">CNPJ: ${escapeHtml(state.settings.cnpj)}</div>` : ""}
           <h2>FICHA ${index + 1} DE ${units.length}</h2>
@@ -11417,6 +11439,7 @@ function printSaleTicketsIndividual(saleId) {
           body { width: 58mm; margin: 0; background: #fff; color: #000; font-family: Arial, sans-serif; }
           .ticket { width: 58mm; min-height: 82mm; padding: 4mm 3mm; page-break-after: always; break-after: page; }
           .ticket:last-child { page-break-after: auto; break-after: auto; }
+          .ticket-logo { display: block; width: 14mm; height: 14mm; margin: 0 auto 2mm; border-radius: 2mm; object-fit: cover; filter: grayscale(1) contrast(1.25); }
           h1 { margin: 0 0 2mm; text-align: center; font-size: 13px; font-weight: 800; }
           .cnpj { margin: 0 0 2mm; text-align: center; font-size: 10px; font-weight: 700; }
           h2 { margin: 0 0 3mm; text-align: center; font-size: 16px; letter-spacing: 1px; }
@@ -11491,7 +11514,8 @@ function buildReportHtml(type, title) {
         <style>
           * { box-sizing: border-box; }
           body { font-family: Arial, sans-serif; color: #111827; margin: 28px; }
-          header { border-bottom: 2px solid #111827; padding-bottom: 14px; margin-bottom: 22px; }
+          header { position: relative; border-bottom: 2px solid #111827; padding: 0 82px 14px 0; margin-bottom: 22px; min-height: 70px; }
+          .report-logo { position: absolute; top: 0; right: 0; width: 64px; height: 64px; border-radius: 6px; object-fit: cover; }
           h1 { margin: 0; font-size: 26px; }
           h2 { margin: 24px 0 10px; font-size: 18px; }
           p { margin: 4px 0; color: #4b5563; }
@@ -11511,6 +11535,7 @@ function buildReportHtml(type, title) {
       </head>
       <body>
         <header>
+          <img class="report-logo" src="${BRAND_ICON_URL}" alt="" />
           <h1>${state.settings.barName || APP_DISPLAY_NAME} - ${title}</h1>
           ${state.settings.cnpj ? `<p>CNPJ: ${state.settings.cnpj}</p>` : ""}
           ${state.settings.address ? `<p>${state.settings.address}</p>` : ""}
@@ -11689,6 +11714,25 @@ async function imageUrlToDataUrl(url) {
   });
 }
 
+let brandIconDataUrlPromise = null;
+
+async function getBrandIconDataUrl() {
+  if (!brandIconDataUrlPromise) {
+    brandIconDataUrlPromise = imageUrlToDataUrl(BRAND_ICON_URL).catch(() => "");
+  }
+  return brandIconDataUrlPromise;
+}
+
+function addPdfBrandIcon(doc, imageData, size = 50) {
+  if (!imageData) return;
+  try {
+    const pageWidth = doc.internal.pageSize.getWidth();
+    doc.addImage(imageData, "PNG", pageWidth - 40 - size, 22, size, size, undefined, "FAST");
+  } catch {
+    // O relatorio continua disponivel mesmo se o navegador nao conseguir incorporar a logo.
+  }
+}
+
 async function downloadPriceCatalogPdf() {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF) {
@@ -11712,6 +11756,7 @@ async function downloadPriceCatalogPdf() {
       }
     }),
   );
+  const brandIconData = await getBrandIconDataUrl();
 
   const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
@@ -11745,6 +11790,7 @@ async function downloadPriceCatalogPdf() {
     doc.text(businessName, margin, 34);
     doc.setFontSize(11);
     doc.text("CATALOGO DE PRECOS", margin, 54);
+    addPdfBrandIcon(doc, brandIconData, 46);
 
     const pageProducts = products.slice(page * productsPerPage, (page + 1) * productsPerPage);
     pageProducts.forEach((product, index) => {
@@ -11822,7 +11868,7 @@ function addInventoryPdfTable(doc, title, headers, rows, startY) {
   return (doc.lastAutoTable?.finalY || y) + 22;
 }
 
-function downloadInventoryPdf() {
+async function downloadInventoryPdf() {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF) {
     notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
@@ -11834,6 +11880,7 @@ function downloadInventoryPdf() {
     notify("Tabela do PDF ainda nao carregou. Atualize a pagina e tente novamente.");
     return;
   }
+  const brandIconData = await getBrandIconDataUrl();
 
   const summary = stockInventorySummary();
   const title = "Relatorio completo de inventario";
@@ -11851,6 +11898,7 @@ function downloadInventoryPdf() {
   doc.text(businessName, 40, 42);
   doc.setFontSize(12);
   doc.text(title, 40, 62);
+  addPdfBrandIcon(doc, brandIconData);
   doc.setFontSize(8);
   doc.setTextColor(75, 85, 99);
   const headerLines = [

@@ -1,4 +1,4 @@
--- Base inicial para migrar a DISTRIBUIDORA AMÉRICA BJ local para Supabase/PostgreSQL.
+-- Base inicial para migrar a DISTRIBUIDORA ENCONTRO DAS ÁGUAS local para Supabase/PostgreSQL.
 -- A autenticacao deve usar Supabase Auth. A tabela profiles complementa auth.users.
 
 create table if not exists profiles (
@@ -156,7 +156,7 @@ create table if not exists cancellations (
 
 create table if not exists app_settings (
   id text primary key default 'main',
-  bar_name text not null default 'DISTRIBUIDORA AMÉRICA BJ',
+  bar_name text not null default 'DISTRIBUIDORA ENCONTRO DAS ÁGUAS',
   cnpj text,
   address text,
   service_fee numeric(5,2) not null default 10,

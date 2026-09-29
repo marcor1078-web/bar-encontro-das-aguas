@@ -1,4 +1,4 @@
-# Publicar a DISTRIBUIDORA AMÉRICA BJ online
+# Publicar a DISTRIBUIDORA ENCONTRO DAS ÁGUAS online
 
 Este app ja esta preparado para rodar como site estatico com Supabase. A publicacao mais simples e usar GitHub + Vercel.
 
@@ -13,7 +13,7 @@ Este app ja esta preparado para rodar como site estatico com Supabase. A publica
 
 1. Acesse `https://github.com`.
 2. Clique em `New repository`.
-3. O projeto publicado pode continuar com o endereco atual `bar-encontro-das-aguas`; o nome visivel do app sera `DISTRIBUIDORA AMÉRICA BJ`.
+3. O projeto publicado pode continuar com o endereco atual `bar-encontro-das-aguas`; o nome visivel do app sera `DISTRIBUIDORA ENCONTRO DAS ÁGUAS`.
 4. Deixe como privado se quiser controlar o acesso ao codigo.
 5. Crie o repositorio vazio.
 

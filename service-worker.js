@@ -1,4 +1,4 @@
-const CACHE_NAME = "distribuidora-america-bj-v78";
+const CACHE_NAME = "distribuidora-encontro-das-aguas-v79";
 const APP_ASSETS = [
   "/",
   "/index.html",
@@ -10,7 +10,9 @@ const APP_ASSETS = [
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/icon-maskable-512.png",
-  "/icons/apple-touch-icon.png"
+  "/icons/apple-touch-icon.png",
+  "/icons/brand-app-icon.png",
+  "/icons/distribuidora-encontro-das-aguas.jpeg"
 ];
 
 const EXTERNAL_ASSETS = [

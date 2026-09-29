@@ -1,4 +1,4 @@
-# Plano para transformar a DISTRIBUIDORA AMÉRICA BJ em app online
+# Plano para transformar a DISTRIBUIDORA ENCONTRO DAS ÁGUAS em app online
 
 ## Versao atual
 

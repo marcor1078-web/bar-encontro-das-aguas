@@ -61,7 +61,7 @@ module.exports = async function handler(req, res) {
         print_on_terminal: printOnTerminal,
       },
     },
-    description: body.description || "DISTRIBUIDORA AMÉRICA BJ",
+    description: body.description || "DISTRIBUIDORA ENCONTRO DAS ÁGUAS",
   };
 
   const defaultType = paymentType(body.paymentMethod);
