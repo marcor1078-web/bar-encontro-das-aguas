@@ -143,6 +143,8 @@ const iconPaths = {
   logout: '<path d="M10 17l5-5-5-5"></path><path d="M15 12H3"></path><path d="M21 4v16"></path>',
   sun: '<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M4.93 4.93l1.41 1.41"></path><path d="M17.66 17.66l1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="M4.93 19.07l1.41-1.41"></path><path d="M17.66 6.34l1.41-1.41"></path>',
   moon: '<path d="M21 13a8 8 0 1 1-10-10 7 7 0 0 0 10 10Z"></path>',
+  palette:
+    '<path d="M12 3a9 9 0 0 0 0 18h1.2a1.8 1.8 0 0 0 1.2-3.1 1.8 1.8 0 0 1 1.2-3.1H18a3 3 0 0 0 3-3A9 9 0 0 0 12 3Z"></path><circle cx="7.5" cy="10" r="1"></circle><circle cx="10" cy="6.8" r="1"></circle><circle cx="14" cy="6.8" r="1"></circle><circle cx="16.5" cy="10" r="1"></circle>',
   download: '<path d="M12 3v12"></path><path d="M7 10l5 5 5-5"></path><path d="M5 21h14"></path>',
   print: '<path d="M7 8V3h10v5"></path><path d="M7 17H5a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2"></path><path d="M7 14h10v7H7v-7Z"></path>',
   star: '<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.8 1-6.1-4.4-4.3 6.1-.9L12 3Z"></path>',
@@ -520,6 +522,7 @@ const defaultState = {
   ],
   settings: {
     theme: "light",
+    palette: "brand",
     pwaEnabled: true,
     syncMode: "local",
     barName: APP_DISPLAY_NAME,
@@ -701,6 +704,21 @@ function saveState() {
   if (!suppressBroadcast) {
     syncChannel?.postMessage({ type: "state-updated", at: Date.now() });
   }
+}
+
+function activePalette() {
+  return state.settings.palette === "classic" ? "classic" : "brand";
+}
+
+function applyAppearance() {
+  const theme = state.settings.theme === "dark" ? "dark" : "light";
+  const palette = activePalette();
+  document.body.dataset.theme = theme;
+  document.body.dataset.palette = palette;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute(
+    "content",
+    palette === "brand" ? (theme === "dark" ? "#020611" : "#006ad8") : theme === "dark" ? "#0b1120" : "#0369a1",
+  );
 }
 
 function money(value) {
@@ -2738,7 +2756,7 @@ async function logout() {
 }
 
 function renderLogin() {
-  document.body.dataset.theme = state.settings.theme || "light";
+  applyAppearance();
   const quickUsers = state.users.filter((user) => user.active && user.showOnLogin);
   app.innerHTML = `
     <main class="login-shell">
@@ -2816,7 +2834,7 @@ function renderApp() {
     return;
   }
 
-  document.body.dataset.theme = state.settings.theme || "light";
+  applyAppearance();
   runScheduledBackup();
 
   if (!hasPermission(currentView)) {
@@ -2876,6 +2894,15 @@ function renderApp() {
             }
             <button class="icon-btn" type="button" id="theme-toggle" title="Alternar tema">
               ${icon(state.settings.theme === "dark" ? "sun" : "moon")}
+            </button>
+            <button
+              class="icon-btn palette-toggle ${activePalette() === "brand" ? "brand-active" : ""}"
+              type="button"
+              id="palette-toggle"
+              title="${activePalette() === "brand" ? "Usar cores classicas" : "Usar cores da logo"}"
+              aria-label="${activePalette() === "brand" ? "Usar cores classicas" : "Usar cores da logo"}"
+            >
+              ${icon("palette")}
             </button>
             <button class="btn secondary compact" type="button" id="logout">${icon("logout")} Sair</button>
           </div>
@@ -2950,6 +2977,12 @@ function bindAppEvents() {
   document.querySelector("#theme-toggle")?.addEventListener("click", () => {
     state.settings.theme = state.settings.theme === "dark" ? "light" : "dark";
     logAudit("Tema alterado", `Tema ${state.settings.theme}.`);
+    saveState();
+    renderApp();
+  });
+  document.querySelector("#palette-toggle")?.addEventListener("click", () => {
+    state.settings.palette = activePalette() === "brand" ? "classic" : "brand";
+    logAudit("Paleta alterada", state.settings.palette === "brand" ? "Cores da logo." : "Cores classicas.");
     saveState();
     renderApp();
   });
@@ -7403,6 +7436,32 @@ function renderSettings() {
             <span>Mensagem do recibo</span>
             <input name="receiptFooter" value="${state.settings.receiptFooter || ""}" />
           </label>
+          <fieldset class="appearance-setting full">
+            <legend>Paleta de cores neste aparelho</legend>
+            <p>Escolha as cores da nova logo ou volte ao visual classico quando quiser.</p>
+            <div class="palette-picker">
+              <label class="palette-option">
+                <input type="radio" name="palette" value="brand" ${activePalette() === "brand" ? "checked" : ""} />
+                <span class="palette-option-content">
+                  <span class="palette-preview brand-preview" aria-hidden="true">
+                    <i></i><i></i><i></i><i></i>
+                  </span>
+                  <strong>Cores da logo</strong>
+                  <small>Azul eletrico, vermelho e fundo azul-escuro.</small>
+                </span>
+              </label>
+              <label class="palette-option">
+                <input type="radio" name="palette" value="classic" ${activePalette() === "classic" ? "checked" : ""} />
+                <span class="palette-option-content">
+                  <span class="palette-preview classic-preview" aria-hidden="true">
+                    <i></i><i></i><i></i><i></i>
+                  </span>
+                  <strong>Visual classico</strong>
+                  <small>Mantem as cores usadas anteriormente no sistema.</small>
+                </span>
+              </label>
+            </div>
+          </fieldset>
           ${Object.entries(roles)
             .map(
               ([roleKey, role]) => `
@@ -11020,6 +11079,7 @@ async function saveSettings(event) {
     address: form.get("address").trim(),
     serviceFee: Number(form.get("serviceFee") || 0),
     autoBackup: form.get("autoBackup") === "true",
+    palette: form.get("palette") === "classic" ? "classic" : "brand",
     backupIntervalMinutes: 30,
     receiptFooter: form.get("receiptFooter").trim(),
     shiftStartView: Object.fromEntries(Object.keys(roles).map((roleKey) => [roleKey, form.get(`start-${roleKey}`)])),
