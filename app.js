@@ -154,6 +154,8 @@ const cashPaymentMethods = paymentMethods.filter((method) => method !== "Fiado")
 const checkoutPaymentMethods = [...paymentMethods, "Dividido"];
 const pointPaymentMethods = ["Pix", "Debito", "Credito"];
 const PAYMENT_DETAILS_PREFIX = "PAYMENT_DETAILS:";
+const DAILY_CASH_OPEN_HOUR = 6;
+const AUTOMATIC_CASH_CLOUD_REFRESH_MS = 5 * 60 * 1000;
 
 const defaultState = {
   users: [
@@ -555,6 +557,9 @@ let assistantMessages = [
 ];
 let assistantPendingAction = null;
 let assistantBusy = false;
+let onlineSalesRefreshInProgress = false;
+let automaticCashOpeningInProgress = false;
+let automaticCashLastCloudRefreshAt = 0;
 let connectionState = {
   browserOnline: navigator.onLine !== false,
   cloudReachable: navigator.onLine !== false,
@@ -857,6 +862,7 @@ function setView(view) {
   categoryFilter = "Todos";
   if (view !== "stock") stockSortMode = "default";
   renderApp();
+  if (["sales", "cash"].includes(view) && isOnlineSession()) void refreshSalesFromCloud({ silent: true });
   if (["pos", "waiter", "sales", "cash"].includes(view) && !mercadoPagoPointStatus.checked) {
     loadMercadoPagoPointStatus(true).then(() => renderApp());
   }
@@ -1773,6 +1779,7 @@ function localLogin(username, password) {
   currentView = preferredView && getUserPermissions(user).includes(preferredView) ? preferredView : getUserPermissions(user)[0] || "pos";
   logAudit("Login", `${user.name} acessou o sistema.`);
   saveState();
+  void ensureDailyCashOpen({ notifyUser: true });
   renderApp();
 }
 
@@ -1820,6 +1827,7 @@ async function loginWithSupabase(username, password) {
     await loadOnlineClientsData();
     await loadOnlineSalesData();
     await loadOnlineCashData();
+    await ensureDailyCashOpen({ notifyUser: true });
     await loadOnlineSupplierData();
     await loadOnlineTableData();
     await loadOnlineProfilesData();
@@ -2098,6 +2106,7 @@ async function restoreOnlineSession() {
     await loadOnlineClientsData();
     await loadOnlineSalesData();
     await loadOnlineCashData();
+    await ensureDailyCashOpen({ notifyUser: true });
     await loadOnlineSupplierData();
     await loadOnlineTableData();
     await loadOnlineProfilesData();
@@ -2396,7 +2405,7 @@ async function loadAllOnlineRows(table, orderColumn = "id") {
 }
 
 async function loadOnlineSalesData() {
-  if (!isOnlineSession()) return;
+  if (!isOnlineSession()) return false;
   const pendingLocalSales = state.sales.filter((sale) => sale.syncStatus === "pending");
 
   const [salesResult, saleItemsResult, kitchenResult] = await Promise.all([
@@ -2408,7 +2417,7 @@ async function loadOnlineSalesData() {
   const error = salesResult.error || saleItemsResult.error || kitchenResult.error;
   if (error) {
     notify(`Falha ao carregar vendas online: ${error.message}`);
-    return;
+    return false;
   }
 
   const itemsBySale = new Map();
@@ -2425,7 +2434,31 @@ async function loadOnlineSalesData() {
     .flatMap((payload) => payload.kitchenOrders || [])
     .filter((order) => !onlineKitchenIds.has(order.id));
   state.kitchenOrders = [...onlineKitchenOrders, ...pendingKitchenOrders];
+  rebuildDailySalesTotalsFromSales("sincronizacao Supabase");
   saveState();
+  return true;
+}
+
+async function refreshSalesFromCloud({ silent = false } = {}) {
+  if (!isOnlineSession()) {
+    if (!silent) notify("Conecte-se ao Supabase para atualizar as vendas.");
+    return false;
+  }
+  if (onlineSalesRefreshInProgress) return false;
+
+  onlineSalesRefreshInProgress = true;
+  try {
+    const loaded = await loadOnlineSalesData();
+    if (!loaded) return false;
+    await loadOnlineCashData();
+    rebuildDailySalesTotalsFromSales("sincronizacao Supabase");
+    saveState();
+    if (!silent) notify(`${state.sales.length} venda(s) atualizada(s) pelo Supabase.`);
+    renderApp();
+    return true;
+  } finally {
+    onlineSalesRefreshInProgress = false;
+  }
 }
 
 function mapCashSessionFromDb(row) {
@@ -2456,7 +2489,7 @@ function mapCashMovementFromDb(row) {
 }
 
 async function loadOnlineCashData() {
-  if (!isOnlineSession()) return;
+  if (!isOnlineSession()) return false;
 
   const [sessionsResult, movementsResult] = await Promise.all([
     supabaseClient.from("cash_sessions").select("*").order("opened_at", { ascending: true }),
@@ -2466,12 +2499,14 @@ async function loadOnlineCashData() {
   const error = sessionsResult.error || movementsResult.error;
   if (error) {
     notify(`Falha ao carregar caixa online: ${error.message}`);
-    return;
+    return false;
   }
 
   state.cashSessions = (sessionsResult.data || []).map(mapCashSessionFromDb);
   state.cashMovements = (movementsResult.data || []).map(mapCashMovementFromDb);
+  automaticCashLastCloudRefreshAt = Date.now();
   saveState();
+  return true;
 }
 
 function mapSupplierFromDb(row) {
@@ -3032,6 +3067,7 @@ function bindViewEvents() {
   document.querySelector("[data-cancel-point-order]")?.addEventListener("click", () => cancelMercadoPagoPendingOrder());
   document.querySelector("[data-export-backup]")?.addEventListener("click", exportBackup);
   document.querySelector("[data-export-sales]")?.addEventListener("click", exportSalesCsv);
+  document.querySelector("[data-refresh-sales]")?.addEventListener("click", () => refreshSalesFromCloud());
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
   document.querySelectorAll("[data-print-daily-sales-report]").forEach((button) => {
     button.addEventListener("click", downloadDailySalesReportPdf);
@@ -4889,6 +4925,7 @@ function renderSales() {
         <p>${isOnlineSession() ? "Historico e novas vendas salvando no Supabase." : "Modo de contingencia: vendas protegidas neste aparelho."}</p>
       </div>
       <div class="toolbar">
+        <button class="btn secondary" type="button" data-refresh-sales ${isOnlineSession() ? "" : "disabled"}>${icon("download")} Atualizar vendas</button>
         <button class="btn secondary" type="button" data-print-sales-period-report="daily">${icon("print")} Diario</button>
         <button class="btn secondary" type="button" data-print-sales-period-report="weekly">${icon("print")} Semanal</button>
         <button class="btn secondary" type="button" data-print-sales-period-report="monthly">${icon("print")} Mensal</button>
@@ -5197,7 +5234,7 @@ function renderCash() {
     <div class="section-title">
       <div>
         <h2>Caixa</h2>
-        <p>Abertura, movimentos e fechamento. ${isOnlineSession() ? "Salvando no Supabase." : "Modo local."}</p>
+        <p>Abertura automatica diaria as 06:00 com saldo inicial zero. ${isOnlineSession() ? "Salvando no Supabase." : "Modo local."}</p>
       </div>
       <div class="toolbar">
         <button class="btn secondary" type="button" data-open-modal="externalPayment">Registrar pagamento externo</button>
@@ -12093,6 +12130,92 @@ function localDateKey(value = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+function automaticCashOpenAt(dateKey) {
+  const [year, month, day] = String(dateKey || "").split("-").map(Number);
+  return new Date(year, month - 1, day, DAILY_CASH_OPEN_HOUR, 0, 0, 0);
+}
+
+function automaticCashSessionId(dateKey) {
+  const dateDigits = String(dateKey || "").replace(/\D/g, "").padEnd(12, "0").slice(0, 12);
+  return `a0600000-0000-4000-8000-${dateDigits}`;
+}
+
+function hasCashSessionForAutomaticDate(dateKey) {
+  return state.cashSessions.some((cash) => {
+    const openedAt = new Date(cash.openedAt);
+    return localDateKey(openedAt) === dateKey && openedAt.getHours() >= DAILY_CASH_OPEN_HOUR;
+  });
+}
+
+async function ensureDailyCashOpen({ notifyUser = false } = {}) {
+  if (!session || automaticCashOpeningInProgress) return false;
+
+  const now = new Date();
+  if (now.getHours() < DAILY_CASH_OPEN_HOUR) return false;
+  if (session.online && !isOnlineSession()) return false;
+
+  const dateKey = localDateKey(now);
+  const openedAt = automaticCashOpenAt(dateKey).toISOString();
+  const notes = "Abertura automatica diaria as 06:00.";
+  automaticCashOpeningInProgress = true;
+
+  try {
+    if (
+      isOnlineSession() &&
+      !hasCashSessionForAutomaticDate(dateKey) &&
+      Date.now() - automaticCashLastCloudRefreshAt >= AUTOMATIC_CASH_CLOUD_REFRESH_MS
+    ) {
+      await loadOnlineCashData();
+    }
+
+    if (getOpenCash() || hasCashSessionForAutomaticDate(dateKey)) return false;
+
+    if (isOnlineSession()) {
+      const { error } = await supabaseClient.from("cash_sessions").upsert(
+        {
+          id: automaticCashSessionId(dateKey),
+          user_id: session.id,
+          opened_at: openedAt,
+          opening_amount: 0,
+          notes,
+        },
+        { onConflict: "id", ignoreDuplicates: true },
+      );
+
+      if (error) {
+        if (notifyUser) notify(`Erro na abertura automatica do caixa: ${error.message}`);
+        return false;
+      }
+
+      await loadOnlineCashData();
+      logAudit("Caixa aberto automaticamente", `${formatDateKeyBr(dateKey)} as 06:00, com ${money(0)}.`);
+      saveState();
+    } else {
+      const cashCode = nextCashSessionCode();
+      state.cashSessions.push({
+        id: automaticCashSessionId(dateKey),
+        cashCode,
+        openedAt,
+        closedAt: null,
+        userId: session.id,
+        openingAmount: 0,
+        closingAmount: null,
+        closingBreakdown: null,
+        expectedAmount: null,
+        difference: null,
+        notes,
+      });
+      logAudit("Caixa aberto automaticamente", `${cashCode}: ${formatDateKeyBr(dateKey)} as 06:00, com ${money(0)}.`);
+      saveState();
+    }
+
+    if (notifyUser) notify("Caixa do dia aberto automaticamente com saldo inicial de R$ 0,00.");
+    return true;
+  } finally {
+    automaticCashOpeningInProgress = false;
+  }
+}
+
 function datetimeLocalValue(value = new Date()) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -12147,6 +12270,12 @@ function storeDailySalesTotal(dateKey = localDateKey(), source = "automatico") {
     ...(state.dailySalesTotals || []).filter((entry) => entry.date !== dateKey),
   ].sort((a, b) => String(b.date).localeCompare(String(a.date)));
   return summary;
+}
+
+function rebuildDailySalesTotalsFromSales(source = "recalculado") {
+  const dateKeys = [...new Set((state.sales || []).map((sale) => localDateKey(sale.date)).filter(Boolean))];
+  dateKeys.forEach((dateKey) => storeDailySalesTotal(dateKey, source));
+  return dateKeys.length;
 }
 
 function dailySalesTotalsForDisplay() {
@@ -12252,6 +12381,7 @@ bindViewEvents = function patchedBindViewEvents() {
 
 setInterval(async () => {
   if (session) runScheduledBackup();
+  if (session && (await ensureDailyCashOpen({ notifyUser: true }))) renderApp();
   if (session?.online && pendingOfflineOperations().length && navigator.onLine !== false && !connectionState.syncing) {
     await syncPendingOfflineSales();
   } else if (navigator.onLine !== false && !connectionState.cloudReachable) {
@@ -12294,6 +12424,7 @@ window.addEventListener("online", async () => {
   const reachable = await checkCloudConnection();
   if (!reachable) return;
   if (session?.offlineCached) await restoreOnlineSession();
+  if (session && (await ensureDailyCashOpen({ notifyUser: true }))) renderApp();
   if (session && pendingOfflineOperations().length) await syncPendingOfflineSales();
   else if (session) notify("Conexao restabelecida.");
 });
