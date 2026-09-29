@@ -721,6 +721,16 @@ function applyAppearance() {
   );
 }
 
+function togglePalette() {
+  state.settings.palette = activePalette() === "brand" ? "classic" : "brand";
+  if (session) {
+    logAudit("Paleta alterada", state.settings.palette === "brand" ? "Cores da logo." : "Cores classicas.");
+  }
+  saveState();
+  if (session) renderApp();
+  else renderLogin();
+}
+
 function money(value) {
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
@@ -2783,6 +2793,9 @@ function renderLogin() {
               ? ""
               : `<button class="btn secondary install-app-btn" type="button" data-install-app>${icon("download")} Instalar no celular ou computador</button>`
           }
+          <button class="btn secondary login-palette-toggle" type="button" data-login-palette-toggle>
+            ${icon("palette")} Cores: ${activePalette() === "brand" ? "Logo" : "Classicas"}
+          </button>
         </form>
         ${
           quickUsers.length
@@ -2825,6 +2838,7 @@ function renderLogin() {
     });
   });
   document.querySelector("[data-install-app]")?.addEventListener("click", installApp);
+  document.querySelector("[data-login-palette-toggle]")?.addEventListener("click", togglePalette);
 
 }
 
@@ -2896,13 +2910,13 @@ function renderApp() {
               ${icon(state.settings.theme === "dark" ? "sun" : "moon")}
             </button>
             <button
-              class="icon-btn palette-toggle ${activePalette() === "brand" ? "brand-active" : ""}"
+              class="btn secondary compact palette-toggle ${activePalette() === "brand" ? "brand-active" : ""}"
               type="button"
               id="palette-toggle"
               title="${activePalette() === "brand" ? "Usar cores classicas" : "Usar cores da logo"}"
               aria-label="${activePalette() === "brand" ? "Usar cores classicas" : "Usar cores da logo"}"
             >
-              ${icon("palette")}
+              ${icon("palette")} <span>Cores</span>
             </button>
             <button class="btn secondary compact" type="button" id="logout">${icon("logout")} Sair</button>
           </div>
@@ -2980,12 +2994,7 @@ function bindAppEvents() {
     saveState();
     renderApp();
   });
-  document.querySelector("#palette-toggle")?.addEventListener("click", () => {
-    state.settings.palette = activePalette() === "brand" ? "classic" : "brand";
-    logAudit("Paleta alterada", state.settings.palette === "brand" ? "Cores da logo." : "Cores classicas.");
-    saveState();
-    renderApp();
-  });
+  document.querySelector("#palette-toggle")?.addEventListener("click", togglePalette);
   document.querySelector("#open-menu")?.addEventListener("click", () => {
     document.querySelector("#sidebar")?.classList.toggle("open");
   });
