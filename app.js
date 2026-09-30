@@ -143,6 +143,7 @@ const iconPaths = {
   logout: '<path d="M10 17l5-5-5-5"></path><path d="M15 12H3"></path><path d="M21 4v16"></path>',
   sun: '<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M4.93 4.93l1.41 1.41"></path><path d="M17.66 17.66l1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="M4.93 19.07l1.41-1.41"></path><path d="M17.66 6.34l1.41-1.41"></path>',
   moon: '<path d="M21 13a8 8 0 1 1-10-10 7 7 0 0 0 10 10Z"></path>',
+  search: '<circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path>',
   palette:
     '<path d="M12 3a9 9 0 0 0 0 18h1.2a1.8 1.8 0 0 0 1.2-3.1 1.8 1.8 0 0 1 1.2-3.1H18a3 3 0 0 0 3-3A9 9 0 0 0 12 3Z"></path><circle cx="7.5" cy="10" r="1"></circle><circle cx="10" cy="6.8" r="1"></circle><circle cx="14" cy="6.8" r="1"></circle><circle cx="16.5" cy="10" r="1"></circle>',
   download: '<path d="M12 3v12"></path><path d="M7 10l5 5 5-5"></path><path d="M5 21h14"></path>',
@@ -2213,10 +2214,29 @@ function productImageUrl(product) {
   }
 }
 
+function productImageAttribution(product) {
+  const value = productImageUrl(product);
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    const params = new URLSearchParams(url.hash.slice(1));
+    const pageId = params.get("commons");
+    if (!pageId || !/^\d+$/.test(pageId)) return null;
+    return {
+      sourceUrl: `https://commons.wikimedia.org/?curid=${pageId}`,
+      license: params.get("license") || "Ver licenca",
+      credit: params.get("credit") || "Wikimedia Commons",
+    };
+  } catch {
+    return null;
+  }
+}
+
 function productImageMarkup(product, className = "product-photo") {
   const url = productImageUrl(product);
+  const attribution = productImageAttribution(product);
   return url
-    ? `<img class="${className}" src="${escapeHtml(url)}" alt="Foto de ${escapeHtml(product.name || "produto")}" loading="lazy" />`
+    ? `<img class="${className}" src="${escapeHtml(url)}" alt="Foto de ${escapeHtml(product.name || "produto")}"${attribution ? ` title="Imagem: ${escapeHtml(attribution.credit)} - ${escapeHtml(attribution.license)}"` : ""} loading="lazy" />`
     : `<span class="${className} product-photo-empty" aria-hidden="true">${escapeHtml(String(product?.name || "P").slice(0, 1).toUpperCase())}</span>`;
 }
 
@@ -8036,6 +8056,7 @@ function renderOrderModal() {
 
 function renderProductModal() {
   const product = state.products.find((item) => item.id === currentModal.id);
+  const imageAttribution = productImageAttribution(product);
   return `
     <form id="product-form">
       <div class="modal-head">
@@ -8053,13 +8074,34 @@ function renderProductModal() {
             <div class="product-image-picker">
               ${productImageMarkup(product, "product-image-preview")}
               <div>
-                <label class="btn secondary product-image-button">
-                  Escolher foto
-                  <input name="imageFile" data-product-image-input type="file" accept="image/jpeg,image/png,image/webp" />
-                </label>
+                <div class="product-image-actions">
+                  <label class="btn secondary product-image-button">
+                    Escolher foto
+                    <input name="imageFile" data-product-image-input type="file" accept="image/jpeg,image/png,image/webp" />
+                  </label>
+                  <button class="btn secondary" type="button" data-toggle-product-image-search>
+                    ${icon("search")} Buscar na internet
+                  </button>
+                </div>
                 <small class="hint">Use a camera ou escolha uma imagem. Ela sera reduzida automaticamente.</small>
+                <small class="product-image-credit" data-product-image-credit ${imageAttribution ? "" : "hidden"}>
+                  ${
+                    imageAttribution
+                      ? `<a href="${escapeHtml(imageAttribution.sourceUrl)}" target="_blank" rel="noopener noreferrer">Fonte: ${escapeHtml(imageAttribution.credit)} - ${escapeHtml(imageAttribution.license)}</a>`
+                      : ""
+                  }
+                </small>
                 ${productImageUrl(product) ? '<label class="check-line"><input name="removeImage" type="checkbox" /> Remover foto atual</label>' : ""}
               </div>
+            </div>
+            <input name="internetImageUrl" data-product-internet-image-url type="hidden" value="" />
+            <div class="product-image-search-panel" data-product-image-search-panel hidden>
+              <div class="product-image-search-bar">
+                <input type="search" data-product-image-search-input value="${escapeHtml(product?.name || "")}" placeholder="Ex.: Coca-Cola 2 litros" autocomplete="off" />
+                <button class="btn primary compact" type="button" data-search-product-images>${icon("search")} Pesquisar</button>
+              </div>
+              <small class="hint" data-product-image-search-status>As imagens sao fornecidas pelo Wikimedia Commons. Confira a fonte e a licenca.</small>
+              <div class="internet-image-results" data-product-image-results></div>
             </div>
           </div>
           <label class="field">
@@ -9083,6 +9125,7 @@ function bindModalForms() {
   bindExternalPaymentTotal();
   bindUserPermissionControls();
   bindProductImagePreview();
+  bindProductImageSearch();
 }
 
 function bindManualChargeControls() {
@@ -9120,6 +9163,10 @@ function bindProductImagePreview() {
       notify("A foto deve ter no maximo 8 MB.");
       return;
     }
+    const internetImageInput = document.querySelector("[data-product-internet-image-url]");
+    if (internetImageInput) internetImageInput.value = "";
+    const removeImage = document.querySelector('#product-form input[name="removeImage"]');
+    if (removeImage) removeImage.checked = false;
     const objectUrl = URL.createObjectURL(file);
     if (preview.tagName === "IMG") {
       preview.src = objectUrl;
@@ -9133,11 +9180,135 @@ function bindProductImagePreview() {
   });
 }
 
+function setProductImagePreview(url, alt = "Pre-visualizacao da foto do produto") {
+  const preview = document.querySelector(".product-image-preview");
+  if (!preview) return;
+  if (preview.tagName === "IMG") {
+    preview.src = url;
+    preview.alt = alt;
+    return;
+  }
+  const image = document.createElement("img");
+  image.className = preview.className.replace("product-photo-empty", "").trim();
+  image.alt = alt;
+  image.src = url;
+  preview.replaceWith(image);
+}
+
+function bindProductImageSearch() {
+  const panel = document.querySelector("[data-product-image-search-panel]");
+  const toggle = document.querySelector("[data-toggle-product-image-search]");
+  const searchInput = document.querySelector("[data-product-image-search-input]");
+  const searchButton = document.querySelector("[data-search-product-images]");
+  const results = document.querySelector("[data-product-image-results]");
+  const status = document.querySelector("[data-product-image-search-status]");
+  const selectedUrl = document.querySelector("[data-product-internet-image-url]");
+  if (!panel || !toggle || !searchInput || !searchButton || !results || !status || !selectedUrl) return;
+
+  const selectImage = (button) => {
+    let imageUrl = "";
+    try {
+      imageUrl = decodeURIComponent(button.dataset.imageUrl || "");
+    } catch {
+      imageUrl = "";
+    }
+    if (!productImageUrl({ imageUrl })) {
+      notify("A imagem escolhida nao possui um endereco valido.");
+      return;
+    }
+    selectedUrl.value = imageUrl;
+    const fileInput = document.querySelector("[data-product-image-input]");
+    if (fileInput) fileInput.value = "";
+    const removeImage = document.querySelector('#product-form input[name="removeImage"]');
+    if (removeImage) removeImage.checked = false;
+    setProductImagePreview(imageUrl, button.dataset.imageTitle || "Foto encontrada na internet");
+    results.querySelectorAll("[data-select-product-image]").forEach((entry) => entry.classList.toggle("selected", entry === button));
+
+    const credit = document.querySelector("[data-product-image-credit]");
+    if (credit) {
+      const sourceUrl = button.dataset.sourceUrl || "https://commons.wikimedia.org/";
+      credit.hidden = false;
+      credit.innerHTML = `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer">Fonte: ${escapeHtml(button.dataset.credit || "Wikimedia Commons")} - ${escapeHtml(button.dataset.license || "Ver licenca")}</a>`;
+    }
+    status.textContent = "Imagem selecionada. Agora salve o produto.";
+  };
+
+  const search = async () => {
+    const query = searchInput.value.trim();
+    if (query.length < 2) {
+      notify("Digite pelo menos 2 caracteres para pesquisar a foto.");
+      searchInput.focus();
+      return;
+    }
+    searchButton.disabled = true;
+    results.innerHTML = "";
+    status.textContent = "Pesquisando imagens...";
+    try {
+      const response = await fetch(`/api/images/search?q=${encodeURIComponent(query)}`, {
+        headers: { Accept: "application/json" },
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || "Nao foi possivel pesquisar imagens.");
+      const images = Array.isArray(data.results) ? data.results : [];
+      if (!images.length) {
+        status.textContent = "Nenhuma imagem encontrada. Tente o nome da marca, volume ou outro termo.";
+        return;
+      }
+      status.textContent = `${images.length} imagem(ns) encontrada(s). Clique na que deseja usar.`;
+      results.innerHTML = images
+        .map(
+          (image) => `
+            <article class="internet-image-result">
+              <button
+                type="button"
+                data-select-product-image
+                data-image-url="${escapeHtml(encodeURIComponent(image.selectionUrl || image.thumbnailUrl || ""))}"
+                data-image-title="${escapeHtml(image.title || "Imagem do produto")}"
+                data-source-url="${escapeHtml(image.sourceUrl || "https://commons.wikimedia.org/")}"
+                data-credit="${escapeHtml(image.credit || "Wikimedia Commons")}"
+                data-license="${escapeHtml(image.license || "Ver licenca")}"
+                title="Usar esta imagem"
+              >
+                <img src="${escapeHtml(image.thumbnailUrl || "")}" alt="${escapeHtml(image.title || "Resultado da pesquisa")}" loading="lazy" />
+                <span><strong>${escapeHtml(image.title || "Imagem")}</strong><small>${escapeHtml(image.license || "Ver licenca")}</small></span>
+              </button>
+              <a href="${escapeHtml(image.sourceUrl || "https://commons.wikimedia.org/")}" target="_blank" rel="noopener noreferrer">Ver fonte</a>
+            </article>
+          `,
+        )
+        .join("");
+      results.querySelectorAll("[data-select-product-image]").forEach((button) => {
+        button.addEventListener("click", () => selectImage(button));
+      });
+    } catch (error) {
+      status.textContent = error.message || "Nao foi possivel pesquisar imagens agora.";
+    } finally {
+      searchButton.disabled = false;
+    }
+  };
+
+  toggle.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    toggle.classList.toggle("active", !panel.hidden);
+    if (!panel.hidden) {
+      searchInput.focus();
+      if (!results.children.length && searchInput.value.trim().length >= 2) search();
+    }
+  });
+  searchButton.addEventListener("click", search);
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    search();
+  });
+}
+
 async function saveProduct(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const imageFile = form.get("imageFile");
   const removeImage = form.get("removeImage") === "on";
+  const internetImageUrl = productImageUrl({ imageUrl: form.get("internetImageUrl") });
   const currentProduct = state.products.find((product) => product.id === currentModal.id);
   const payload = {
     name: form.get("name").trim(),
@@ -9157,11 +9328,11 @@ async function saveProduct(event) {
     recipe: parseRecipeText(form.get("recipeText")),
     favorite: form.get("favorite") === "true",
     active: form.get("active") === "true",
-    imageUrl: removeImage ? "" : currentProduct?.imageUrl || "",
+    imageUrl: removeImage ? "" : internetImageUrl || currentProduct?.imageUrl || "",
   };
 
   if (isOnlineSession()) {
-    await saveProductOnline(payload, imageFile?.size ? imageFile : null, removeImage);
+    await saveProductOnline(payload, imageFile?.size ? imageFile : null, removeImage, internetImageUrl);
     return;
   }
 
@@ -9245,7 +9416,7 @@ async function deleteStoredProductImage(url) {
   await supabaseClient.storage.from("product-images").remove([path]);
 }
 
-async function saveProductOnline(payload, imageFile = null, removeImage = false) {
+async function saveProductOnline(payload, imageFile = null, removeImage = false, internetImageUrl = "") {
   const previousImageUrl = state.products.find((product) => product.id === currentModal.id)?.imageUrl || "";
   const dbPayload = {
     name: payload.name,
@@ -9304,6 +9475,13 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false)
       await deleteStoredProductImage(previousImageUrl);
     } catch (error) {
       notify(`Produto salvo, mas a foto falhou: ${error.message}. Execute a migracao de imagens no Supabase.`);
+    }
+  } else if (internetImageUrl) {
+    const imageUpdate = await supabaseClient.from("products").update({ image_url: internetImageUrl }).eq("id", productId);
+    if (imageUpdate.error) {
+      notify(`Produto salvo, mas nao foi possivel usar a imagem da internet: ${imageUpdate.error.message}`);
+    } else if (previousImageUrl !== internetImageUrl) {
+      await deleteStoredProductImage(previousImageUrl);
     }
   } else if (removeImage && previousImageUrl) {
     const imageUpdate = await supabaseClient.from("products").update({ image_url: null }).eq("id", productId);
