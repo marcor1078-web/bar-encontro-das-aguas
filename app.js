@@ -28,6 +28,26 @@ const MERCADO_PAGO_TERMINAL_REGISTRY = [
   { serial: "N95NCC704082234", number: 3, label: "Nova Point 1", expected: true },
   { serial: "N95NCC704084376", number: 4, label: "Nova Point 2", expected: true },
 ];
+const STONE_TERMINAL_REGISTRY = [
+  {
+    id: "stone:1",
+    number: 5,
+    model: "Stone",
+    serialLabel: "anterior",
+    label: "Maquininha 5 - Stone anterior (preservada)",
+    enabled: false,
+    integrationMode: "pending",
+  },
+  {
+    id: "stone:p2b-73149",
+    number: 6,
+    model: "Sunmi P2-B",
+    serialLabel: "final 73149",
+    label: "Maquininha 6 - Stone P2-B - final 73149 (manual)",
+    enabled: true,
+    integrationMode: "manual",
+  },
+];
 
 const roles = {
   admin: {
@@ -1292,7 +1312,9 @@ function paymentDisplay(sale) {
       : parts[0]
         ? partLabel(parts[0])
         : normalizePaymentMethod(sale?.payment) || "-";
-  return sale?.paymentOrigin === "manual_offline" ? `${label} (manual)` : label;
+  if (sale?.paymentOrigin === "manual_offline") return `${label} (manual offline)`;
+  if (sale?.paymentOrigin === "manual_terminal") return `${label} (manual Stone)`;
+  return label;
 }
 
 function describeMercadoPagoError(payload) {
@@ -1337,8 +1359,11 @@ function paymentTerminalOptions() {
   return [
     ...mpTerminals,
     ...expectedTerminals,
-    { id: "stone:1", provider: "stone", terminalId: "stone-1", label: "Maquininha 5 - Stone (a configurar)", enabled: false },
-    { id: "stone:2", provider: "stone", terminalId: "stone-2", label: "Maquininha 6 - Stone (a configurar)", enabled: false },
+    ...STONE_TERMINAL_REGISTRY.map((terminal) => ({
+      ...terminal,
+      provider: "stone",
+      terminalId: terminal.id,
+    })),
   ];
 }
 
@@ -1688,23 +1713,31 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
 async function processPointPaymentBeforeSale({ amount, payment, installments = 1, description, items = [], terminalKey = "" }) {
   if (!isPointPayment(payment)) return { ok: true, terminal: null };
 
-  await loadMercadoPagoPointStatus(true);
-  if (!mercadoPagoPointStatus.enabled) {
-    notify("Mercado Pago Point indisponivel. Abra pelo link online da Vercel e confira as variaveis MP_ACCESS_TOKEN e MP_TERMINAL_ID.");
-    return { ok: false };
-  }
-
   const selectedTerminal = terminalKey
     ? paymentTerminalOptions().find((terminal) => terminal.id === terminalKey)
     : getSelectedPaymentTerminal();
   if (!selectedTerminal?.enabled) {
-    notify("Selecione uma maquininha Mercado Pago ativa antes de finalizar.");
+    notify("Selecione uma maquininha ativa antes de finalizar.");
     return { ok: false };
   }
   setSelectedPaymentTerminal(selectedTerminal.id);
 
   if (selectedTerminal.provider === "stone") {
-    notify(`${selectedTerminal.label} ainda nao esta configurada. Use uma Mercado Pago ou configure a Stone primeiro.`);
+    const installmentLabel = payment === "Credito" ? (Number(installments) === 1 ? " a vista" : ` em ${Number(installments)}x`) : "";
+    const approved = confirm(
+      `${selectedTerminal.label}\n\nCobre ${money(amount)} em ${payment}${installmentLabel} diretamente na Stone.\n\nClique em OK somente depois que a maquininha mostrar PAGAMENTO APROVADO.`,
+    );
+    if (!approved) {
+      notify("Pagamento Stone nao confirmado. A venda continua aberta.");
+      return { ok: false };
+    }
+    notify("Pagamento Stone confirmado pelo operador.");
+    return { ok: true, terminal: selectedTerminal, manual: true };
+  }
+
+  await loadMercadoPagoPointStatus(true);
+  if (!mercadoPagoPointStatus.enabled) {
+    notify("Mercado Pago Point indisponivel. Abra pelo link online da Vercel e confira as variaveis MP_ACCESS_TOKEN e MP_TERMINAL_ID.");
     return { ok: false };
   }
 
@@ -4153,7 +4186,7 @@ async function finalizeSale({
       cashReceived,
       cashChange,
       discount: totals.discount,
-      paymentOrigin: selectedTerminal ? "integrated" : "",
+      paymentOrigin: selectedTerminal?.integrationMode === "manual" ? "manual_terminal" : selectedTerminal ? "integrated" : "",
       manualReference,
       terminalLabel: printDetails.terminalLabel,
       tableId: checkout?.id || null,
@@ -4189,7 +4222,14 @@ async function finalizeSale({
     tableName: printDetails.tableName,
     customerName: printDetails.customerName,
     terminalLabel: printDetails.terminalLabel,
-    paymentOrigin: manualPointPayment ? "manual_offline" : !cloudAvailable ? "offline" : "",
+    paymentOrigin:
+      selectedTerminal?.integrationMode === "manual"
+        ? "manual_terminal"
+        : manualPointPayment
+          ? "manual_offline"
+          : !cloudAvailable
+            ? "offline"
+            : "",
     manualReference,
     cashReceived: printDetails.cashReceived,
     cashChange: printDetails.cashChange,
@@ -7563,6 +7603,17 @@ function renderOnline() {
       </tr>
     `)
     .join("");
+  const stoneTerminalRows = STONE_TERMINAL_REGISTRY.map(
+    (terminal) => `
+      <tr>
+        <td>Maquininha ${terminal.number}</td>
+        <td>${escapeHtml(terminal.model)}</td>
+        <td>${escapeHtml(terminal.serialLabel)}</td>
+        <td>${terminal.integrationMode === "manual" ? "Confirmacao no app" : "Aguardando configuracao"}</td>
+        <td><span class="status ${terminal.enabled ? "green" : "amber"}">${terminal.enabled ? "Disponivel" : "Preservada"}</span></td>
+      </tr>
+    `,
+  ).join("");
   return `
     <div class="section-title">
       <div>
@@ -7601,7 +7652,11 @@ function renderOnline() {
       ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
       ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
       ${onlineCard("Impressao", "A Point imprime comprovante simples. As fichas individuais saem pelo app no Balcao ou em Vendas > Ficha.", "Ativa")}
-      ${onlineCard("Stone", "Maquininha 5 e 6 reservadas. Para ativar, precisamos habilitar Connect 2.0/Pagar.me e obter as credenciais da Stone.", "A configurar")}
+      ${onlineCard(
+        "Stone",
+        "Maquininha 6 Sunmi P2-B, final 73149, cadastrada para cobranca manual com confirmacao do operador. A Maquininha 5 permanece preservada.",
+        "Disponivel",
+      )}
       ${onlineCard(
         "Fila da Point",
         pendingPointOrder
@@ -7642,6 +7697,28 @@ function renderOnline() {
               `<tr><td colspan="6">Clique em Testar Mercado Pago Point para carregar as maquininhas.</td></tr>`
             }
           </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card" style="margin-top: 16px;">
+      <div class="section-title compact">
+        <div>
+          <h3>Maquininhas Stone</h3>
+          <p>A P2-B final 73149 ja pode ser selecionada no Balcao. A cobranca e feita na Stone e confirmada no app apos a aprovacao.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Numero</th>
+              <th>Modelo</th>
+              <th>Identificacao</th>
+              <th>Operacao</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>${stoneTerminalRows}</tbody>
         </table>
       </div>
     </section>
@@ -8931,6 +9008,8 @@ function renderClientTransactionRemovalModal() {
 
 function renderManualChargeModal() {
   const hasActiveTerminal = paymentTerminalOptions().some((terminal) => terminal.enabled);
+  const selectedTerminal = getSelectedPaymentTerminal();
+  const selectedStoneManual = selectedTerminal?.provider === "stone" && selectedTerminal.integrationMode === "manual";
   return `
     <form id="manual-charge-form">
       <div class="modal-head">
@@ -8977,7 +9056,12 @@ function renderManualChargeModal() {
           <label class="field full">
             <span>Senha de administrador</span>
             <input name="adminPassword" type="password" autocomplete="off" required />
-            <small>A cobranca so sera enviada depois da autorizacao.</small>
+            <small data-manual-charge-terminal-help>${
+              selectedStoneManual
+                ? "Na Stone, cobre o valor informado e confirme no app somente depois da aprovacao."
+                : "A cobranca so sera enviada depois da autorizacao."
+            }
+            </small>
           </label>
         </div>
         <div class="summary-list compact manual-charge-summary">
@@ -8991,7 +9075,9 @@ function renderManualChargeModal() {
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
-        <button class="btn primary" type="submit" ${hasActiveTerminal && hasNetworkConnection() ? "" : "disabled"}>Enviar para maquininha</button>
+        <button class="btn primary" data-manual-charge-submit type="submit" ${hasActiveTerminal && hasNetworkConnection() ? "" : "disabled"}>${
+          selectedStoneManual ? "Confirmar pagamento na Stone" : "Enviar para maquininha"
+        }</button>
       </div>
     </form>
   `;
@@ -9135,13 +9221,25 @@ function bindManualChargeControls() {
   const amountInput = form.querySelector("[data-manual-charge-amount]");
   const totalOutput = form.querySelector("[data-manual-charge-total]");
   const installmentsPanel = form.querySelector("[data-manual-charge-installments]");
+  const terminalSelect = form.querySelector("[data-payment-terminal]");
+  const terminalHelp = form.querySelector("[data-manual-charge-terminal-help]");
+  const submitButton = form.querySelector("[data-manual-charge-submit]");
   const update = () => {
     const payment = form.querySelector('input[name="payment"]:checked')?.value || "";
+    const terminal = paymentTerminalOptions().find((entry) => entry.id === terminalSelect?.value);
+    const stoneManual = terminal?.provider === "stone" && terminal.integrationMode === "manual";
     if (installmentsPanel) installmentsPanel.hidden = payment !== "Credito";
     if (totalOutput) totalOutput.textContent = money(Math.max(0, Number(amountInput?.value || 0)));
+    if (terminalHelp) {
+      terminalHelp.textContent = stoneManual
+        ? "Na Stone, cobre o valor informado e confirme no app somente depois da aprovacao."
+        : "A cobranca so sera enviada depois da autorizacao.";
+    }
+    if (submitButton) submitButton.textContent = stoneManual ? "Confirmar pagamento na Stone" : "Enviar para maquininha";
   };
 
   amountInput?.addEventListener("input", update);
+  terminalSelect?.addEventListener("change", update);
   form.querySelectorAll('input[name="payment"]').forEach((input) => input.addEventListener("change", update));
   update();
 }
