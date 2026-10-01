@@ -126,24 +126,32 @@ function inventoryIntelligence(days = 30) {
     });
 }
 
-function renderInventoryIntelligencePanel() {
+function renderInventoryIntelligencePanel({ includeHeading = true } = {}) {
   const rows = inventoryIntelligence();
   const reorder = rows.filter((row) => row.reorderQty > 0);
   const dead = rows.filter((row) => row.deadStock);
   const losses = rows.reduce((sum, row) => sum + row.loss, 0);
   return `
     <section class="card advanced-panel" style="margin-bottom: 16px;">
-      <div class="card-head">
-        <div>
-          <h2 class="card-title">Inteligencia de estoque</h2>
-          <p>Curva ABC, giro dos ultimos 30 dias, cobertura e sugestao para 14 dias.</p>
+      ${includeHeading ? `
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">Inteligencia de estoque</h2>
+            <p>Curva ABC, giro dos ultimos 30 dias, cobertura e sugestao para 14 dias.</p>
+          </div>
+          <div class="advanced-kpis compact">
+            <span><strong>${reorder.length}</strong> para repor</span>
+            <span><strong>${dead.length}</strong> sem giro</span>
+            <span><strong>${qty(losses)}</strong> perda inventariada</span>
+          </div>
         </div>
-        <div class="advanced-kpis compact">
+      ` : `
+        <div class="advanced-kpis inventory-modal-kpis">
           <span><strong>${reorder.length}</strong> para repor</span>
           <span><strong>${dead.length}</strong> sem giro</span>
           <span><strong>${qty(losses)}</strong> perda inventariada</span>
         </div>
-      </div>
+      `}
       <div class="table-wrap">
         <table>
           <thead><tr><th>Classe</th><th>Produto</th><th>Saldo</th><th>Vendido 30d</th><th>Receita</th><th>Cobertura</th><th>Sugestao</th><th>Diagnostico</th></tr></thead>
@@ -164,6 +172,16 @@ function renderInventoryIntelligencePanel() {
         </table>
       </div>
     </section>
+  `;
+}
+
+function renderInventoryIntelligenceModal() {
+  return `
+    <div class="modal-head">
+      <div><h2>Inteligencia de estoque</h2><p>Analise gerencial separada da rotina de cadastro e ajustes.</p></div>
+      <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+    </div>
+    <div class="modal-body inventory-intelligence-body">${renderInventoryIntelligencePanel({ includeHeading: false })}</div>
   `;
 }
 

@@ -295,6 +295,19 @@
 .advanced-migration-notice { margin: 0 18px 16px; }
 .compact-summary { margin-bottom: 16px; border: 1px solid var(--line); border-radius: 6px; }
 
+.inventory-intelligence-modal {
+  width: min(1120px, 100%);
+}
+
+.inventory-intelligence-body .advanced-panel {
+  margin-bottom: 0 !important;
+  box-shadow: none;
+}
+
+.inventory-modal-kpis {
+  padding: 0 0 14px;
+}
+
 @media (max-width: 820px) {
   .forecast-grid,
   .manager-actions,

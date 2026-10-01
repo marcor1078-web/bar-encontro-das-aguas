@@ -6240,13 +6240,13 @@ function renderStock() {
         <button class="btn secondary" type="button" data-open-modal="ingredient">Novo insumo</button>
         <button class="btn secondary" type="button" data-open-modal="inventory">Nova contagem</button>
         <button class="btn secondary" type="button" data-open-modal="priceSimulator">Simular preco</button>
+        <button class="btn secondary" type="button" data-open-modal="inventoryIntelligence">Inteligencia de estoque</button>
         <button class="btn secondary" type="button" data-open-modal="stockExpiry">Vencimentos</button>
         <button class="btn secondary ${stockSortMode === "stock-asc" ? "active" : ""}" type="button" data-stock-sort="stock-asc">Menor saldo primeiro</button>
         <button class="btn secondary ${stockSortMode === "default" ? "active" : ""}" type="button" data-stock-sort="default">Ordem normal</button>
       </div>
     </div>
     ${renderStockReportPanel()}
-    ${typeof renderInventoryIntelligencePanel === "function" ? renderInventoryIntelligencePanel() : ""}
     <section class="card stock-card">
       <div class="card-head">
         <h2 class="card-title">Produtos, precos e saldos</h2>
@@ -7934,8 +7934,13 @@ function renderModal() {
     reconciliationReview: renderReconciliationReviewModal,
     restoreBackup: renderRestoreBackupModal,
     mfaSetup: renderMfaSetupModal,
+    inventoryIntelligence: renderInventoryIntelligenceModal,
   };
-  const modalClass = currentModal.type === "salePayment" ? "modal sale-payment-modal" : "modal";
+  const modalClass = currentModal.type === "salePayment"
+    ? "modal sale-payment-modal"
+    : currentModal.type === "inventoryIntelligence"
+      ? "modal inventory-intelligence-modal"
+      : "modal";
   return `
     <div class="modal-backdrop">
       <section class="${modalClass}">
