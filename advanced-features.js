@@ -1,25 +1,4 @@
 const ADVANCED_SCHEMA_FILE = "SUPABASE_GESTAO_AVANCADA.sql";
-const ADVANCED_BACKUP_TABLES = [
-  ["suppliers", "id"],
-  ["ingredients", "id"],
-  ["products", "id"],
-  ["product_recipes", "product_id"],
-  ["product_lots", "id"],
-  ["clients", "id"],
-  ["bar_tables", "id"],
-  ["sales", "created_at"],
-  ["sale_items", "id"],
-  ["client_transactions", "created_at"],
-  ["cash_sessions", "opened_at"],
-  ["cash_movements", "created_at"],
-  ["purchases", "created_at"],
-  ["expenses", "created_at"],
-  ["inventory_counts", "created_at"],
-  ["kitchen_orders", "created_at"],
-  ["cancellations", "created_at"],
-  ["app_settings", "id"],
-];
-
 let advancedMfaState = { loaded: false, enabled: false, factorId: "", factors: [] };
 let advancedMfaEnrollment = null;
 let pendingMfaLogin = null;
@@ -922,142 +901,6 @@ async function submitReconciliationReview(event) {
   renderApp();
 }
 
-async function advancedChecksum(value) {
-  if (!globalThis.crypto?.subtle) return `size-${String(value).length}`;
-  const data = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-async function loadAllProductRecipeRows() {
-  const pageSize = 500;
-  const rows = [];
-  for (let offset = 0; ; offset += pageSize) {
-    const result = await supabaseClient
-      .from("product_recipes")
-      .select("*")
-      .order("product_id", { ascending: true })
-      .order("ingredient_id", { ascending: true })
-      .range(offset, offset + pageSize - 1);
-    if (result.error) return result;
-    rows.push(...(result.data || []));
-    if ((result.data || []).length < pageSize) return { data: rows, error: null };
-  }
-}
-
-async function buildOnlineBackupSnapshot() {
-  const snapshot = { schemaVersion: 1, createdAt: new Date().toISOString(), businessName: state.settings.barName || APP_DISPLAY_NAME, tables: {} };
-  for (const [table, orderColumn] of ADVANCED_BACKUP_TABLES) {
-    const result = table === "product_recipes" ? await loadAllProductRecipeRows() : await loadAllOnlineRows(table, orderColumn);
-    if (result.error) throw new Error(`${table}: ${result.error.message}`);
-    snapshot.tables[table] = result.data || [];
-  }
-  return snapshot;
-}
-
-const advancedOriginalLoadOnlineBackupHistory = loadOnlineBackupHistory;
-loadOnlineBackupHistory = async function advancedLoadOnlineBackupHistory() {
-  if (!isOnlineSession()) return;
-  const { data, error } = await supabaseClient.from("backup_history").select("*").order("created_at", { ascending: false }).limit(30);
-  if (error) {
-    if (advancedMissingMigration(error)) return advancedOriginalLoadOnlineBackupHistory();
-    notify(`Falha ao carregar backups online: ${error.message}`);
-    return;
-  }
-  state.backupHistory = (data || []).map(mapBackupFromDb);
-  saveState();
-};
-
-const advancedOriginalRecordOnlineBackup = recordOnlineBackup;
-recordOnlineBackup = async function advancedRecordOnlineBackup(type) {
-  if (!isOnlineSession()) return false;
-  try {
-    const snapshot = await buildOnlineBackupSnapshot();
-    const serialized = JSON.stringify(snapshot);
-    const checksum = await advancedChecksum(serialized);
-    const now = new Date().toISOString();
-    const backupResult = await supabaseClient.from("backup_history").insert({
-      type,
-      size: new Blob([serialized]).size,
-      snapshot,
-      checksum,
-      created_by: isUuid(session?.id) ? session.id : null,
-      restorable: true,
-    });
-    if (backupResult.error) {
-      if (advancedMissingMigration(backupResult.error)) return advancedOriginalRecordOnlineBackup(type);
-      throw backupResult.error;
-    }
-    await supabaseClient.rpc("touch_app_backup_time", { p_created_at: now });
-    state.settings.lastAutoBackupAt = now;
-    state.settings.lastAutoBackup = now.slice(0, 10);
-    await loadOnlineBackupHistory();
-    return true;
-  } catch (error) {
-    notify(`Erro ao criar backup restauravel: ${error.message}`);
-    return false;
-  }
-};
-
-function renderRestoreBackupModal() {
-  const backup = state.backupHistory.find((entry) => entry.id === currentModal.id);
-  if (!backup) return '<div class="modal-head"><h2>Backup nao encontrado</h2><button class="icon-btn" type="button" data-close-modal>Fechar</button></div>';
-  return `
-    <form id="restore-backup-form">
-      <div class="modal-head"><div><h2>Restaurar backup online</h2><p>${dateTime(backup.date)} - ${Math.round(backup.size / 1024)} KB</p></div><button class="icon-btn" type="button" data-close-modal>${icon("close")}</button></div>
-      <div class="danger-zone-message"><strong>Atencao</strong><p>Produtos, estoque, vendas, clientes, caixa, mesas, fornecedores e despesas voltarao ao estado deste backup. Usuarios, senhas e auditoria nao serao apagados.</p></div>
-      <div class="form-grid">
-        <label class="field full"><span>Motivo da restauracao</span><textarea name="reason" required></textarea></label>
-        <label class="field full"><span>Senha do administrador</span><input name="adminPassword" type="password" autocomplete="new-password" required /></label>
-        <label class="confirmation-check full"><input name="confirmation" type="checkbox" required /><span>Entendo que os dados atuais serao substituidos pelo conteudo deste backup.</span></label>
-      </div>
-      <div class="modal-actions"><button class="btn secondary" type="button" data-close-modal>Cancelar</button><button class="btn danger" type="submit">Restaurar agora</button></div>
-    </form>
-  `;
-}
-
-async function reloadAllOnlineBusinessData() {
-  await loadOnlineSettings();
-  await loadOnlineStockData();
-  await loadOnlineClientsData();
-  await loadOnlineSalesData();
-  await loadOnlineCashData();
-  await loadOnlineSupplierData();
-  await loadOnlineTableData();
-  await loadOnlineBackupHistory();
-  await loadOnlineReconciliationReviews();
-}
-
-async function submitRestoreBackup(event) {
-  event.preventDefault();
-  if (!isOnlineSession() || session?.role !== "admin") {
-    notify("Somente um administrador online pode restaurar backups.");
-    return;
-  }
-  const form = new FormData(event.currentTarget);
-  const admin = await authorizeAdminPassword(form.get("adminPassword"));
-  if (!admin) {
-    notify("Senha de administrador incorreta.");
-    return;
-  }
-  const reason = String(form.get("reason") || "").trim();
-  const backupId = currentModal.id;
-  event.currentTarget.querySelector("button[type='submit']").disabled = true;
-  notify("Restaurando o backup. Nao feche esta tela.");
-  const { data, error } = await supabaseClient.rpc("restore_app_backup", { p_backup_id: backupId, p_reason: reason });
-  if (error) {
-    notify(advancedMissingMigration(error) ? `Execute ${ADVANCED_SCHEMA_FILE} no Supabase antes de restaurar.` : `Falha ao restaurar: ${error.message}`);
-    event.currentTarget.querySelector("button[type='submit']").disabled = false;
-    return;
-  }
-  await reloadAllOnlineBusinessData();
-  logAudit("Backup restaurado", `${backupId}. ${reason}`);
-  saveState();
-  currentModal = null;
-  notify(`Backup restaurado com sucesso${data?.restored_at ? ` em ${dateTime(data.restored_at)}` : ""}.`);
-  renderApp();
-}
-
 function advancedDeviceKey() {
   let key = localStorage.getItem(DEVICE_KEY_STORAGE);
   if (!key) {
@@ -1300,7 +1143,6 @@ async function completeAdvancedOnlineSession(profile) {
   await loadOnlineSupplierData();
   await loadOnlineTableData();
   await loadOnlineProfilesData();
-  await loadOnlineBackupHistory();
   await loadOnlineReconciliationReviews();
   await loadOnlineAuditLog();
   const deviceAllowed = await touchOnlineDevice({ force: true });
@@ -1419,7 +1261,6 @@ bindModalForms = function advancedBindModalForms() {
   });
   if (priceForm) updatePriceSimulatorPreview();
   document.querySelector("#reconciliation-review-form")?.addEventListener("submit", submitReconciliationReview);
-  document.querySelector("#restore-backup-form")?.addEventListener("submit", submitRestoreBackup);
   document.querySelector("#mfa-setup-form")?.addEventListener("submit", submitMfaSetup);
 };
 

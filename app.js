@@ -118,7 +118,7 @@ const permissionDescriptions = {
   clients: "Fiado e clientes",
   catalog: "Lista de produtos e precos para clientes",
   assistant: "Assistente inteligente para analises e tarefas",
-  reports: "Relatorios e backup",
+  reports: "Relatorios e exportacoes",
   team: "Gerenciar acessos",
   settings: "Dados da distribuidora e operacao",
   online: "Publicacao e banco real",
@@ -516,7 +516,6 @@ const defaultState = {
     items: [],
   })),
   cancellations: [],
-  backupHistory: [],
   reconciliationReviews: [],
   onlineDevices: [],
   dailySalesTotals: [],
@@ -554,10 +553,6 @@ const defaultState = {
     address: "",
     serviceFee: 10,
     receiptFooter: "Obrigado pela preferencia.",
-    autoBackup: true,
-    lastAutoBackup: null,
-    lastAutoBackupAt: null,
-    backupIntervalMinutes: 30,
     sessionTimeoutMinutes: 30,
     closingDifferenceLimit: 5,
     pricingDefaults: {
@@ -691,7 +686,6 @@ function migrateState(nextState) {
     ...table,
   }));
   nextState.cancellations = nextState.cancellations || [];
-  nextState.backupHistory = nextState.backupHistory || [];
   nextState.reconciliationReviews = nextState.reconciliationReviews || [];
   nextState.onlineDevices = nextState.onlineDevices || [];
   nextState.dailySalesTotals = nextState.dailySalesTotals || [];
@@ -996,31 +990,6 @@ function logAudit(action, details = "") {
   state.auditLog = state.auditLog.slice(0, 250);
 }
 
-async function runScheduledBackup() {
-  if (!state.settings.autoBackup) return;
-  const intervalMs = Number(state.settings.backupIntervalMinutes || 30) * 60 * 1000;
-  const lastBackup = Date.parse(state.settings.lastAutoBackupAt || state.settings.lastAutoBackup || "");
-  if (lastBackup && Date.now() - lastBackup < intervalMs) return;
-
-  if (isOnlineSession() && (await recordOnlineBackup("automatico"))) {
-    logAudit("Backup automatico online", "Snapshot de 30 minutos registrado no Supabase.");
-    saveState();
-    return;
-  }
-
-  state.backupHistory.unshift({
-    id: id("backup"),
-    date: new Date().toISOString(),
-    type: "automatico",
-    size: JSON.stringify(state).length,
-  });
-  state.backupHistory = state.backupHistory.slice(0, 30);
-  state.settings.lastAutoBackupAt = new Date().toISOString();
-  state.settings.lastAutoBackup = state.settings.lastAutoBackupAt.slice(0, 10);
-  logAudit("Backup automatico", "Snapshot local de 30 minutos registrado.");
-  saveState();
-}
-
 function isSupabaseReady() {
   return Boolean(supabaseClient && supabaseConfig.url && supabaseConfig.publishableKey);
 }
@@ -1098,7 +1067,7 @@ async function testSupabaseConnection() {
   try {
     const { data, error } = await supabaseClient
       .from("app_settings")
-      .select("bar_name, service_fee, auto_backup, backup_interval_minutes")
+      .select("bar_name, service_fee")
       .eq("id", "main")
       .single();
 
@@ -1977,7 +1946,6 @@ async function loginWithSupabase(username, password) {
     await loadOnlineSupplierData();
     await loadOnlineTableData();
     await loadOnlineProfilesData();
-    await loadOnlineBackupHistory();
     const preferredView = state.settings.shiftStartView?.[session.role];
     currentView = preferredView && getUserPermissions(session).includes(preferredView) ? preferredView : getUserPermissions(session)[0] || "pos";
     logAudit("Login online", `${session.name} acessou pelo Supabase.`);
@@ -2020,7 +1988,7 @@ async function loadOnlineSettings() {
   if (!isSupabaseReady()) return;
   const { data, error } = await supabaseClient
     .from("app_settings")
-    .select("bar_name, cnpj, address, service_fee, receipt_footer, auto_backup, backup_interval_minutes, last_auto_backup_at, shift_start_view")
+    .select("bar_name, cnpj, address, service_fee, receipt_footer, shift_start_view")
     .eq("id", "main")
     .single();
 
@@ -2037,9 +2005,6 @@ async function loadOnlineSettings() {
     address: data.address || "",
     serviceFee: Number(data.service_fee || 0),
     receiptFooter: data.receipt_footer || state.settings.receiptFooter,
-    autoBackup: Boolean(data.auto_backup),
-    backupIntervalMinutes: Number(data.backup_interval_minutes || 30),
-    lastAutoBackupAt: data.last_auto_backup_at || state.settings.lastAutoBackupAt,
     shiftStartView: data.shift_start_view || state.settings.shiftStartView,
     ...advancedSettings,
   };
@@ -2265,7 +2230,6 @@ async function restoreOnlineSession() {
     await loadOnlineSupplierData();
     await loadOnlineTableData();
     await loadOnlineProfilesData();
-    await loadOnlineBackupHistory();
     const preferredView = state.settings.shiftStartView?.[session.role];
     currentView = CURRENT_SERVICE_NUMBER > 1 && hasPermission("pos")
       ? "pos"
@@ -2840,53 +2804,6 @@ async function loadOnlineProfilesData() {
   saveState();
 }
 
-function mapBackupFromDb(row) {
-  return {
-    id: row.id,
-    date: row.created_at,
-    type: row.type,
-    size: Number(row.size || 0),
-    restorable: Boolean(row.restorable && row.snapshot),
-    createdBy: row.created_by || "",
-    checksum: row.checksum || "",
-  };
-}
-
-async function loadOnlineBackupHistory() {
-  if (!isOnlineSession()) return;
-
-  const { data, error } = await supabaseClient.from("backup_history").select("*").order("created_at", { ascending: false }).limit(30);
-  if (error) {
-    notify(`Falha ao carregar backups online: ${error.message}`);
-    return;
-  }
-
-  state.backupHistory = (data || []).map(mapBackupFromDb);
-  saveState();
-}
-
-async function recordOnlineBackup(type) {
-  if (!isOnlineSession()) return false;
-
-  const now = new Date().toISOString();
-  const size = JSON.stringify(state).length;
-  const [backupResult, settingsResult] = await Promise.all([
-    supabaseClient.from("backup_history").insert({ type, size }),
-    supabaseClient.from("app_settings").update({ last_auto_backup_at: now }).eq("id", "main"),
-  ]);
-
-  const error = backupResult.error || settingsResult.error;
-  if (error) {
-    notify(`Erro ao registrar backup online: ${error.message}`);
-    return false;
-  }
-
-  state.settings.lastAutoBackupAt = now;
-  state.settings.lastAutoBackup = now.slice(0, 10);
-  await loadOnlineBackupHistory();
-  return true;
-}
-
 async function logout() {
   if (isSupabaseReady()) {
     await supabaseClient.auth.signOut({ scope: "local" }).catch(() => {});
@@ -2983,8 +2900,6 @@ function renderApp() {
   }
 
   applyAppearance();
-  runScheduledBackup();
-
   if (!hasPermission(currentView)) {
     currentView = visibleNav()[0]?.id || "dashboard";
   }
@@ -3081,9 +2996,9 @@ function topbarSubtitle(view) {
     clients: "Controle de fiado e clientes.",
     catalog: "Lista de produtos e precos para apresentar aos clientes.",
     assistant: "Converse com a IA e confirme tarefas no sistema.",
-    reports: "Analises, exportacao e backup.",
+    reports: "Analises e exportacao de relatorios.",
     team: "Usuarios, senhas e permissoes.",
-    settings: "Dados da distribuidora, inicio por cargo e backup.",
+    settings: "Dados da distribuidora e inicio por cargo.",
     online: "Checklist para login real, internet e tempo real.",
   };
   return subtitles[view] || "";
@@ -3258,7 +3173,6 @@ function bindViewEvents() {
   });
   document.querySelector("[data-check-point-order]")?.addEventListener("click", () => checkMercadoPagoPendingOrder());
   document.querySelector("[data-cancel-point-order]")?.addEventListener("click", () => cancelMercadoPagoPendingOrder());
-  document.querySelector("[data-export-backup]")?.addEventListener("click", exportBackup);
   document.querySelector("[data-export-sales]")?.addEventListener("click", exportSalesCsv);
   document.querySelector("[data-refresh-sales]")?.addEventListener("click", () => refreshSalesFromCloud());
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
@@ -3413,7 +3327,6 @@ function renderDashboard() {
         <p>Vendas, caixa, estoque, cozinha, fiado e auditoria em uma unica visao.</p>
       </div>
       <div class="hero-admin-actions">
-        <button class="btn secondary" type="button" data-export-backup>${icon("download")} Backup</button>
         <button class="btn secondary" type="button" data-view="reports">Relatorios</button>
       </div>
     </div>
@@ -7422,13 +7335,12 @@ function renderReports() {
   return `
     <div class="section-title">
       <div>
-        <h2>Relatorios e backup</h2>
+        <h2>Relatorios</h2>
         <p>Analise vendas, formas de pagamento, categorias e auditoria.</p>
       </div>
       <div class="toolbar">
         <button class="btn secondary" type="button" data-print-report>${icon("print")} Imprimir/PDF</button>
         <button class="btn secondary" type="button" data-export-sales>${icon("download")} CSV vendas</button>
-        <button class="btn secondary" type="button" data-export-backup>${icon("download")} Backup JSON</button>
       </div>
     </div>
     <section class="card pad" style="margin-bottom: 16px;">
@@ -7535,29 +7447,6 @@ function renderReports() {
       </section>
     </div>
     <section class="card" style="margin-top: 16px;">
-      <div class="card-head"><h2 class="card-title">Backups automaticos</h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Data</th><th>Tipo</th><th>Tamanho</th><th>Status</th><th>Acao</th></tr></thead>
-          <tbody>
-            ${state.backupHistory
-              .map(
-                (backup) => `
-                  <tr>
-                    <td>${dateTime(backup.date)}</td>
-                    <td>${backup.type}</td>
-                    <td>${Math.round(backup.size / 1024)} KB</td>
-                    <td><span class="status ${backup.restorable ? "green" : "amber"}">${backup.restorable ? "Restauravel" : "Registro"}</span></td>
-                    <td>${backup.restorable && session?.role === "admin" ? `<button class="btn compact danger" type="button" data-open-modal="restoreBackup" data-id="${backup.id}">Restaurar</button>` : "-"}</td>
-                  </tr>
-                `,
-              )
-              .join("")}
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="card" style="margin-top: 16px;">
       <div class="card-head"><h2 class="card-title">Auditoria</h2></div>
       ${auditList(state.auditLog)}
     </section>
@@ -7590,13 +7479,6 @@ function renderSettings() {
           <label class="field">
             <span>Taxa de servico (%)</span>
             <input name="serviceFee" type="number" min="0" max="30" step="0.1" value="${state.settings.serviceFee || 0}" />
-          </label>
-          <label class="field">
-            <span>Backup automatico a cada 30 minutos</span>
-            <select name="autoBackup">
-              <option value="true" ${state.settings.autoBackup ? "selected" : ""}>Ativo</option>
-              <option value="false" ${!state.settings.autoBackup ? "selected" : ""}>Inativo</option>
-            </select>
           </label>
           <label class="field full">
             <span>Mensagem do recibo</span>
@@ -7767,7 +7649,7 @@ function renderOnline() {
       <section class="card pad online-card">
         <span class="status green">Pronto para teste online</span>
         <h3>Login real e dados online</h3>
-        <p>Login por nome, permissoes, estoque, vendas, clientes, caixa, mesas, fornecedores, despesas, configuracoes e backups ja estao conectados ao Supabase.</p>
+        <p>Login por nome, permissoes, estoque, vendas, clientes, caixa, mesas, fornecedores, despesas e configuracoes ja estao conectados ao Supabase.</p>
       </section>
     </div>
     <div class="grid three-col" style="margin-top: 16px;">
@@ -7932,7 +7814,6 @@ function renderModal() {
     stockExpiry: renderStockExpiryModal,
     priceSimulator: renderPriceSimulatorModal,
     reconciliationReview: renderReconciliationReviewModal,
-    restoreBackup: renderRestoreBackupModal,
     mfaSetup: renderMfaSetupModal,
     inventoryIntelligence: renderInventoryIntelligenceModal,
   };
@@ -11537,9 +11418,7 @@ async function saveSettings(event) {
     cnpj: form.get("cnpj").trim(),
     address: form.get("address").trim(),
     serviceFee: Number(form.get("serviceFee") || 0),
-    autoBackup: form.get("autoBackup") === "true",
     palette: form.get("palette") === "classic" ? "classic" : "brand",
-    backupIntervalMinutes: 30,
     receiptFooter: form.get("receiptFooter").trim(),
     sessionTimeoutMinutes: Math.min(240, Math.max(5, Number(form.get("sessionTimeoutMinutes") || 30))),
     closingDifferenceLimit: Math.max(0, Number(form.get("closingDifferenceLimit") || 5)),
@@ -11563,8 +11442,6 @@ async function saveSettings(event) {
       address: payload.address,
       service_fee: payload.serviceFee,
       receipt_footer: payload.receiptFooter,
-      auto_backup: payload.autoBackup,
-      backup_interval_minutes: payload.backupIntervalMinutes,
       shift_start_view: payload.shiftStartView,
       advanced_settings: {
         sessionTimeoutMinutes: payload.sessionTimeoutMinutes,
@@ -12635,23 +12512,6 @@ function simpleTable(headers, rows) {
   `;
 }
 
-async function exportBackup() {
-  if (isOnlineSession()) {
-    await recordOnlineBackup("manual");
-  } else {
-    state.backupHistory.unshift({
-      id: id("backup"),
-      date: movementDate.toISOString(),
-      type: "manual",
-      size: JSON.stringify(state).length,
-    });
-  }
-
-  downloadFile(`distribuidora-america-bj-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(state, null, 2), "application/json");
-  logAudit("Backup exportado", "Arquivo JSON gerado.");
-  saveState();
-}
-
 function exportSalesCsv() {
   const rows = [
     ["id", "data", "operador", "origem_itens", "pagamento", "status", "desconto", "total", "custo", "lucro"],
@@ -12971,7 +12831,6 @@ bindViewEvents = function patchedBindViewEvents() {
 };
 
 setInterval(async () => {
-  if (session) runScheduledBackup();
   if (session && (await ensureDailyCashOpen({ notifyUser: true }))) renderApp();
   if (session?.online && pendingOfflineOperations().length && navigator.onLine !== false && !connectionState.syncing) {
     await syncPendingOfflineSales();
