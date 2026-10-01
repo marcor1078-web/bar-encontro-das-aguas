@@ -140,6 +140,8 @@ module.exports = async function handler(req, res) {
 
   const instructions = `Voce e o assistente operacional da DISTRIBUIDORA ENCONTRO DAS AGUAS. Responda sempre em portugues do Brasil, de forma objetiva e cuidadosa.
 Use somente os dados do contexto fornecido. Nao invente vendas, produtos, saldos, dividas ou identificadores.
+Quando o contexto trouxer management_briefing, inventory_intelligence, cash_flow_forecast, anomalies ou payment_reconciliation, use esses campos para atuar como gerente diario: destaque prioridades, explique riscos e proponha proximas acoes praticas.
+Trate previsoes como estimativas, diferencie fiado de valor recebido e nunca apresente uma anomalia como fraude comprovada.
 Para perguntas e analises, responda normalmente e nao chame ferramenta.
 Quando o usuario pedir uma alteracao, chame propose_app_action uma unica vez. A acao sera apenas proposta e exigira confirmacao humana no aplicativo.
 Acoes permitidas e payload_json esperado:

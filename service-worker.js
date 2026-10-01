@@ -1,10 +1,11 @@
-const CACHE_NAME = "distribuidora-encontro-das-aguas-v84";
+const CACHE_NAME = "distribuidora-encontro-das-aguas-v85";
 const APP_ASSETS = [
   "/",
   "/index.html",
   "/styles.css",
   "/supabase-config.js",
   "/app.js",
+  "/advanced-features.js",
   "/manifest.json",
   "/icon.svg",
   "/icons/icon-192.png",

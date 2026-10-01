@@ -4,6 +4,7 @@ const OFFLINE_SESSION_MAX_AGE_MS = 72 * 60 * 60 * 1000;
 const MP_PENDING_ORDER_KEY = "barcontrol:mercadopago-pending-order";
 const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
+const DEVICE_KEY_STORAGE = "barcontrol:device-key";
 const APP_DISPLAY_NAME = "DISTRIBUIDORA ENCONTRO DAS ÁGUAS";
 const BRAND_LOGO_URL = "/icons/distribuidora-encontro-das-aguas.jpeg";
 const BRAND_ICON_URL = "/icons/icon-192.png";
@@ -516,6 +517,8 @@ const defaultState = {
   })),
   cancellations: [],
   backupHistory: [],
+  reconciliationReviews: [],
+  onlineDevices: [],
   dailySalesTotals: [],
   kitchenOrders: [
     {
@@ -555,6 +558,17 @@ const defaultState = {
     lastAutoBackup: null,
     lastAutoBackupAt: null,
     backupIntervalMinutes: 30,
+    sessionTimeoutMinutes: 30,
+    closingDifferenceLimit: 5,
+    pricingDefaults: {
+      cardFee: 3.5,
+      tax: 0,
+      targetMargin: 30,
+    },
+    anomalySettings: {
+      highDiscountPercent: 15,
+      cancellationPercent: 8,
+    },
     shiftStartView: {
       admin: "dashboard",
       manager: "pos",
@@ -678,6 +692,8 @@ function migrateState(nextState) {
   }));
   nextState.cancellations = nextState.cancellations || [];
   nextState.backupHistory = nextState.backupHistory || [];
+  nextState.reconciliationReviews = nextState.reconciliationReviews || [];
+  nextState.onlineDevices = nextState.onlineDevices || [];
   nextState.dailySalesTotals = nextState.dailySalesTotals || [];
   nextState.expenses = (nextState.expenses || []).map((expense) => {
     const amount = Number(expense.amount || 0);
@@ -1147,6 +1163,24 @@ function normalizeDiscount(discount = {}) {
   };
 }
 
+function normalizeProviderReferences(references = []) {
+  return (Array.isArray(references) ? references : [])
+    .map((reference) => ({
+      provider: String(reference?.provider || "").trim().toLowerCase(),
+      reference: String(reference?.reference || reference?.orderId || "").trim(),
+      orderId: String(reference?.orderId || reference?.reference || "").trim(),
+      accountKey: String(reference?.accountKey || "primary").trim(),
+      terminalId: String(reference?.terminalId || "").trim(),
+      terminalLabel: String(reference?.terminalLabel || "").trim(),
+      method: normalizePaymentMethod(reference?.method),
+      amount: Number(reference?.amount || 0),
+      status: String(reference?.status || "pending").trim().toLowerCase(),
+      statusDetail: String(reference?.statusDetail || "").trim(),
+      checkedAt: reference?.checkedAt || new Date().toISOString(),
+    }))
+    .filter((reference) => reference.provider && reference.amount > 0);
+}
+
 function discountFromForm(form) {
   const type = String(form.get("discountType") || "none");
   const value = Number(form.get("discountValue") || 0);
@@ -1181,9 +1215,11 @@ function encodePaymentDetails({
   paymentOrigin = "",
   manualReference = "",
   terminalLabel = "",
+  providerReferences = [],
 } = {}) {
   const parts = normalizePaymentBreakdown(breakdown);
   const normalizedDiscount = normalizeDiscount(discount);
+  const normalizedProviderReferences = normalizeProviderReferences(providerReferences);
   const shouldEncode =
     parts.length > 1 ||
     payment === "Dividido" ||
@@ -1191,7 +1227,8 @@ function encodePaymentDetails({
     Number(cashChange || 0) > 0 ||
     parts.some((part) => part.method === "Credito") ||
     normalizedDiscount.amount > 0 ||
-    Boolean(paymentOrigin || manualReference || terminalLabel);
+    Boolean(paymentOrigin || manualReference || terminalLabel) ||
+    normalizedProviderReferences.length > 0;
   if (!shouldEncode) return normalizePaymentMethod(payment);
   return `${PAYMENT_DETAILS_PREFIX}${JSON.stringify({
     payment: payment || (parts.length > 1 ? "Dividido" : parts[0]?.method || ""),
@@ -1202,6 +1239,7 @@ function encodePaymentDetails({
     paymentOrigin: String(paymentOrigin || ""),
     manualReference: String(manualReference || ""),
     terminalLabel: String(terminalLabel || ""),
+    providerReferences: normalizedProviderReferences,
   })}`;
 }
 
@@ -1218,6 +1256,7 @@ function parsePaymentDetails(value) {
       paymentOrigin: "",
       manualReference: "",
       terminalLabel: "",
+      providerReferences: [],
     };
   }
 
@@ -1233,6 +1272,7 @@ function parsePaymentDetails(value) {
       paymentOrigin: String(payload.paymentOrigin || ""),
       manualReference: String(payload.manualReference || ""),
       terminalLabel: String(payload.terminalLabel || ""),
+      providerReferences: normalizeProviderReferences(payload.providerReferences),
     };
   } catch (error) {
     return {
@@ -1244,6 +1284,7 @@ function parsePaymentDetails(value) {
       paymentOrigin: "",
       manualReference: "",
       terminalLabel: "",
+      providerReferences: [],
     };
   }
 }
@@ -1732,7 +1773,21 @@ async function processPointPaymentBeforeSale({ amount, payment, installments = 1
       return { ok: false };
     }
     notify("Pagamento Stone confirmado pelo operador.");
-    return { ok: true, terminal: selectedTerminal, manual: true };
+    return {
+      ok: true,
+      terminal: selectedTerminal,
+      manual: true,
+      paymentReference: {
+        provider: "stone",
+        reference: "",
+        terminalId: selectedTerminal.terminalId || selectedTerminal.id,
+        terminalLabel: selectedTerminal.label,
+        amount,
+        method: payment,
+        status: "operator_confirmed",
+        checkedAt: new Date().toISOString(),
+      },
+    };
   }
 
   await loadMercadoPagoPointStatus(true);
@@ -1756,12 +1811,29 @@ async function processPointPaymentBeforeSale({ amount, payment, installments = 1
     return { ok: false };
   }
 
-  return { ok: true, terminal: selectedTerminal };
+  return {
+    ok: true,
+    terminal: selectedTerminal,
+    paymentReference: {
+      provider: "mercado_pago",
+      reference: pointPayment.order?.id || "",
+      orderId: pointPayment.order?.id || "",
+      accountKey: selectedTerminal.accountKey || "primary",
+      terminalId: selectedTerminal.terminalId,
+      terminalLabel: selectedTerminal.label,
+      amount,
+      method: payment,
+      status: pointPayment.order?.status || "processed",
+      statusDetail: pointPayment.order?.status_detail || "",
+      checkedAt: new Date().toISOString(),
+    },
+  };
 }
 
 async function processPointPaymentsBeforeSale({ payment, paymentBreakdown = [], total = 0, terminalKey = "", items = [], description = "" }) {
   const pointParts = pointPaymentPartsForSale({ payment, paymentBreakdown, total });
   let selectedTerminal = null;
+  const providerReferences = [];
 
   for (const part of pointParts) {
     const result = await processPointPaymentBeforeSale({
@@ -1774,9 +1846,10 @@ async function processPointPaymentsBeforeSale({ payment, paymentBreakdown = [], 
     });
     if (!result.ok) return { ok: false };
     selectedTerminal = result.terminal || selectedTerminal;
+    if (result.paymentReference) providerReferences.push(result.paymentReference);
   }
 
-  return { ok: true, terminal: selectedTerminal };
+  return { ok: true, terminal: selectedTerminal, providerReferences };
 }
 
 async function setMercadoPagoTerminalMode(operatingMode = "PDV", terminalId = "") {
@@ -1952,6 +2025,8 @@ async function loadOnlineSettings() {
     .single();
 
   if (error || !data) return;
+  const advancedResult = await supabaseClient.from("app_settings").select("advanced_settings").eq("id", "main").maybeSingle();
+  const advancedSettings = advancedResult.error ? {} : advancedResult.data?.advanced_settings || {};
 
   const normalizedBarName = normalizeBarName(data.bar_name || state.settings.barName);
   state.settings = {
@@ -1966,6 +2041,7 @@ async function loadOnlineSettings() {
     backupIntervalMinutes: Number(data.backup_interval_minutes || 30),
     lastAutoBackupAt: data.last_auto_backup_at || state.settings.lastAutoBackupAt,
     shiftStartView: data.shift_start_view || state.settings.shiftStartView,
+    ...advancedSettings,
   };
 
   supabaseStatus = {
@@ -2037,6 +2113,7 @@ function queueOfflineSale(sale, fiadoAmount = 0) {
       paymentOrigin: sale.paymentOrigin,
       manualReference: sale.manualReference,
       terminalLabel: sale.terminalLabel,
+      providerReferences: sale.providerReferences,
     }),
     serviceFee: Number(sale.serviceFee || 0),
     total: Number(sale.total || 0),
@@ -2462,6 +2539,7 @@ function mapSaleFromDb(row, items = []) {
     paymentOrigin: paymentDetails.paymentOrigin,
     manualReference: paymentDetails.manualReference,
     terminalLabel: paymentDetails.terminalLabel,
+    providerReferences: paymentDetails.providerReferences,
     discountAmount: Number(paymentDetails.discount?.amount || 0),
     syncStatus: "synced",
     status: row.status || "Concluida",
@@ -2768,6 +2846,9 @@ function mapBackupFromDb(row) {
     date: row.created_at,
     type: row.type,
     size: Number(row.size || 0),
+    restorable: Boolean(row.restorable && row.snapshot),
+    createdBy: row.created_by || "",
+    checksum: row.checksum || "",
   };
 }
 
@@ -3343,6 +3424,8 @@ function renderDashboard() {
       ${metric("Ticket medio", money(ticket), "Media por atendimento", "TM")}
       ${metric("Fiado hoje", money(fiadoTotal), `${fiadoToday.length} venda(s) a receber`, "FD")}
     </div>
+
+    ${typeof renderDailyManagerPanel === "function" ? renderDailyManagerPanel() : ""}
 
     <div class="grid two-col" style="margin-top: 16px;">
       <section class="card">
@@ -4116,6 +4199,7 @@ async function finalizeSale({
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
   const selectedClientId = clientId || state.clients[0]?.id || "";
   let selectedTerminal = null;
+  let providerReferences = [];
   const paymentParts = normalizePaymentBreakdown(paymentBreakdown);
   const fiadoAmount = payment === "Fiado" ? total : paymentParts.find((part) => part.method === "Fiado")?.amount || 0;
   const pointParts = pointPaymentPartsForSale({ payment, paymentBreakdown: paymentParts, total });
@@ -4147,6 +4231,16 @@ async function finalizeSale({
     ) {
       return false;
     }
+    providerReferences = pointParts.map((part) => ({
+      provider: selectedTerminal?.provider || "manual",
+      reference: manualReference,
+      terminalId: selectedTerminal?.terminalId || selectedTerminal?.id || "",
+      terminalLabel: selectedTerminal?.label || "",
+      amount: part.amount,
+      method: part.method,
+      status: "operator_confirmed",
+      checkedAt: new Date().toISOString(),
+    }));
   } else {
     try {
       const pointPayment = await processPointPaymentsBeforeSale({
@@ -4159,6 +4253,7 @@ async function finalizeSale({
       });
       if (!pointPayment.ok) return false;
       selectedTerminal = pointPayment.terminal;
+      providerReferences = normalizeProviderReferences(pointPayment.providerReferences);
     } catch (error) {
       notify("A conexao caiu durante o envio. Confira a maquininha antes de tentar novamente para evitar cobranca duplicada.");
       setCloudReachable(false, error.message || "Falha de rede durante o pagamento.");
@@ -4189,6 +4284,7 @@ async function finalizeSale({
       paymentOrigin: selectedTerminal?.integrationMode === "manual" ? "manual_terminal" : selectedTerminal ? "integrated" : "",
       manualReference,
       terminalLabel: printDetails.terminalLabel,
+      providerReferences,
       tableId: checkout?.id || null,
       clearCart: false,
       renderAfter: false,
@@ -4231,6 +4327,7 @@ async function finalizeSale({
             ? "offline"
             : "",
     manualReference,
+    providerReferences,
     cashReceived: printDetails.cashReceived,
     cashChange: printDetails.cashChange,
     discount: totals.discount,
@@ -4412,6 +4509,7 @@ async function finalizeSaleOnline({
   paymentOrigin = "",
   manualReference = "",
   terminalLabel = "",
+  providerReferences = [],
   saleItems = structuredClone(cart),
   serviceFee = 0,
   tableId = null,
@@ -4436,6 +4534,7 @@ async function finalizeSaleOnline({
     paymentOrigin,
     manualReference,
     terminalLabel,
+    providerReferences,
   });
   const saleResult = await supabaseClient
     .from("sales")
@@ -5375,22 +5474,7 @@ function renderCash() {
         <form id="cash-form" style="margin-top: 14px;">
           ${
             openCash
-              ? `<div class="form-grid">
-                  ${cashPaymentMethods
-                    .map(
-                      (method) => `
-                        <label class="field">
-                          <span>${method} contado</span>
-                          <input name="counted-${method}" type="number" min="0" step="0.01" value="${cashCountedValueForMethod(openCash, summary, method)}" />
-                        </label>
-                      `,
-                    )
-                    .join("")}
-                  <label class="field full">
-                    <span>Observacao</span>
-                    <textarea name="notes"></textarea>
-                  </label>
-                </div>`
+              ? renderCashClosingForm(openCash, summary)
               : `<div class="form-grid">
                   <label class="field">
                     <span>Valor inicial</span>
@@ -5506,7 +5590,7 @@ function renderCash() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Caixa</th><th>Abertura</th><th>Fechamento</th><th>Operador</th><th>Esperado</th><th>Contado</th><th>Diferenca</th><th>Obs.</th></tr></thead>
+          <thead><tr><th>Caixa</th><th>Abertura</th><th>Fechamento</th><th>Operador</th><th>Esperado</th><th>Contado</th><th>Diferenca</th><th>Conferencia</th><th>Obs.</th></tr></thead>
           <tbody>
             ${cashHistory
               .map(
@@ -5519,6 +5603,7 @@ function renderCash() {
                     <td>${cash.expectedAmount === null ? "-" : money(cash.expectedAmount)}</td>
                     <td>${cash.closingAmount === null ? "-" : money(cash.closingAmount)}</td>
                     <td>${cash.difference === null ? "-" : money(cash.difference)}</td>
+                    <td>${cashClosingStatusMarkup(cash)}</td>
                     <td>${cash.notes || ""}</td>
                   </tr>
                 `,
@@ -5546,7 +5631,7 @@ function cashCountedValueForMethod(openCash, summary, method) {
   return paymentValue + Number(openCash?.openingAmount || 0) + Number(summary.movements || 0);
 }
 
-async function closeOpenCash({ counted, notes = "" } = {}) {
+async function closeOpenCash({ counted, notes = "", authorization = null } = {}) {
   const openCash = getOpenCash();
   if (!openCash) {
     notify("Nao ha caixa aberto para fechar.");
@@ -5557,14 +5642,15 @@ async function closeOpenCash({ counted, notes = "" } = {}) {
   const closingAmount = Object.values(finalCounted).reduce((sum, value) => sum + Number(value || 0), 0);
   const summary = cashSummary(openCash);
   const closedAt = new Date().toISOString();
+  const closingReconciliation = buildClosingReconciliation(openCash, summary, finalCounted, authorization, closedAt);
   const closedCash = {
     ...openCash,
     cashCode: openCash.cashCode || cashSessionCode(openCash),
     closedAt,
     closingAmount,
-    closingBreakdown: finalCounted,
+    closingBreakdown: closingReconciliation,
     expectedAmount: summary.expected,
-    difference: closingAmount - summary.expected,
+    difference: closingReconciliation.totalDifference,
     notes,
   };
   storeDailySalesTotal(localDateKey(closedAt), "fechamento caixa");
@@ -5575,7 +5661,7 @@ async function closeOpenCash({ counted, notes = "" } = {}) {
       .update({
         closed_at: closedAt,
         closing_amount: closingAmount,
-        closing_breakdown: finalCounted,
+        closing_breakdown: closingReconciliation,
         expected_amount: summary.expected,
         difference: closedCash.difference,
         notes,
@@ -6093,7 +6179,10 @@ async function bindCashForm() {
     const openCash = getOpenCash();
 
     if (openCash) {
-      const closedCash = await closeOpenCash({ counted: countedFromCashForm(form), notes });
+      const counted = countedFromCashForm(form);
+      const authorization = await authorizeCashClosingDifference(openCash, counted, notes, form);
+      if (authorization === false) return;
+      const closedCash = await closeOpenCash({ counted, notes, authorization });
       if (closedCash) renderApp();
     } else {
       if (isOnlineSession()) {
@@ -6150,12 +6239,14 @@ function renderStock() {
         <button class="btn secondary" type="button" data-open-modal="product">Novo produto</button>
         <button class="btn secondary" type="button" data-open-modal="ingredient">Novo insumo</button>
         <button class="btn secondary" type="button" data-open-modal="inventory">Nova contagem</button>
+        <button class="btn secondary" type="button" data-open-modal="priceSimulator">Simular preco</button>
         <button class="btn secondary" type="button" data-open-modal="stockExpiry">Vencimentos</button>
         <button class="btn secondary ${stockSortMode === "stock-asc" ? "active" : ""}" type="button" data-stock-sort="stock-asc">Menor saldo primeiro</button>
         <button class="btn secondary ${stockSortMode === "default" ? "active" : ""}" type="button" data-stock-sort="default">Ordem normal</button>
       </div>
     </div>
     ${renderStockReportPanel()}
+    ${typeof renderInventoryIntelligencePanel === "function" ? renderInventoryIntelligencePanel() : ""}
     <section class="card stock-card">
       <div class="card-head">
         <h2 class="card-title">Produtos, precos e saldos</h2>
@@ -7037,6 +7128,7 @@ function renderAssistant() {
         <button type="button" data-assistant-prompt="Quais produtos precisam de reposicao primeiro?">Reposicao de estoque</button>
         <button type="button" data-assistant-prompt="Quais sao os produtos mais vendidos nos ultimos 7 dias?">Mais vendidos</button>
         <button type="button" data-assistant-prompt="Resuma as despesas em aberto e os proximos vencimentos.">Despesas em aberto</button>
+        <button type="button" data-assistant-prompt="Prepare meu resumo executivo de hoje e destaque os problemas que precisam de acao.">Gerente diario</button>
         <small>A IA le um resumo atualizado. Qualquer alteracao exige sua confirmacao.</small>
       </aside>
 
@@ -7365,6 +7457,9 @@ function renderReports() {
         </div>
       </form>
     </section>
+    ${typeof renderPaymentReconciliationPanel === "function" ? renderPaymentReconciliationPanel() : ""}
+    ${typeof renderCashFlowForecastPanel === "function" ? renderCashFlowForecastPanel() : ""}
+    ${typeof renderAnomalyPanel === "function" ? renderAnomalyPanel() : ""}
     <div class="grid two-col">
       <section class="card">
         <div class="card-head">
@@ -7443,7 +7538,7 @@ function renderReports() {
       <div class="card-head"><h2 class="card-title">Backups automaticos</h2></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Data</th><th>Tipo</th><th>Tamanho</th></tr></thead>
+          <thead><tr><th>Data</th><th>Tipo</th><th>Tamanho</th><th>Status</th><th>Acao</th></tr></thead>
           <tbody>
             ${state.backupHistory
               .map(
@@ -7452,6 +7547,8 @@ function renderReports() {
                     <td>${dateTime(backup.date)}</td>
                     <td>${backup.type}</td>
                     <td>${Math.round(backup.size / 1024)} KB</td>
+                    <td><span class="status ${backup.restorable ? "green" : "amber"}">${backup.restorable ? "Restauravel" : "Registro"}</span></td>
+                    <td>${backup.restorable && session?.role === "admin" ? `<button class="btn compact danger" type="button" data-open-modal="restoreBackup" data-id="${backup.id}">Restaurar</button>` : "-"}</td>
                   </tr>
                 `,
               )
@@ -7505,6 +7602,34 @@ function renderSettings() {
             <span>Mensagem do recibo</span>
             <input name="receiptFooter" value="${state.settings.receiptFooter || ""}" />
           </label>
+          <label class="field">
+            <span>Encerrar sessao apos inatividade (minutos)</span>
+            <input name="sessionTimeoutMinutes" type="number" min="5" max="240" step="5" value="${state.settings.sessionTimeoutMinutes || 30}" />
+          </label>
+          <label class="field">
+            <span>Diferenca de caixa que exige autorizacao</span>
+            <input name="closingDifferenceLimit" type="number" min="0" step="0.01" value="${state.settings.closingDifferenceLimit ?? 5}" />
+          </label>
+          <label class="field">
+            <span>Taxa de cartao padrao (%)</span>
+            <input name="pricingCardFee" type="number" min="0" max="50" step="0.01" value="${state.settings.pricingDefaults?.cardFee ?? 3.5}" />
+          </label>
+          <label class="field">
+            <span>Impostos padrao (%)</span>
+            <input name="pricingTax" type="number" min="0" max="50" step="0.01" value="${state.settings.pricingDefaults?.tax ?? 0}" />
+          </label>
+          <label class="field">
+            <span>Margem desejada padrao (%)</span>
+            <input name="pricingTargetMargin" type="number" min="0" max="90" step="0.1" value="${state.settings.pricingDefaults?.targetMargin ?? 30}" />
+          </label>
+          <label class="field">
+            <span>Desconto alto para alerta (%)</span>
+            <input name="highDiscountPercent" type="number" min="0" max="100" step="1" value="${state.settings.anomalySettings?.highDiscountPercent ?? 15}" />
+          </label>
+          <label class="field">
+            <span>Taxa de cancelamento para alerta (%)</span>
+            <input name="cancellationPercent" type="number" min="0" max="100" step="1" value="${state.settings.anomalySettings?.cancellationPercent ?? 8}" />
+          </label>
           <fieldset class="appearance-setting full">
             <legend>Paleta de cores neste aparelho</legend>
             <p>Escolha as cores da nova logo ou volte ao visual classico quando quiser.</p>
@@ -7553,6 +7678,7 @@ function renderSettings() {
         <button class="btn primary" type="submit">Salvar configuracoes</button>
       </form>
     </section>
+    ${typeof renderSecurityCenter === "function" ? renderSecurityCenter() : ""}
   `;
 }
 
@@ -7804,6 +7930,10 @@ function renderModal() {
     printTickets: renderPrintTicketsModal,
     productHistory: renderProductHistoryModal,
     stockExpiry: renderStockExpiryModal,
+    priceSimulator: renderPriceSimulatorModal,
+    reconciliationReview: renderReconciliationReviewModal,
+    restoreBackup: renderRestoreBackupModal,
+    mfaSetup: renderMfaSetupModal,
   };
   const modalClass = currentModal.type === "salePayment" ? "modal sale-payment-modal" : "modal";
   return `
@@ -11022,7 +11152,7 @@ function bindExternalPaymentTotal() {
   updateTotal();
 }
 
-function buildManualChargeSale({ description, amount, payment, installments, terminalLabel, syncStatus }) {
+function buildManualChargeSale({ description, amount, payment, installments, terminalLabel, providerReferences = [], syncStatus }) {
   const date = new Date().toISOString();
   return {
     id: uuid(),
@@ -11035,6 +11165,7 @@ function buildManualChargeSale({ description, amount, payment, installments, ter
     paymentOrigin: "manual_charge",
     manualReference: description,
     terminalLabel,
+    providerReferences: normalizeProviderReferences(providerReferences),
     status: "Cobranca avulsa",
     syncStatus,
     serviceFee: 0,
@@ -11059,7 +11190,7 @@ function storeManualChargeLocally(sale, queueForSync = false) {
   saveState();
 }
 
-async function recordManualCharge({ description, amount, payment, installments, terminal }) {
+async function recordManualCharge({ description, amount, payment, installments, terminal, providerReferences = [] }) {
   const terminalLabel = ticketTerminalLabel(terminal);
   const shouldSyncLater = Boolean(session?.online && isSupabaseReady());
   const sale = buildManualChargeSale({
@@ -11068,6 +11199,7 @@ async function recordManualCharge({ description, amount, payment, installments, 
     payment,
     installments,
     terminalLabel,
+    providerReferences,
     syncStatus: shouldSyncLater ? "pending" : "local",
   });
 
@@ -11082,6 +11214,7 @@ async function recordManualCharge({ description, amount, payment, installments, 
     paymentOrigin: sale.paymentOrigin,
     manualReference: description,
     terminalLabel,
+    providerReferences: sale.providerReferences,
   });
   const saleResult = await supabaseClient
     .from("sales")
@@ -11186,6 +11319,7 @@ async function saveManualCharge(event) {
       payment,
       installments,
       terminal: pointPayment.terminal || terminal,
+      providerReferences: pointPayment.paymentReference ? [pointPayment.paymentReference] : [],
     });
     if (!result.ok) return;
 
@@ -11238,6 +11372,18 @@ async function saveExternalPayment(event) {
   const productsTotal = saleItems.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
   const saleTotal = amount > 0 ? amount : productsTotal;
   const saleCost = saleItems.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.cost || 0), 0);
+  const externalProvider = /stone/i.test(terminalLabel) ? "stone" : /mercado|point/i.test(terminalLabel) ? "mercado_pago" : "external";
+  const externalReferences = isPointPayment(payment)
+    ? [{ provider: externalProvider, reference: note, terminalLabel, amount: saleTotal, method: payment, status: "operator_confirmed", checkedAt: new Date().toISOString() }]
+    : [];
+  const encodedExternalPayment = encodePaymentDetails({
+    payment,
+    breakdown: [{ method: payment, amount: saleTotal }],
+    paymentOrigin: "external_terminal",
+    manualReference: note,
+    terminalLabel,
+    providerReferences: externalReferences,
+  });
 
   if (!saleTotal || saleTotal <= 0) {
     notify("Informe o valor pago ou selecione produtos vendidos.");
@@ -11258,7 +11404,7 @@ async function saveExternalPayment(event) {
       .insert({
         cashier_id: session.id,
         client_id: null,
-        payment,
+        payment: encodedExternalPayment,
         status: "Pagamento externo",
         service_fee: 0,
         total: saleTotal,
@@ -11331,6 +11477,10 @@ async function saveExternalPayment(event) {
     clientId: null,
     tableId: null,
     payment,
+    paymentBreakdown: [{ method: payment, amount: saleTotal }],
+    paymentOrigin: "external_terminal",
+    manualReference: note,
+    providerReferences: externalReferences,
     status: "Pagamento externo",
     serviceFee: 0,
     total: saleTotal,
@@ -11367,11 +11517,22 @@ async function saveSettings(event) {
     palette: form.get("palette") === "classic" ? "classic" : "brand",
     backupIntervalMinutes: 30,
     receiptFooter: form.get("receiptFooter").trim(),
+    sessionTimeoutMinutes: Math.min(240, Math.max(5, Number(form.get("sessionTimeoutMinutes") || 30))),
+    closingDifferenceLimit: Math.max(0, Number(form.get("closingDifferenceLimit") || 5)),
+    pricingDefaults: {
+      cardFee: Math.max(0, Number(form.get("pricingCardFee") || 0)),
+      tax: Math.max(0, Number(form.get("pricingTax") || 0)),
+      targetMargin: Math.max(0, Number(form.get("pricingTargetMargin") || 0)),
+    },
+    anomalySettings: {
+      highDiscountPercent: Math.max(0, Number(form.get("highDiscountPercent") || 15)),
+      cancellationPercent: Math.max(0, Number(form.get("cancellationPercent") || 8)),
+    },
     shiftStartView: Object.fromEntries(Object.keys(roles).map((roleKey) => [roleKey, form.get(`start-${roleKey}`)])),
   };
 
   if (isOnlineSession()) {
-    const { error } = await supabaseClient.from("app_settings").upsert({
+    const settingsRow = {
       id: "main",
       bar_name: payload.barName,
       cnpj: payload.cnpj,
@@ -11381,7 +11542,20 @@ async function saveSettings(event) {
       auto_backup: payload.autoBackup,
       backup_interval_minutes: payload.backupIntervalMinutes,
       shift_start_view: payload.shiftStartView,
-    });
+      advanced_settings: {
+        sessionTimeoutMinutes: payload.sessionTimeoutMinutes,
+        closingDifferenceLimit: payload.closingDifferenceLimit,
+        pricingDefaults: payload.pricingDefaults,
+        anomalySettings: payload.anomalySettings,
+      },
+    };
+    let { error } = await supabaseClient.from("app_settings").upsert(settingsRow);
+
+    if (error && /advanced_settings|schema cache|column/i.test(error.message || "")) {
+      const { advanced_settings: ignoredAdvancedSettings, ...legacySettingsRow } = settingsRow;
+      ({ error } = await supabaseClient.from("app_settings").upsert(legacySettingsRow));
+      if (!error) notify("Configuracoes basicas salvas. Execute a migracao de gestao avancada para sincronizar a seguranca e os limites.");
+    }
 
     if (error) {
       notify(`Erro ao salvar configuracoes online: ${error.message}`);

@@ -36,6 +36,14 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Sincronizacao local entre abas
 - Produtos
 - Equipe
+- Conciliacao automatica de pagamentos com referencia da operadora
+- Curva ABC, giro, cobertura, sugestao de compra e estoque sem giro
+- Fluxo de caixa projetado para 30, 60 e 90 dias
+- Simulador de preco com custos, taxas, impostos e margem
+- Conferencia detalhada do fechamento por forma de pagamento
+- 2FA, encerramento por inatividade e central de aparelhos
+- Backup online restauravel e auditoria imutavel
+- Gerente diario com alertas de anomalias
 
 ## Como abrir
 
@@ -94,6 +102,13 @@ O app ja esta configurado para usar Supabase em login real e nas principais area
 - fornecedores, compras e despesas
 - mesas e comandas
 - backups
+
+Para ativar os recursos avancados no banco, execute uma vez no SQL Editor:
+
+- `SUPABASE_GESTAO_AVANCADA.sql`
+
+Esse arquivo cria conciliacao, central de aparelhos, backup restauravel, auditoria
+imutavel e as funcoes protegidas de restauracao. Ele nao apaga os dados atuais.
 
 Para publicar na internet, siga o arquivo:
 
