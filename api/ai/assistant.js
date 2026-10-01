@@ -1,4 +1,8 @@
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://cuwzzrxstaxmzzzidzqv.supabase.co";
+const SUPABASE_PUBLISHABLE_KEY =
+  process.env.SUPABASE_PUBLISHABLE_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  "sb_publishable_2tj3Ss6dNdlWJkDutRvZfQ_xdRKoR_t";
 const OPENAI_API_URL = "https://api.openai.com/v1/responses";
 const ALLOWED_ACTIONS = new Set(["update_stock", "update_price", "create_expense", "create_cash_expense", "navigate"]);
 
@@ -103,16 +107,16 @@ function localManagerAnswer(message, businessContext) {
   return lines.join("\n");
 }
 
-async function validateUser(accessToken, serviceRoleKey) {
+async function validateUser(accessToken) {
   const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${accessToken}` },
+    headers: { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${accessToken}` },
   });
   const user = await userResponse.json().catch(() => ({}));
   if (!userResponse.ok || !user?.id) return null;
 
   const profileResponse = await fetch(
     `${SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,name,role,permissions,active`,
-    { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } },
+    { headers: { apikey: SUPABASE_PUBLISHABLE_KEY, Authorization: `Bearer ${accessToken}` } },
   );
   const profiles = await profileResponse.json().catch(() => []);
   const profile = Array.isArray(profiles) ? profiles[0] : null;
@@ -130,11 +134,6 @@ module.exports = async function handler(req, res) {
   }
 
   const openAIKey = String(process.env.OPENAI_API_KEY || "").trim();
-  const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
-  if (!serviceRoleKey) {
-    json(res, 501, { error: "supabase_not_configured", message: "Configure SUPABASE_SERVICE_ROLE_KEY na Vercel." });
-    return;
-  }
 
   const accessToken = bearerToken(req);
   if (!accessToken) {
@@ -142,7 +141,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const profile = await validateUser(accessToken, serviceRoleKey);
+  const profile = await validateUser(accessToken);
   if (!profile) {
     json(res, 401, { error: "invalid_session", message: "Sessao invalida. Entre novamente no app." });
     return;
