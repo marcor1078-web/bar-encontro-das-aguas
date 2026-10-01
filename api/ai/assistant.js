@@ -64,6 +64,45 @@ function openAIAction(response) {
   }
 }
 
+function localMoney(value) {
+  return Number(value || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function localManagerAnswer(message, businessContext) {
+  const request = String(message || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (!/(gerente|resumo|executivo|prioridade|situacao.*hoje|como.*negocio)/.test(request)) return "";
+
+  const briefing = businessContext?.management_briefing || {};
+  const anomalies = Array.isArray(businessContext?.anomalies) ? businessContext.anomalies : [];
+  const inventory = Array.isArray(businessContext?.inventory_intelligence) ? businessContext.inventory_intelligence : [];
+  const forecasts = Array.isArray(businessContext?.cash_flow_forecast) ? businessContext.cash_flow_forecast : [];
+  const reconciliation = businessContext?.payment_reconciliation || {};
+  const variation = Number(briefing.variation_percent || 0);
+  const suggestions = Array.isArray(briefing.suggestions) ? briefing.suggestions.filter(Boolean) : [];
+  const reorder = inventory.filter((item) => Number(item.suggested_reorder || 0) > 0).slice(0, 3);
+  const pendingPayments = Number(reconciliation.pending || 0) + Number(reconciliation.discrepancy || 0);
+  const forecast30 = forecasts.find((item) => Number(item.days) === 30);
+  const lines = [
+    "Resumo automatico do gerente",
+    `Recebido hoje: ${localMoney(briefing.received_today)} (${variation >= 0 ? "+" : ""}${variation.toFixed(1)}% em relacao a media recente).`,
+    `Despesas em aberto: ${localMoney(briefing.open_expenses)}.`,
+  ];
+
+  if (forecast30) lines.push(`Projecao liquida para 30 dias: ${localMoney(forecast30.projectedBalance)}.`);
+  if (pendingPayments) lines.push(`Pagamentos que exigem conferencia: ${pendingPayments}.`);
+  lines.push("", "Prioridades:");
+  if (suggestions.length) suggestions.slice(0, 4).forEach((item, index) => lines.push(`${index + 1}. ${item}`));
+  else if (reorder.length) reorder.forEach((item, index) => lines.push(`${index + 1}. Repor ${item.product}: ${item.suggested_reorder} unidade(s).`));
+  else lines.push("1. Nenhuma prioridade critica foi detectada agora.");
+
+  if (anomalies.length) {
+    lines.push("", "Alertas:");
+    anomalies.slice(0, 5).forEach((item) => lines.push(`- ${item.title}: ${item.detail}`));
+  }
+  lines.push("", "Este resumo foi calculado pelo proprio sistema. Para perguntas livres e execucao assistida de tarefas, configure a chave da OpenAI na Vercel.");
+  return lines.join("\n");
+}
+
 async function validateUser(accessToken, serviceRoleKey) {
   const userResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
     headers: { apikey: serviceRoleKey, Authorization: `Bearer ${accessToken}` },
@@ -92,10 +131,6 @@ module.exports = async function handler(req, res) {
 
   const openAIKey = String(process.env.OPENAI_API_KEY || "").trim();
   const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
-  if (!openAIKey) {
-    json(res, 501, { error: "openai_not_configured", message: "Configure OPENAI_API_KEY nas variaveis da Vercel." });
-    return;
-  }
   if (!serviceRoleKey) {
     json(res, 501, { error: "supabase_not_configured", message: "Configure SUPABASE_SERVICE_ROLE_KEY na Vercel." });
     return;
@@ -137,6 +172,19 @@ module.exports = async function handler(req, res) {
       }))
     : [];
   const businessContext = body.context && typeof body.context === "object" ? body.context : {};
+
+  if (!openAIKey) {
+    const localAnswer = localManagerAnswer(message, businessContext);
+    if (localAnswer) {
+      json(res, 200, { answer: localAnswer, action: null, model: "gerente-local" });
+      return;
+    }
+    json(res, 501, {
+      error: "openai_not_configured",
+      message: "O resumo Gerente diario funciona sem chave. Para conversar livremente com a IA, configure OPENAI_API_KEY nas variaveis da Vercel.",
+    });
+    return;
+  }
 
   const instructions = `Voce e o assistente operacional da DISTRIBUIDORA ENCONTRO DAS AGUAS. Responda sempre em portugues do Brasil, de forma objetiva e cuidadosa.
 Use somente os dados do contexto fornecido. Nao invente vendas, produtos, saldos, dividas ou identificadores.
