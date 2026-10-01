@@ -7940,6 +7940,8 @@ function renderModal() {
     ? "modal sale-payment-modal"
     : currentModal.type === "inventoryIntelligence"
       ? "modal inventory-intelligence-modal"
+      : currentModal.type === "priceSimulator"
+        ? "modal price-simulator-modal"
       : "modal";
   return `
     <div class="modal-backdrop">
@@ -9649,7 +9651,7 @@ async function deleteStoredProductImage(url) {
   await supabaseClient.storage.from("product-images").remove([path]);
 }
 
-async function saveProductOnline(payload, imageFile = null, removeImage = false, internetImageUrl = "") {
+async function saveProductOnline(payload, imageFile = null, removeImage = false, internetImageUrl = "", options = {}) {
   const previousImageUrl = state.products.find((product) => product.id === currentModal.id)?.imageUrl || "";
   const dbPayload = {
     name: payload.name,
@@ -9743,11 +9745,28 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     }
   }
 
+  if (options.stockAdjustment) {
+    const adjustment = options.stockAdjustment;
+    const insertAdjustment = await supabaseClient.from("inventory_counts").insert({
+      user_id: session.id,
+      item_type: "product",
+      item_id: productId,
+      expected: adjustment.previousStock,
+      counted: adjustment.nextStock,
+      difference: adjustment.nextStock - adjustment.previousStock,
+      notes: `Ajuste pelo simulador: ${adjustment.reason}`,
+    });
+    if (insertAdjustment.error) {
+      notify(`Produto atualizado, mas falhou ao registrar a movimentacao: ${insertAdjustment.error.message}`);
+    }
+  }
+
   currentModal = null;
   await loadOnlineStockData();
-  logAudit("Produto salvo online", payload.name);
-  notify("Produto salvo no Supabase.");
+  logAudit(options.auditAction || "Produto salvo online", payload.name);
+  notify(options.successMessage || "Produto salvo no Supabase.");
   renderApp();
+  return result.data;
 }
 
 async function removeProduct(productId) {

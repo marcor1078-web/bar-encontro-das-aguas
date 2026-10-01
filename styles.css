@@ -204,7 +204,70 @@
 .price-simulator-output strong { color: var(--text); font-size: 20px; }
 .price-simulator-output .suggested { background: #ecfdf5; }
 .price-simulator-output .suggested strong { color: #047857; }
+.price-simulator-output > .notice {
+  grid-column: 1 / -1;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
 [data-theme="dark"] .price-simulator-output .suggested { background: #052e2b; }
+
+.price-simulator-modal {
+  width: min(1040px, 100%);
+  overflow: hidden;
+}
+
+#price-simulator-form {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(860px, 92vh);
+}
+
+.price-simulator-body {
+  overflow: auto;
+}
+
+.price-simulator-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.price-simulator-section + .price-simulator-section {
+  margin-top: 14px;
+}
+
+.price-simulator-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.price-simulator-section-head h3,
+.price-simulator-section-head p {
+  margin: 0;
+}
+
+.price-simulator-section-head h3 {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.price-simulator-section-head p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.price-simulator-section .field:last-child {
+  margin-bottom: 0;
+}
+
+body[data-theme="dark"] .price-simulator-section {
+  border-color: #334155;
+}
 
 .closing-reconciliation {
   display: grid;
@@ -312,6 +375,15 @@
   .forecast-grid,
   .manager-actions,
   .price-simulator-output { grid-template-columns: 1fr; }
+
+  .price-simulator-section {
+    padding: 12px;
+  }
+
+  .price-simulator-section-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
   .forecast-card { border-right: 0; border-bottom: 1px solid var(--line); }
   .forecast-card:last-child { border-bottom: 0; }
   .daily-manager-head { flex-direction: column; }

@@ -435,14 +435,14 @@ function renderAnomalyPanel() {
 
 function priceSimulationValues(form) {
   const product = state.products.find((entry) => entry.id === String(form.get("productId") || ""));
-  const cost = Math.max(0, Number(form.get("cost") || product?.cost || 0));
+  const cost = Math.max(0, Number(form.get("cost") || 0));
   const extraCost = Math.max(0, Number(form.get("extraCost") || 0));
   const cardFee = Math.max(0, Number(form.get("cardFee") || 0));
   const tax = Math.max(0, Number(form.get("tax") || 0));
   const targetMargin = Math.max(0, Number(form.get("targetMargin") || 0));
   const deductions = (cardFee + tax + targetMargin) / 100;
   const suggestedPrice = deductions < 0.95 ? (cost + extraCost) / (1 - deductions) : 0;
-  const currentPrice = Number(product?.price || 0);
+  const currentPrice = Math.max(0, Number(form.get("currentPrice") || product?.price || 0));
   const currentMargin = currentPrice > 0 ? ((currentPrice - cost - extraCost - currentPrice * ((cardFee + tax) / 100)) / currentPrice) * 100 : 0;
   return { product, cost, extraCost, cardFee, tax, targetMargin, deductions, suggestedPrice, currentPrice, currentMargin };
 }
@@ -453,22 +453,95 @@ function renderPriceSimulatorModal() {
   return `
     <form id="price-simulator-form">
       <div class="modal-head">
-        <div><h2>Simulador de preco</h2><p>Calcule um preco que cubra custo, taxas, impostos e margem.</p></div>
+        <div><h2>Produto e simulador de preco</h2><p>Cadastre ou atualize o produto, movimente o saldo e calcule o preco sugerido.</p></div>
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
-      <div class="form-grid">
-        <label class="field full"><span>Produto</span><select name="productId" required>${state.products.filter((product) => product.active !== false).map((product) => `<option value="${product.id}">${escapeHtml(product.name)} - ${money(product.price)}</option>`).join("")}</select></label>
-        <label class="field"><span>Custo do produto</span><input name="cost" type="number" min="0" step="0.01" value="${selected?.cost || 0}" required /></label>
-        <label class="field"><span>Custo extra por unidade</span><input name="extraCost" type="number" min="0" step="0.01" value="0" /></label>
-        <label class="field"><span>Taxa de cartao (%)</span><input name="cardFee" type="number" min="0" max="50" step="0.01" value="${defaults.cardFee ?? 3.5}" /></label>
-        <label class="field"><span>Impostos (%)</span><input name="tax" type="number" min="0" max="50" step="0.01" value="${defaults.tax ?? 0}" /></label>
-        <label class="field"><span>Margem desejada (%)</span><input name="targetMargin" type="number" min="0" max="90" step="0.1" value="${defaults.targetMargin ?? 30}" /></label>
-        <label class="field"><span>Senha de administrador para aplicar</span><input name="adminPassword" type="password" autocomplete="new-password" /></label>
+      <div class="modal-body price-simulator-body">
+        <section class="price-simulator-section">
+          <div class="price-simulator-section-head">
+            <div><h3>Cadastro do produto</h3><p>Escolha um item para editar ou cadastre um produto novo.</p></div>
+            <span class="status ${selected ? "green" : "blue"}" data-price-product-status>${selected ? "Produto existente" : "Novo produto"}</span>
+          </div>
+          <div class="form-grid">
+            <label class="field full">
+              <span>Produto</span>
+              <select name="productId">
+                <option value="">+ Cadastrar novo produto</option>
+                ${state.products.map((product) => `<option value="${product.id}" ${selected?.id === product.id ? "selected" : ""}>${escapeHtml(product.name)}${product.active === false ? " (inativo)" : ""}</option>`).join("")}
+              </select>
+            </label>
+            <label class="field full"><span>Nome</span><input name="name" required value="${escapeHtml(selected?.name || "")}" /></label>
+            <label class="field"><span>Codigo do produto</span><input name="productCode" value="${escapeHtml(selected?.productCode || "")}" placeholder="Ex.: 789123 ou LT600" /></label>
+            ${Array.from({ length: 5 }, (_, index) => `<label class="field"><span>Codigo de barras ${index + 1}</span><input name="barcodeCode${index + 1}" value="${escapeHtml(productBarcodeCodes(selected)[index] || "")}" placeholder="Opcional" /></label>`).join("")}
+            <label class="field"><span>Categoria</span><input name="category" required value="${escapeHtml(selected?.category || "")}" /></label>
+            <label class="field"><span>Status</span><select name="active"><option value="true" ${selected?.active !== false ? "selected" : ""}>Ativo</option><option value="false" ${selected?.active === false ? "selected" : ""}>Inativo</option></select></label>
+            <label class="field"><span>Menu rapido do balcao</span><select name="favorite"><option value="true" ${selected?.favorite ? "selected" : ""}>Sim</option><option value="false" ${!selected?.favorite ? "selected" : ""}>Nao</option></select></label>
+            <label class="field"><span>Praca de preparo</span><select name="station"><option value="Bar" ${selected?.station !== "Cozinha" ? "selected" : ""}>Bar</option><option value="Cozinha" ${selected?.station === "Cozinha" ? "selected" : ""}>Cozinha</option></select></label>
+            <label class="field"><span>Estoque minimo</span><input name="minStock" type="number" min="0" step="1" required value="${selected?.minStock ?? 0}" /></label>
+            <label class="field"><span>Estoque critico</span><input name="criticalStock" type="number" min="0" step="1" required value="${selected?.criticalStock ?? 0}" /></label>
+            <label class="field"><span>Data de validade</span><input name="expiresAt" type="date" value="${selected?.expiresAt || ""}" /></label>
+            <label class="field full"><span>Ficha tecnica</span><textarea name="recipeText" placeholder="Ex.: Cachaca:60, Limao:1">${recipeToText(selected?.recipe || [])}</textarea><small class="hint">Para venda fracionada, informe o consumo de cada insumo por venda.</small></label>
+          </div>
+        </section>
+
+        <section class="price-simulator-section">
+          <div class="price-simulator-section-head"><div><h3>Movimentacao do estoque</h3><p>O saldo atual e <strong data-price-current-stock>${qty(selected?.stock || 0)}</strong>.</p></div></div>
+          <div class="form-grid">
+            <label class="field"><span>Operacao</span><select name="stockMode"><option value="keep" ${selected ? "selected" : ""}>Manter saldo atual</option><option value="add">Adicionar ao saldo</option><option value="remove">Retirar do saldo</option><option value="set" ${selected ? "" : "selected"}>Definir novo saldo</option></select></label>
+            <label class="field"><span>Quantidade</span><input name="stockQty" type="number" min="0" step="1" value="${selected ? "" : "0"}" placeholder="0" /></label>
+            <label class="field full"><span>Motivo da movimentacao</span><input name="stockReason" value="Ajuste pelo simulador de preco" /></label>
+          </div>
+        </section>
+
+        <section class="price-simulator-section price-simulator-pricing">
+          <div class="price-simulator-section-head"><div><h3>Formacao do preco</h3><p>O preco sugerido cobre todos os percentuais informados abaixo.</p></div></div>
+          <div class="form-grid">
+            <label class="field"><span>Preco atual</span><input name="currentPrice" type="number" min="0" step="0.01" value="${selected?.price || 0}" readonly /></label>
+            <label class="field"><span>Custo do produto</span><input name="cost" type="number" min="0" step="0.01" value="${selected?.cost || 0}" required /></label>
+            <label class="field"><span>Custo extra por unidade</span><input name="extraCost" type="number" min="0" step="0.01" value="0" /></label>
+            <label class="field"><span>Taxa de cartao (%)</span><input name="cardFee" type="number" min="0" max="50" step="0.01" value="${defaults.cardFee ?? 3.5}" /></label>
+            <label class="field"><span>Impostos (%)</span><input name="tax" type="number" min="0" max="50" step="0.01" value="${defaults.tax ?? 0}" /></label>
+            <label class="field"><span>Margem desejada (%)</span><input name="targetMargin" type="number" min="0" max="90" step="0.1" value="${defaults.targetMargin ?? 30}" /></label>
+            <label class="field full"><span>Senha de administrador para salvar</span><input name="adminPassword" type="password" autocomplete="new-password" required /></label>
+          </div>
+          <div class="price-simulator-output" data-price-simulator-output></div>
+        </section>
       </div>
-      <div class="price-simulator-output" data-price-simulator-output></div>
-      <div class="modal-actions"><button class="btn secondary" type="button" data-close-modal>Fechar sem alterar</button><button class="btn primary" type="submit">Aplicar preco sugerido</button></div>
+      <div class="modal-actions"><button class="btn secondary" type="button" data-close-modal>Fechar sem alterar</button><button class="btn primary" type="submit">Salvar produto com preco sugerido</button></div>
     </form>
   `;
+}
+
+function setPriceSimulatorField(form, name, value) {
+  const field = form.elements.namedItem(name);
+  if (field) field.value = value ?? "";
+}
+
+function populatePriceSimulatorForm(form, product) {
+  setPriceSimulatorField(form, "name", product?.name || "");
+  setPriceSimulatorField(form, "productCode", product?.productCode || "");
+  const barcodes = productBarcodeCodes(product);
+  Array.from({ length: 5 }, (_, index) => setPriceSimulatorField(form, `barcodeCode${index + 1}`, barcodes[index] || ""));
+  setPriceSimulatorField(form, "category", product?.category || "");
+  setPriceSimulatorField(form, "active", product?.active === false ? "false" : "true");
+  setPriceSimulatorField(form, "favorite", product?.favorite ? "true" : "false");
+  setPriceSimulatorField(form, "station", product?.station === "Cozinha" ? "Cozinha" : "Bar");
+  setPriceSimulatorField(form, "minStock", product?.minStock ?? 0);
+  setPriceSimulatorField(form, "criticalStock", product?.criticalStock ?? 0);
+  setPriceSimulatorField(form, "expiresAt", product?.expiresAt || "");
+  setPriceSimulatorField(form, "recipeText", recipeToText(product?.recipe || []));
+  setPriceSimulatorField(form, "stockMode", product ? "keep" : "set");
+  setPriceSimulatorField(form, "stockQty", product ? "" : 0);
+  setPriceSimulatorField(form, "currentPrice", product?.price || 0);
+  setPriceSimulatorField(form, "cost", product?.cost || 0);
+  const stock = form.querySelector("[data-price-current-stock]");
+  if (stock) stock.textContent = qty(product?.stock || 0);
+  const status = form.querySelector("[data-price-product-status]");
+  if (status) {
+    status.textContent = product ? "Produto existente" : "Novo produto";
+    status.className = `status ${product ? "green" : "blue"}`;
+  }
+  updatePriceSimulatorPreview();
 }
 
 function updatePriceSimulatorPreview() {
@@ -479,37 +552,109 @@ function updatePriceSimulatorPreview() {
   const values = priceSimulationValues(form);
   output.innerHTML = values.suggestedPrice > 0
     ? `<span>Preco atual<strong>${money(values.currentPrice)}</strong></span><span>Margem atual estimada<strong>${values.currentMargin.toFixed(1)}%</strong></span><span class="suggested">Preco sugerido<strong>${money(values.suggestedPrice)}</strong></span>`
-    : '<div class="notice compact">A soma de taxa, imposto e margem precisa ficar abaixo de 95%.</div>';
+    : values.deductions >= 0.95
+      ? '<div class="notice compact">A soma de taxa, imposto e margem precisa ficar abaixo de 95%.</div>'
+      : '<div class="notice compact">Informe o custo do produto para calcular o preco sugerido.</div>';
 }
 
 async function submitPriceSimulator(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const values = priceSimulationValues(form);
-  if (!values.product || !Number.isFinite(values.suggestedPrice) || values.suggestedPrice <= 0) {
+  if (!Number.isFinite(values.suggestedPrice) || values.suggestedPrice <= 0) {
     notify("Revise os valores do simulador.");
     return;
   }
+  const name = String(form.get("name") || "").trim();
+  const category = String(form.get("category") || "").trim();
+  if (!name || !category) {
+    notify("Informe o nome e a categoria do produto.");
+    return;
+  }
+  const stockMode = String(form.get("stockMode") || "keep");
+  const stockQty = Number(form.get("stockQty") || 0);
+  if (stockMode !== "keep" && (!Number.isFinite(stockQty) || stockQty < 0)) {
+    notify("Informe uma quantidade valida para movimentar o estoque.");
+    return;
+  }
+  const previousStock = Number(values.product?.stock || 0);
+  const nextStock = stockMode === "add"
+    ? previousStock + stockQty
+    : stockMode === "remove"
+      ? Math.max(0, previousStock - stockQty)
+      : stockMode === "set"
+        ? stockQty
+        : previousStock;
   const admin = await authorizeAdminPassword(form.get("adminPassword"));
   if (!admin) {
     notify("Senha de administrador incorreta.");
     return;
   }
   const newPrice = Number(values.suggestedPrice.toFixed(2));
-  if (isOnlineSession() && isUuid(values.product.id)) {
-    const { error } = await supabaseClient.from("products").update({ price: newPrice }).eq("id", values.product.id);
-    if (error) {
-      notify(`Erro ao aplicar preco online: ${error.message}`);
-      return;
-    }
-    await loadOnlineStockData();
-  } else {
-    state.products = state.products.map((product) => product.id === values.product.id ? { ...product, price: newPrice } : product);
+  const payload = {
+    name,
+    productCode: String(form.get("productCode") || "").trim(),
+    barcodeCodes: normalizeBarcodeCodes(
+      form.get("productCode"),
+      Array.from({ length: 5 }, (_, index) => form.get(`barcodeCode${index + 1}`)),
+    ),
+    category,
+    price: newPrice,
+    cost: values.cost,
+    stock: nextStock,
+    minStock: Number(form.get("minStock") || 0),
+    criticalStock: Number(form.get("criticalStock") || 0),
+    expiresAt: form.get("expiresAt") || "",
+    station: form.get("station") || "Bar",
+    recipe: parseRecipeText(form.get("recipeText")),
+    favorite: form.get("favorite") === "true",
+    active: form.get("active") === "true",
+    imageUrl: values.product?.imageUrl || "",
+  };
+  const stockAdjustment = values.product && nextStock !== previousStock
+    ? {
+        previousStock,
+        nextStock,
+        reason: String(form.get("stockReason") || "Ajuste pelo simulador de preco").trim(),
+      }
+    : null;
+
+  if (isOnlineSession()) {
+    currentModal.id = values.product?.id || null;
+    const saved = await saveProductOnline(payload, null, false, "", {
+      stockAdjustment,
+      auditAction: values.product ? "Produto e preco atualizados online" : "Produto criado com preco calculado online",
+      successMessage: `${values.product ? "Produto atualizado" : "Produto criado"} com preco sugerido de ${money(newPrice)}.`,
+    });
+    if (!saved) return;
+    return;
   }
-  logAudit("Preco calculado e aplicado", `${values.product.name}: ${money(values.currentPrice)} para ${money(newPrice)}. Autorizado por ${admin.name}.`);
+
+  if (values.product) {
+    state.products = state.products.map((product) => product.id === values.product.id ? { ...product, ...payload } : product);
+  } else {
+    state.products.push({ id: id("product"), ...payload });
+  }
+  if (stockAdjustment) {
+    state.inventoryCounts.unshift({
+      id: id("inventory"),
+      date: new Date().toISOString(),
+      itemType: "product",
+      itemId: values.product.id,
+      expected: stockAdjustment.previousStock,
+      counted: stockAdjustment.nextStock,
+      difference: stockAdjustment.nextStock - stockAdjustment.previousStock,
+      userId: session.id,
+      notes: `Ajuste pelo simulador: ${stockAdjustment.reason}`,
+    });
+  }
+  logAudit(
+    values.product ? "Produto e preco atualizados" : "Produto criado com preco calculado",
+    `${payload.name}: ${money(values.currentPrice)} para ${money(newPrice)}. Autorizado por ${admin.name}.`,
+  );
   saveState();
   currentModal = null;
-  notify(`Novo preco de ${values.product.name}: ${money(newPrice)}.`);
+  notify(`${values.product ? "Produto atualizado" : "Produto criado"} com preco sugerido de ${money(newPrice)}.`);
   renderApp();
 }
 
@@ -1270,8 +1415,7 @@ bindModalForms = function advancedBindModalForms() {
   priceForm?.addEventListener("input", updatePriceSimulatorPreview);
   priceForm?.querySelector("[name='productId']")?.addEventListener("change", (event) => {
     const product = state.products.find((entry) => entry.id === event.target.value);
-    if (product) priceForm.querySelector("[name='cost']").value = product.cost;
-    updatePriceSimulatorPreview();
+    populatePriceSimulatorForm(priceForm, product || null);
   });
   if (priceForm) updatePriceSimulatorPreview();
   document.querySelector("#reconciliation-review-form")?.addEventListener("submit", submitReconciliationReview);
