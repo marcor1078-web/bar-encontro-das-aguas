@@ -212,6 +212,11 @@
 }
 [data-theme="dark"] .price-simulator-output .suggested { background: #052e2b; }
 
+.price-simulator-output-inline {
+  grid-column: 1 / -1;
+  margin: 0 0 6px;
+}
+
 .price-simulator-modal {
   width: min(1040px, 100%);
   overflow: hidden;

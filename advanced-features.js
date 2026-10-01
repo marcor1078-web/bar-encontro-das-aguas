@@ -471,6 +471,7 @@ function renderPriceSimulatorModal() {
               </select>
             </label>
             <label class="field full"><span>Nome</span><input name="name" required value="${escapeHtml(selected?.name || "")}" /></label>
+            <div class="price-simulator-output price-simulator-output-inline full" data-price-simulator-output></div>
             <label class="field"><span>Codigo do produto</span><input name="productCode" value="${escapeHtml(selected?.productCode || "")}" placeholder="Ex.: 789123 ou LT600" /></label>
             ${Array.from({ length: 5 }, (_, index) => `<label class="field"><span>Codigo de barras ${index + 1}</span><input name="barcodeCode${index + 1}" value="${escapeHtml(productBarcodeCodes(selected)[index] || "")}" placeholder="Opcional" /></label>`).join("")}
             <label class="field"><span>Categoria</span><input name="category" required value="${escapeHtml(selected?.category || "")}" /></label>
@@ -504,7 +505,6 @@ function renderPriceSimulatorModal() {
             <label class="field"><span>Margem desejada (%)</span><input name="targetMargin" type="number" min="0" max="90" step="0.1" value="${defaults.targetMargin ?? 30}" /></label>
             <label class="field full"><span>Senha de administrador para salvar</span><input name="adminPassword" type="password" autocomplete="new-password" required /></label>
           </div>
-          <div class="price-simulator-output" data-price-simulator-output></div>
         </section>
       </div>
       <div class="modal-actions"><button class="btn secondary" type="button" data-close-modal>Fechar sem alterar</button><button class="btn primary" type="submit">Salvar produto com preco sugerido</button></div>
