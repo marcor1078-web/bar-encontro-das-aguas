@@ -73,8 +73,17 @@ create table if not exists public.app_devices (
   unique (user_id, device_key)
 );
 
+create table if not exists public.audit_log (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.profiles(id) on delete set null,
+  action text not null,
+  details text not null default '',
+  created_at timestamptz not null default now()
+);
+
 create index if not exists app_devices_last_seen_idx on public.app_devices(last_seen_at desc);
 create index if not exists reconciliation_reviews_status_idx on public.payment_reconciliation_reviews(status, reviewed_at desc);
+create index if not exists audit_log_created_at_idx on public.audit_log(created_at desc);
 
 alter table public.payment_reconciliation_reviews enable row level security;
 alter table public.app_devices enable row level security;
