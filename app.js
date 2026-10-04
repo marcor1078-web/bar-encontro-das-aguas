@@ -5,6 +5,10 @@ const MP_PENDING_ORDER_KEY = "barcontrol:mercadopago-pending-order";
 const MP_SELECTED_TERMINAL_KEY = "barcontrol:mercadopago-selected-terminal";
 const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
 const DEVICE_KEY_STORAGE = "barcontrol:device-key";
+const MP_REQUEST_TIMEOUT_MS = 20 * 1000;
+const MP_STATUS_TIMEOUT_MS = 12 * 1000;
+const MP_PAYMENT_DEADLINE_MS = 2 * 60 * 1000;
+const MP_POLL_INTERVAL_MS = 2500;
 const APP_DISPLAY_NAME = "DISTRIBUIDORA ENCONTRO DAS ÁGUAS";
 const BRAND_LOGO_URL = "/icons/distribuidora-encontro-das-aguas.jpeg";
 const BRAND_ICON_URL = "/icons/icon-192.png";
@@ -553,7 +557,6 @@ const defaultState = {
     address: "",
     serviceFee: 10,
     receiptFooter: "Obrigado pela preferencia.",
-    sessionTimeoutMinutes: 30,
     closingDifferenceLimit: 5,
     pricingDefaults: {
       cardFee: 3.5,
@@ -629,6 +632,21 @@ let mercadoPagoPointStatus = {
   terminalId: "",
   terminals: [],
 };
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = MP_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const data = await response.json().catch(() => ({}));
+    return { response, data };
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("Tempo limite excedido. Verifique a internet e a maquininha.");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 function loadState() {
   const saved = localStorage.getItem(STORAGE_KEY);
@@ -1010,7 +1028,8 @@ async function checkCloudConnection(timeoutMs = 5000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    await fetch(`/api/health?at=${Date.now()}`, { cache: "no-store", signal: controller.signal });
+    const response = await fetch(`/api/health?at=${Date.now()}`, { cache: "no-store", signal: controller.signal });
+    if (!response.ok) throw new Error(`Servidor indisponivel (${response.status}).`);
     setCloudReachable(true);
     return true;
   } catch (error) {
@@ -1449,13 +1468,11 @@ async function loadMercadoPagoPointStatus(force = false) {
   if (mercadoPagoPointStatus.checked && !force) return mercadoPagoPointStatus;
 
   try {
-    const response = await fetch("/api/mercadopago/config");
+    const { response, data } = await fetchJsonWithTimeout("/api/mercadopago/config");
     if (!response.ok) throw new Error("Endpoint da Vercel ainda nao disponivel.");
-    const data = await response.json();
     let terminals = [];
     if (data.enabled) {
-      const terminalsResponse = await fetch("/api/mercadopago/terminals");
-      const terminalsData = await terminalsResponse.json().catch(() => ({}));
+      const { response: terminalsResponse, data: terminalsData } = await fetchJsonWithTimeout("/api/mercadopago/terminals");
       if (terminalsResponse.ok) terminals = terminalsData?.data?.terminals || [];
     }
     const selectedTerminal = terminals.find((terminal) => terminal.id === data.terminalId);
@@ -1566,6 +1583,52 @@ function mercadoPagoStatusLabel(statusData) {
   return `${status}${detail}`;
 }
 
+async function fetchMercadoPagoOrderStatus(orderId, accountKey = "primary") {
+  const { response, data } = await fetchJsonWithTimeout(
+    `/api/mercadopago/order-status?id=${encodeURIComponent(orderId)}&accountKey=${encodeURIComponent(accountKey)}`,
+    {},
+    MP_STATUS_TIMEOUT_MS,
+  );
+  if (!response.ok) throw new Error(describeMercadoPagoError(data));
+  updateMercadoPagoPendingOrderStatus(data);
+  return data;
+}
+
+async function cancelMercadoPagoOrderById(orderId, accountKey = "primary") {
+  const { response, data } = await fetchJsonWithTimeout(
+    "/api/mercadopago/cancel-order",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: orderId, accountKey }),
+    },
+  );
+  if (!response.ok) throw new Error(describeMercadoPagoError(data));
+  clearMercadoPagoPendingOrder(orderId);
+  return data;
+}
+
+async function releaseStaleMercadoPagoOrders(terminalId, accountKey = "primary") {
+  const matchingOrders = getMercadoPagoPendingOrders().filter(
+    (entry) => entry.terminalId === terminalId && (entry.accountKey || "primary") === accountKey,
+  );
+  for (const pending of matchingOrders) {
+    try {
+      const statusData = await fetchMercadoPagoOrderStatus(pending.id, accountKey);
+      if (["processed", "failed", "canceled", "expired", "refunded"].includes(statusData.status)) {
+        clearMercadoPagoPendingOrder(pending.id);
+        continue;
+      }
+      const age = Date.now() - Date.parse(pending.createdAt || "");
+      if (Number.isFinite(age) && age > 3 * 60 * 1000 && ["created", "at_terminal", "action_required"].includes(statusData.status)) {
+        await cancelMercadoPagoOrderById(pending.id, accountKey);
+      }
+    } catch (error) {
+      // A criacao da nova order dara a resposta definitiva caso a fila ainda esteja ocupada.
+    }
+  }
+}
+
 async function checkMercadoPagoPendingOrder(orderId = "") {
   const pending = getMercadoPagoPendingOrder(orderId);
   if (!pending?.id) {
@@ -1574,11 +1637,8 @@ async function checkMercadoPagoPendingOrder(orderId = "") {
   }
 
   try {
-    const response = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(pending.id)}&accountKey=${encodeURIComponent(pending.accountKey || "primary")}`);
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(describeMercadoPagoError(data));
-    updateMercadoPagoPendingOrderStatus(data);
-    if (["processed", "canceled", "expired", "failed"].includes(data.status)) clearMercadoPagoPendingOrder(data.id);
+    const data = await fetchMercadoPagoOrderStatus(pending.id, pending.accountKey || "primary");
+    if (["processed", "canceled", "expired", "failed", "refunded"].includes(data.status)) clearMercadoPagoPendingOrder(data.id);
     notify(`Mercado Pago: ${mercadoPagoStatusLabel(data)}`);
   } catch (error) {
     notify(`Erro ao consultar a cobranca Point: ${error.message}`);
@@ -1596,14 +1656,7 @@ async function cancelMercadoPagoPendingOrder(orderId = "") {
 
   notify("Tentando cancelar a cobranca pendente na Point...");
   try {
-    const response = await fetch("/api/mercadopago/cancel-order", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: pending.id, accountKey: pending.accountKey || "primary" }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(describeMercadoPagoError(data));
-    clearMercadoPagoPendingOrder(pending.id);
+    await cancelMercadoPagoOrderById(pending.id, pending.accountKey || "primary");
     notify("Cobranca pendente cancelada. Agora voce pode tentar novamente.");
   } catch (error) {
     notify(`Nao foi possivel cancelar pelo app: ${error.message}. Se aparecer na maquininha, cancele pela propria Point.`);
@@ -1659,26 +1712,48 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
   const config = await loadMercadoPagoPointStatus();
   if (!config.enabled || !isPointPayment(payment)) return { skipped: true };
   const selectedTerminalId = terminalId || getSelectedPaymentTerminal()?.terminalId || "";
+  const attemptId = uuid();
+  const requestBody = {
+    amount,
+    paymentMethod: payment,
+    installments,
+    terminalId: selectedTerminalId,
+    accountKey,
+    description,
+    externalReference: `sale-${attemptId}`,
+    idempotencyKey: attemptId,
+  };
 
   notify("Enviando cobranca para a maquininha Mercado Pago...");
-  const createResponse = await fetch("/api/mercadopago/create-order", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      amount,
-      paymentMethod: payment,
-      installments,
-      terminalId: selectedTerminalId,
-      accountKey,
-      description,
-      externalReference: `sale-${Date.now()}`,
-    }),
-  });
-
-  const order = await createResponse.json().catch(() => ({}));
+  await releaseStaleMercadoPagoOrders(selectedTerminalId, accountKey);
+  let createResponse;
+  let order;
+  let createError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const result = await fetchJsonWithTimeout("/api/mercadopago/create-order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      });
+      createResponse = result.response;
+      order = result.data;
+      createError = null;
+      break;
+    } catch (error) {
+      createError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+  }
+  if (!createResponse) {
+    return {
+      ok: false,
+      message: `Mercado Pago nao respondeu: ${createError?.message || "falha de comunicacao"}. A mesma tentativa foi repetida com seguranca; confira a Point antes de enviar outra cobranca.`,
+    };
+  }
   if (!createResponse.ok) {
     const message = describeMercadoPagoError(order);
-    if (message.toLowerCase().includes("already a queued order")) {
+    if (/already.*queued|already_queued_order_for_terminal|cobranca.*pendente/i.test(message)) {
       return {
         ok: false,
         message:
@@ -1690,33 +1765,74 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
 
   saveMercadoPagoPendingOrder(order, { amount, payment, description, terminalId: selectedTerminalId, accountKey });
   notify("Cobranca enviada. Na Point, abra Inserir valor para concluir.");
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    const statusResponse = await fetch(`/api/mercadopago/order-status?id=${encodeURIComponent(order.id)}&accountKey=${encodeURIComponent(accountKey)}`);
-    const statusData = await statusResponse.json().catch(() => ({}));
-    if (!statusResponse.ok) {
-      return { ok: false, message: statusData.error || "Falha ao consultar pagamento Mercado Pago." };
+  const deadline = Date.now() + MP_PAYMENT_DEADLINE_MS;
+  let lastStatus = order.status || "created";
+  let consecutiveErrors = 0;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, MP_POLL_INTERVAL_MS));
+    let statusData;
+    try {
+      statusData = await fetchMercadoPagoOrderStatus(order.id, accountKey);
+      consecutiveErrors = 0;
+    } catch (error) {
+      consecutiveErrors += 1;
+      if (consecutiveErrors < 3) continue;
+      return {
+        ok: false,
+        message: `A cobranca foi enviada, mas a confirmacao online falhou: ${error.message}. Consulte a cobranca antes de tentar novamente.`,
+      };
     }
-
-    updateMercadoPagoPendingOrderStatus(statusData);
+    if (statusData.status !== lastStatus) {
+      lastStatus = statusData.status;
+      notify(`Point: ${mercadoPagoStatusLabel(statusData)}`);
+    }
     if (statusData.status === "processed") {
       clearMercadoPagoPendingOrder(order.id);
       notify("Pagamento aprovado.");
       return { ok: true, order: statusData };
     }
-    if (["failed", "canceled", "expired"].includes(statusData.status)) {
+    if (["failed", "canceled", "expired", "refunded"].includes(statusData.status)) {
       clearMercadoPagoPendingOrder(order.id);
       return { ok: false, message: `Pagamento nao aprovado: ${statusData.status_detail || statusData.status}.` };
     }
     if (statusData.status === "action_required") {
-      return { ok: false, message: "Na Point, abra Inserir valor e confira se o pagamento foi aprovado." };
+      const approved = confirm(
+        "A Point pediu conferencia manual e esse status nao sera atualizado pelo Mercado Pago.\n\nO comprovante ou a tela da maquininha mostra PAGAMENTO APROVADO?\n\nClique em OK somente se estiver aprovado. Clique em Cancelar se nao estiver.",
+      );
+      if (approved) {
+        clearMercadoPagoPendingOrder(order.id);
+        return {
+          ok: true,
+          order: { ...statusData, status: "operator_confirmed", status_detail: statusData.status_detail || "check_on_terminal" },
+        };
+      }
+      try {
+        await cancelMercadoPagoOrderById(order.id, accountKey);
+      } catch (error) {
+        return { ok: false, message: `Pagamento nao confirmado. Cancele ou confira a cobranca na Point: ${error.message}` };
+      }
+      return { ok: false, message: "Cobranca cancelada porque o pagamento nao foi confirmado." };
     }
+  }
+
+  try {
+    const finalStatus = await fetchMercadoPagoOrderStatus(order.id, accountKey);
+    if (finalStatus.status === "processed") {
+      clearMercadoPagoPendingOrder(order.id);
+      return { ok: true, order: finalStatus };
+    }
+    if (["created", "at_terminal"].includes(finalStatus.status)) {
+      await cancelMercadoPagoOrderById(order.id, accountKey);
+      return { ok: false, message: "A Point nao concluiu no tempo limite. A cobranca pendente foi cancelada e o app esta liberado para tentar novamente." };
+    }
+  } catch (error) {
+    return { ok: false, message: `Tempo limite atingido. Confira a Point e use Internet > Consultar ultima cobranca antes de tentar novamente: ${error.message}` };
   }
 
   const pending = getMercadoPagoPendingOrder(order.id);
   return {
     ok: false,
-    message: `Pagamento ainda nao confirmado. Ultimo status: ${pending?.status || "created"}. Na Point, abra Inserir valor antes de tentar novamente.`,
+    message: `Pagamento ainda nao confirmado. Ultimo status: ${pending?.status || lastStatus}. Consulte ou cancele a cobranca antes de tentar novamente.`,
   };
 }
 
@@ -2125,7 +2241,7 @@ function mutatePendingKitchenOrder(orderId, updater) {
   return false;
 }
 
-async function syncPendingOfflineSales({ manual = false } = {}) {
+async function syncPendingOfflineSales({ manual = false, silent = false } = {}) {
   const operations = pendingOfflineOperations();
   if (!operations.length || connectionState.syncing) {
     if (manual && !operations.length) notify("Nao ha vendas offline pendentes.");
@@ -2176,7 +2292,7 @@ async function syncPendingOfflineSales({ manual = false } = {}) {
     await loadOnlineTableData();
     logAudit("Contingencia sincronizada", `${synced} venda(s) offline enviada(s) ao Supabase.`);
     saveState();
-    notify(`${synced} venda(s) offline sincronizada(s).`);
+    if (!silent) notify(`${synced} venda(s) offline sincronizada(s).`);
   } else if (manual) {
     const missingMigration = /sync_offline_sale|schema cache|function/i.test(connectionState.lastError);
     notify(missingMigration ? "Falta executar a migracao do modo offline no Supabase." : `Sincronizacao pendente: ${connectionState.lastError}`);
@@ -3826,6 +3942,7 @@ async function openSalePaymentModal() {
 async function confirmSalePayment(event) {
   event.preventDefault();
   const formElement = event.currentTarget;
+  if (formElement.dataset.submitting === "true") return;
   const form = new FormData(formElement);
   const payment = String(form.get("payment") || "");
   const discount = discountFromForm(form);
@@ -3900,18 +4017,41 @@ async function confirmSalePayment(event) {
     }
   }
   formElement.dataset.submitting = "true";
-
-  const finalized = await finalizeSale({
-    payment,
-    clientId: String(form.get("clientId") || ""),
-    terminalKey: String(form.get("terminalKey") || ""),
-    cashReceived,
-    cashChange,
-    paymentBreakdown,
-    discount,
-    manualReference: String(form.get("manualReference") || "").trim(),
+  formElement.setAttribute("aria-busy", "true");
+  const controls = [...formElement.elements].map((element) => ({ element, wasDisabled: element.disabled }));
+  controls.forEach(({ element }) => {
+    element.disabled = true;
   });
-  if (!finalized) {
+  const progress = formElement.querySelector("[data-payment-progress]");
+  if (progress) {
+    progress.hidden = false;
+    progress.textContent = isPointPayment(payment) || payment === "Dividido"
+      ? "Aguardando a confirmacao da maquininha. Nao feche esta tela."
+      : "Finalizando e salvando a venda...";
+  }
+
+  let finalized = false;
+  try {
+    finalized = await finalizeSale({
+      payment,
+      clientId: String(form.get("clientId") || ""),
+      terminalKey: String(form.get("terminalKey") || ""),
+      cashReceived,
+      cashChange,
+      paymentBreakdown,
+      discount,
+      manualReference: String(form.get("manualReference") || "").trim(),
+    });
+  } catch (error) {
+    notify(`Nao foi possivel finalizar: ${error.message || "erro inesperado"}. A venda continua aberta.`);
+  } finally {
+    if (!finalized && document.body.contains(formElement)) {
+      formElement.removeAttribute("aria-busy");
+      controls.forEach(({ element, wasDisabled }) => {
+        element.disabled = wasDisabled;
+      });
+      if (progress) progress.hidden = true;
+    }
     delete formElement.dataset.submitting;
   }
 }
@@ -4084,7 +4224,6 @@ function bindSalePaymentChoice() {
         form.querySelector('[name="manualReference"]')?.focus();
         return;
       }
-      form.dataset.submitting = "true";
       form.requestSubmit();
     });
   });
@@ -4107,6 +4246,7 @@ async function finalizeSale({
     return false;
   }
 
+  const checkout = tableCheckout;
   const totals = saleTotalsForItems(cart, discount);
   const { serviceFee, total } = totals;
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
@@ -4162,7 +4302,7 @@ async function finalizeSale({
         paymentBreakdown: paymentParts,
         terminalKey,
         items: structuredClone(cart),
-        description: tableCheckout ? `Fechamento ${tableCheckout.name}` : "Venda balcao",
+        description: checkout ? `Fechamento ${checkout.name}` : "Venda balcao",
       });
       if (!pointPayment.ok) return false;
       selectedTerminal = pointPayment.terminal;
@@ -4175,59 +4315,24 @@ async function finalizeSale({
   }
 
   const printDetails = {
-    tableName: tableCheckout?.name || "",
-    customerName: tableCheckout?.customerName || "",
+    tableName: checkout?.name || "",
+    customerName: checkout?.customerName || "",
     terminalLabel: ticketTerminalLabel(selectedTerminal),
     cashReceived,
     cashChange,
   };
 
-  if (isOnlineSession()) {
-    const checkout = tableCheckout;
-    const saleId = await finalizeSaleOnline({
-      payment,
-      clientId: selectedClientId,
-      total,
-      cost,
-      serviceFee,
-      paymentBreakdown: paymentParts,
-      cashReceived,
-      cashChange,
-      discount: totals.discount,
-      paymentOrigin: selectedTerminal?.integrationMode === "manual" ? "manual_terminal" : selectedTerminal ? "integrated" : "",
-      manualReference,
-      terminalLabel: printDetails.terminalLabel,
-      providerReferences,
-      tableId: checkout?.id || null,
-      clearCart: false,
-      renderAfter: false,
-    });
-    if (!saleId) return false;
-    if (checkout) await releaseTableAfterCheckout(checkout.id);
-    cart = [];
-    tableCheckout = null;
-    await loadOnlineSalesData();
-    attachSalePrintDetails(saleId, printDetails);
-    storeDailySalesTotal(localDateKey(), "automatico");
-    saveState();
-    lastSaleForTicketsId = saleId;
-    currentModal = { type: "printTickets", id: saleId };
-    notify(checkout ? "Conta da mesa fechada no balcao." : "Venda salva no Supabase.");
-    renderApp();
-    return true;
-  }
-
-  const shouldQueueOffline = !cloudAvailable && Boolean(session?.online || state.settings.syncMode === "supabase");
+  const shouldQueueForCloud = Boolean(session?.online && isSupabaseReady());
   applyCartStock(cart);
 
   const sale = {
-    id: shouldQueueOffline ? uuid() : id("sale"),
+    id: shouldQueueForCloud ? uuid() : id("sale"),
     date: new Date().toISOString(),
     cashierId: session.id,
     payment,
     paymentBreakdown: paymentParts,
     clientId: fiadoAmount > 0 ? selectedClientId : null,
-    tableId: tableCheckout?.id || null,
+    tableId: checkout?.id || null,
     tableName: printDetails.tableName,
     customerName: printDetails.customerName,
     terminalLabel: printDetails.terminalLabel,
@@ -4246,7 +4351,7 @@ async function finalizeSale({
     discount: totals.discount,
     discountAmount: totals.discount.amount,
     status: "Concluida",
-    syncStatus: shouldQueueOffline ? "pending" : "local",
+    syncStatus: shouldQueueForCloud ? "pending" : "local",
     serviceFee,
     items: structuredClone(cart),
     total,
@@ -4254,8 +4359,8 @@ async function finalizeSale({
   };
 
   state.sales.push(sale);
-  const queuedRelations = shouldQueueOffline ? queueOfflineSale(sale, fiadoAmount) : null;
-  if (!shouldQueueOffline) createKitchenOrders(sale);
+  const queuedRelations = shouldQueueForCloud ? queueOfflineSale(sale, fiadoAmount) : null;
+  if (!shouldQueueForCloud) createKitchenOrders(sale);
   storeDailySalesTotal(localDateKey(sale.date), "automatico");
 
   if (fiadoAmount > 0) {
@@ -4283,21 +4388,34 @@ async function finalizeSale({
 
   logAudit("Venda finalizada", `${money(total)} em ${paymentDisplay(sale)}${totals.discount.amount > 0 ? ` com desconto de ${money(totals.discount.amount)}` : ""}.`);
 
-  if (tableCheckout) {
+  if (checkout) {
     state.tables = state.tables.map((entry) =>
-      entry.id === tableCheckout.id
+      entry.id === checkout.id
         ? { ...entry, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] }
         : entry,
     );
-    logAudit("Mesa fechada no balcao", `${tableCheckout.name}: ${money(total)}.`);
+    logAudit("Mesa fechada no balcao", `${checkout.name}: ${money(total)}.`);
   }
 
   cart = [];
   tableCheckout = null;
+  saveState();
+  if (shouldQueueForCloud && cloudAvailable) {
+    await syncPendingOfflineSales({ silent: true });
+  }
+  attachSalePrintDetails(sale.id, printDetails);
   lastSaleForTicketsId = sale.id;
   currentModal = { type: "printTickets", id: sale.id };
-  saveState();
-  notify(shouldQueueOffline ? "Venda salva neste aparelho e aguardando sincronizacao." : "Venda finalizada.");
+  const stillPending = pendingOfflineOperations().some((operation) => operation.id === sale.id);
+  notify(
+    shouldQueueForCloud
+      ? stillPending
+        ? "Venda concluida e protegida neste computador. Ela sera sincronizada automaticamente quando a conexao estabilizar."
+        : checkout
+          ? "Conta da mesa fechada e sincronizada."
+          : "Venda finalizada e sincronizada."
+      : "Venda finalizada.",
+  );
   renderApp();
   return true;
 }
@@ -7485,10 +7603,6 @@ function renderSettings() {
             <input name="receiptFooter" value="${state.settings.receiptFooter || ""}" />
           </label>
           <label class="field">
-            <span>Encerrar sessao apos inatividade (minutos)</span>
-            <input name="sessionTimeoutMinutes" type="number" min="5" max="240" step="5" value="${state.settings.sessionTimeoutMinutes || 30}" />
-          </label>
-          <label class="field">
             <span>Diferenca de caixa que exige autorizacao</span>
             <input name="closingDifferenceLimit" type="number" min="0" step="0.01" value="${state.settings.closingDifferenceLimit ?? 5}" />
           </label>
@@ -7989,6 +8103,7 @@ function renderSalePaymentModal() {
             ? "Pix e Debito enviam a cobranca imediatamente. No Credito, escolha de a vista ate 12x antes do envio."
             : "Sem internet, Pix, Debito e Credito sao registrados como pagamentos manuais depois da aprovacao na maquininha."
         } Dinheiro calcula o troco. Dividido permite mais de uma forma. Fiado exige cliente com limite disponivel.</div>
+        <div class="notice payment-progress" data-payment-progress hidden></div>
       </div>
     </form>
   `;
@@ -11420,7 +11535,6 @@ async function saveSettings(event) {
     serviceFee: Number(form.get("serviceFee") || 0),
     palette: form.get("palette") === "classic" ? "classic" : "brand",
     receiptFooter: form.get("receiptFooter").trim(),
-    sessionTimeoutMinutes: Math.min(240, Math.max(5, Number(form.get("sessionTimeoutMinutes") || 30))),
     closingDifferenceLimit: Math.max(0, Number(form.get("closingDifferenceLimit") || 5)),
     pricingDefaults: {
       cardFee: Math.max(0, Number(form.get("pricingCardFee") || 0)),
@@ -11444,7 +11558,6 @@ async function saveSettings(event) {
       receipt_footer: payload.receiptFooter,
       shift_start_view: payload.shiftStartView,
       advanced_settings: {
-        sessionTimeoutMinutes: payload.sessionTimeoutMinutes,
         closingDifferenceLimit: payload.closingDifferenceLimit,
         pricingDefaults: payload.pricingDefaults,
         anomalySettings: payload.anomalySettings,

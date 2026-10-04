@@ -47,7 +47,7 @@ module.exports = async function handler(req, res) {
   const requestedPrintMode = body.printOnTerminal || env.printOnTerminal || "seller_ticket";
   const printOnTerminal = requestedPrintMode === "buyer_ticket" ? "seller_ticket" : requestedPrintMode;
 
-  const idempotencyKey = body.idempotencyKey || randomUUID();
+  const idempotencyKey = String(body.idempotencyKey || randomUUID()).slice(0, 64);
   const payload = {
     type: "point",
     external_reference: safeReference(body.externalReference),

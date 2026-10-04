@@ -3,7 +3,6 @@ let advancedMfaState = { loaded: false, enabled: false, factorId: "", factors: [
 let advancedMfaEnrollment = null;
 let pendingMfaLogin = null;
 let advancedDevicesLoaded = false;
-let advancedLastActivityAt = Date.now();
 let advancedDeviceHeartbeatAt = 0;
 let reconciliationRefreshRunning = false;
 let reconciliationAutoRefreshAt = 0;
@@ -11,7 +10,6 @@ let reconciliationAutoRefreshAt = 0;
 function ensureAdvancedState() {
   state.reconciliationReviews = Array.isArray(state.reconciliationReviews) ? state.reconciliationReviews : [];
   state.onlineDevices = Array.isArray(state.onlineDevices) ? state.onlineDevices : [];
-  state.settings.sessionTimeoutMinutes = Math.min(240, Math.max(5, Number(state.settings.sessionTimeoutMinutes || 30)));
   state.settings.closingDifferenceLimit = Math.max(0, Number(state.settings.closingDifferenceLimit ?? 5));
   state.settings.pricingDefaults = {
     cardFee: 3.5,
@@ -920,12 +918,27 @@ async function touchOnlineDevice({ force = false } = {}) {
   if (!isOnlineSession() || !isUuid(session?.id)) return true;
   if (!force && Date.now() - advancedDeviceHeartbeatAt < 2 * 60 * 1000) return true;
   advancedDeviceHeartbeatAt = Date.now();
-  const { data, error } = await supabaseClient.rpc("touch_app_device", {
+  let { data, error } = await supabaseClient.rpc("touch_app_device", {
     p_device_key: advancedDeviceKey(),
     p_label: advancedDeviceLabel(),
     p_user_agent: navigator.userAgent.slice(0, 500),
   });
-  if (error) return true;
+  if (error && /jwt|token|session|auth/i.test(error.message || "")) {
+    const refreshed = await supabaseClient.auth.refreshSession();
+    if (!refreshed.error && refreshed.data?.session) {
+      ({ data, error } = await supabaseClient.rpc("touch_app_device", {
+        p_device_key: advancedDeviceKey(),
+        p_label: advancedDeviceLabel(),
+        p_user_agent: navigator.userAgent.slice(0, 500),
+      }));
+    }
+  }
+  if (error) {
+    setCloudReachable(false, error.message || "Nao foi possivel renovar a sessao online.");
+    session = { ...session, offlineCached: true };
+    cacheOfflineSession(session);
+    return true;
+  }
   if (data?.allowed === false) {
     notify("Este aparelho foi desconectado pelo administrador.");
     await logout();
@@ -1068,7 +1081,7 @@ function renderSecurityCenter() {
   const currentKey = advancedDeviceKey();
   return `
     <section class="card advanced-panel security-center" style="margin-top: 16px;">
-      <div class="card-head"><div><h2 class="card-title">Seguranca e aparelhos</h2><p>2FA, encerramento por inatividade e sessoes online conhecidas.</p></div><span class="status ${advancedMfaState.enabled ? "green" : "amber"}">${advancedMfaState.enabled ? "2FA ativo" : "2FA recomendado"}</span></div>
+      <div class="card-head"><div><h2 class="card-title">Seguranca e aparelhos</h2><p>2FA, aparelhos autorizados e sessoes online conhecidas.</p></div><span class="status ${advancedMfaState.enabled ? "green" : "amber"}">${advancedMfaState.enabled ? "2FA ativo" : "2FA recomendado"}</span></div>
       <div class="security-actions">
         ${isOnlineSession() && session?.role === "admin" ? advancedMfaState.enabled ? '<button class="btn danger" type="button" data-disable-mfa>Desativar 2FA</button>' : '<button class="btn primary" type="button" data-enable-mfa>Ativar 2FA</button>' : '<span class="notice compact">O 2FA e a central de aparelhos exigem a conta online do administrador.</span>'}
         <button class="btn secondary" type="button" data-refresh-devices ${isOnlineSession() ? "" : "disabled"}>Atualizar aparelhos</button>
@@ -1151,7 +1164,6 @@ async function completeAdvancedOnlineSession(profile) {
   await loadMfaStatus();
   const preferredView = state.settings.shiftStartView?.[session.role];
   currentView = CURRENT_SERVICE_NUMBER > 1 && hasPermission("pos") ? "pos" : preferredView && hasPermission(preferredView) ? preferredView : getUserPermissions(session)[0] || "pos";
-  advancedLastActivityAt = Date.now();
   logAudit("Login online", `${session.name} acessou pelo Supabase em ${advancedDeviceLabel()}.`);
   saveState();
   renderApp();
@@ -1297,21 +1309,8 @@ closeModal = function advancedCloseModal() {
   advancedOriginalCloseModal();
 };
 
-function markAdvancedActivity() {
-  advancedLastActivityAt = Date.now();
-}
-
-["pointerdown", "keydown", "touchstart"].forEach((eventName) => document.addEventListener(eventName, markAdvancedActivity, { passive: true }));
-
 setInterval(async () => {
   if (!session) return;
-  const timeoutMs = Number(state.settings.sessionTimeoutMinutes || 30) * 60 * 1000;
-  if (Date.now() - advancedLastActivityAt >= timeoutMs) {
-    logAudit("Sessao encerrada por inatividade", `${state.settings.sessionTimeoutMinutes || 30} minuto(s).`);
-    await logout();
-    notify("Sessao encerrada por inatividade.");
-    return;
-  }
   if (session.online) {
     const deviceAllowed = await touchOnlineDevice();
     if (!deviceAllowed) return;

@@ -84,17 +84,40 @@ function requireMercadoPagoAccessToken(res, accountKey = "primary") {
 
 async function mercadoPagoFetch(path, options = {}, accountKey = "primary") {
   const env = mercadoPagoEnv(accountKey);
-  const response = await fetch(`${MP_API_BASE}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${env.accessToken}`,
-      ...(options.headers || {}),
-    },
-  });
-  const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
-  return { ok: response.ok, status: response.status, data };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 18_000);
+  try {
+    const response = await fetch(`${MP_API_BASE}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.accessToken}`,
+        ...(options.headers || {}),
+      },
+    });
+    const text = await response.text();
+    let data = {};
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (error) {
+        data = { error: "invalid_mercado_pago_response", message: text.slice(0, 600) };
+      }
+    }
+    return { ok: response.ok, status: response.status, data };
+  } catch (error) {
+    return {
+      ok: false,
+      status: error?.name === "AbortError" ? 504 : 502,
+      data: {
+        error: error?.name === "AbortError" ? "mercado_pago_timeout" : "mercado_pago_network_error",
+        message: error?.name === "AbortError" ? "O Mercado Pago nao respondeu dentro do tempo limite." : error.message || "Falha de rede com o Mercado Pago.",
+      },
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function publicTerminalInfo(terminalId) {
