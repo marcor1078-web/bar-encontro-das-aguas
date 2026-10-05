@@ -163,6 +163,8 @@ const iconPaths = {
     '<circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3-.2-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21h-3v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.2.1-2-3 .1-.1A1.7 1.7 0 0 0 5 15a1.7 1.7 0 0 0-1.5-1H3v-4h.5A1.7 1.7 0 0 0 5 9a1.7 1.7 0 0 0-.3-1.9L4.6 7l2-3 .2.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5V3h3v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.2-.1 2 3-.1.1A1.7 1.7 0 0 0 19 9a1.7 1.7 0 0 0 1.5 1h.5v4h-.5A1.7 1.7 0 0 0 19.4 15Z"></path>',
   online:
     '<circle cx="12" cy="12" r="9"></circle><path d="M3 12h18"></path><path d="M12 3a14 14 0 0 1 0 18"></path><path d="M12 3a14 14 0 0 0 0 18"></path>',
+  refresh:
+    '<path d="M20 6v5h-5"></path><path d="M4 18v-5h5"></path><path d="M6.1 9a7 7 0 0 1 11.5-2.6L20 11"></path><path d="m4 13 2.4 4.6A7 7 0 0 0 17.9 15"></path>',
   menu: '<path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path>',
   close: '<path d="M6 6l12 12"></path><path d="M18 6L6 18"></path>',
   logout: '<path d="M10 17l5-5-5-5"></path><path d="M15 12H3"></path><path d="M21 4v16"></path>',
@@ -3249,6 +3251,15 @@ function renderApp() {
             <button class="connection-chip ${connection.tone}" type="button" data-connection-chip data-sync-pending title="${connection.title}">
               ${icon("online")} <span data-connection-label>${connection.label}</span>
             </button>
+            <button
+              class="icon-btn live-refresh"
+              type="button"
+              data-refresh-realtime
+              title="Atualizar dados dos outros computadores"
+              aria-label="Atualizar dados dos outros computadores"
+            >
+              ${icon("refresh")}
+            </button>
             ${
               isStandaloneApp()
                 ? ""
@@ -3458,10 +3469,14 @@ function bindViewEvents() {
     if (!opened) notify("O navegador bloqueou a nova aba. Libere pop-ups para abrir outro atendimento.");
   });
   document.querySelector("[data-test-supabase]")?.addEventListener("click", testSupabaseConnection);
-  document.querySelector("[data-refresh-realtime]")?.addEventListener("click", () => {
+  document.querySelectorAll("[data-refresh-realtime]").forEach((button) => button.addEventListener("click", () => {
+    if (!isOnlineSession()) {
+      notify("A atualizacao entre computadores precisa de uma sessao online.");
+      return;
+    }
     queueFullRealtimeRefresh();
     notify(realtimeInteractionLocked() ? "Atualizacao programada para depois da operacao atual." : "Atualizando dados dos outros computadores...");
-  });
+  }));
   document.querySelector("[data-test-mercadopago]")?.addEventListener("click", async () => {
     await loadMercadoPagoPointStatus(true);
     notify(mercadoPagoPointStatus.message);
