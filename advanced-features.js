@@ -1167,6 +1167,7 @@ async function completeAdvancedOnlineSession(profile) {
   logAudit("Login online", `${session.name} acessou pelo Supabase em ${advancedDeviceLabel()}.`);
   saveState();
   renderApp();
+  startRealtimeSync();
   if (pendingOfflineOperations().length) setTimeout(() => syncPendingOfflineSales(), 500);
   return true;
 }

@@ -20,7 +20,6 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Inventario fisico
 - Limite de fiado por cliente
 - Relatorio de lucratividade
-- Backup automatico local diario
 - Tela inicial por cargo
 - Balcao com categorias visuais
 - Modo garcom para celular
@@ -29,11 +28,11 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Cozinha/bar com fila de preparo
 - Impressao de recibo
 - Clientes e fiado
-- Relatorios e backup
+- Relatorios operacionais e financeiros
 - Impressao/Salvar PDF dos relatorios
 - PWA instalavel
 - Modo de contingencia com fila local de vendas e sincronizacao automatica
-- Sincronizacao local entre abas
+- Sincronizacao quase em tempo real entre computadores, com protecao durante pagamentos
 - Produtos
 - Equipe
 - Conciliacao automatica de pagamentos com referencia da operadora
@@ -41,9 +40,10 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Fluxo de caixa projetado para 30, 60 e 90 dias
 - Simulador de preco com custos, taxas, impostos e margem
 - Conferencia detalhada do fechamento por forma de pagamento
-- 2FA, encerramento por inatividade e central de aparelhos
-- Backup online restauravel e auditoria imutavel
+- 2FA e central de aparelhos
+- Auditoria imutavel
 - Gerente diario com alertas de anomalias
+- Paletas da marca, classica e rubro-negra
 
 ## Como abrir
 
@@ -85,8 +85,8 @@ O `Painel admin` e a area `Internet` sao exclusivos do cargo Administrador.
 
 - Use `Mesas` para abrir comandas, adicionar itens, transferir/juntar mesas e fechar conta.
 - Use `Vendas` para imprimir recibo ou cancelar venda com senha de administrador.
-- Use `Configuracoes` para ajustar nome da distribuidora, taxa de servico, recibo, backup e tela inicial por cargo.
-- Use `Relatorios` para ver lucratividade, turnos por operador, auditoria e backups.
+- Use `Configuracoes` para ajustar nome da distribuidora, taxa de servico, recibo, paleta e tela inicial por cargo.
+- Use `Relatorios` para ver lucratividade, turnos por operador e auditoria.
 - Em `Relatorios`, use `Imprimir/PDF` e escolha `Salvar como PDF` na janela de impressao do navegador.
 
 ## Internet
@@ -101,14 +101,22 @@ O app ja esta configurado para usar Supabase em login real e nas principais area
 - clientes e fiado
 - fornecedores, compras e despesas
 - mesas e comandas
-- backups
 
 Para ativar os recursos avancados no banco, execute uma vez no SQL Editor:
 
 - `SUPABASE_GESTAO_AVANCADA.sql`
 
-Esse arquivo cria conciliacao, central de aparelhos, backup restauravel, auditoria
-imutavel e as funcoes protegidas de restauracao. Ele nao apaga os dados atuais.
+Esse arquivo cria conciliacao, central de aparelhos e auditoria imutavel. Ele nao
+apaga os dados atuais.
+
+Para receber mudancas feitas em outro computador sem recarregar a pagina, execute
+uma vez no SQL Editor:
+
+- `SUPABASE_TEMPO_REAL.sql`
+
+O app adia essas atualizacoes enquanto houver carrinho, formulario, mesa em
+fechamento ou pagamento aberto. Assim que a operacao termina, os dados pendentes
+sao aplicados automaticamente.
 
 Para publicar na internet, siga o arquivo:
 

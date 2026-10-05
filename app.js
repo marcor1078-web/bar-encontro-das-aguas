@@ -610,6 +610,45 @@ let connectionState = {
   lastSyncAt: null,
   lastError: "",
 };
+const REALTIME_TABLE_AREAS = {
+  bar_tables: "tables",
+  kitchen_orders: "kitchen",
+  products: "stock",
+  ingredients: "stock",
+  product_recipes: "stock",
+  product_lots: "stock",
+  inventory_counts: "stock",
+  clients: "clients",
+  client_transactions: "clients",
+  sales: "sales",
+  sale_items: "sales",
+  cancellations: "sales",
+  cash_sessions: "cash",
+  cash_movements: "cash",
+  suppliers: "suppliers",
+  purchases: "suppliers",
+  expenses: "suppliers",
+  app_settings: "settings",
+  profiles: "profiles",
+};
+const REALTIME_VIEW_AREAS = {
+  tables: ["tables", "waiter", "pos"],
+  kitchen: ["kitchen"],
+  stock: ["stock", "catalog", "pos", "waiter", "tables"],
+  clients: ["clients", "pos", "tables"],
+  sales: ["dashboard", "sales", "reports"],
+  cash: ["dashboard", "cash", "sales"],
+  suppliers: ["suppliers", "dashboard"],
+  settings: ["settings"],
+  profiles: ["team", "settings"],
+};
+let realtimeChannel = null;
+let realtimeRefreshTimer = null;
+let realtimeReconnectTimer = null;
+let realtimeRefreshRunning = false;
+let realtimeSubscriptionStatus = "disconnected";
+let realtimeLastUpdateAt = null;
+const realtimePendingAreas = new Set();
 
 const app = document.querySelector("#app");
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("barcontrol-sync") : null;
@@ -756,7 +795,13 @@ function saveState() {
 }
 
 function activePalette() {
-  return state.settings.palette === "classic" ? "classic" : "brand";
+  return ["brand", "rubro", "classic"].includes(state.settings.palette) ? state.settings.palette : "brand";
+}
+
+function paletteLabel(palette = activePalette()) {
+  if (palette === "rubro") return "Rubro-negro";
+  if (palette === "classic") return "Classicas";
+  return "Logo";
 }
 
 function applyAppearance() {
@@ -766,14 +811,19 @@ function applyAppearance() {
   document.body.dataset.palette = palette;
   document.querySelector('meta[name="theme-color"]')?.setAttribute(
     "content",
-    palette === "brand" ? (theme === "dark" ? "#020611" : "#006ad8") : theme === "dark" ? "#0b1120" : "#0369a1",
+    palette === "rubro"
+      ? theme === "dark" ? "#09090b" : "#c41220"
+      : palette === "brand"
+        ? theme === "dark" ? "#020611" : "#006ad8"
+        : theme === "dark" ? "#0b1120" : "#0369a1",
   );
 }
 
 function togglePalette() {
-  state.settings.palette = activePalette() === "brand" ? "classic" : "brand";
+  const palettes = ["brand", "rubro", "classic"];
+  state.settings.palette = palettes[(palettes.indexOf(activePalette()) + 1) % palettes.length];
   if (session) {
-    logAudit("Paleta alterada", state.settings.palette === "brand" ? "Cores da logo." : "Cores classicas.");
+    logAudit("Paleta alterada", `Cores ${paletteLabel(state.settings.palette).toLowerCase()}.`);
   }
   saveState();
   if (session) renderApp();
@@ -1057,7 +1107,9 @@ function connectionPresentation() {
       title: "Clique para sincronizar as vendas salvas neste aparelho.",
     };
   }
-  return { tone: "online", label: "Online", title: "Conectado e sem vendas pendentes." };
+  return realtimeSubscriptionStatus === "connected"
+    ? { tone: "online", label: "Online ao vivo", title: "Conectado e recebendo atualizacoes dos outros computadores." }
+    : { tone: "online", label: "Online", title: "Conectado e sem vendas pendentes." };
 }
 
 function updateConnectionIndicators() {
@@ -1069,6 +1121,117 @@ function updateConnectionIndicators() {
     else element.textContent = presentation.label;
     element.title = presentation.title;
   });
+}
+
+function realtimeInteractionLocked() {
+  return Boolean(
+    currentModal ||
+      assistantBusy ||
+      connectionState.syncing ||
+      cart.length ||
+      tableCheckout ||
+      document.querySelector('form[data-submitting="true"], [aria-busy="true"]'),
+  );
+}
+
+function realtimeCanRender(areas) {
+  if (realtimeInteractionLocked()) return false;
+  const activeElement = document.activeElement;
+  if (activeElement?.matches?.("input, textarea, select, [contenteditable='true']")) return false;
+  return [...areas].some((area) => REALTIME_VIEW_AREAS[area]?.includes(currentView));
+}
+
+function scheduleRealtimeRefresh(delay = 650) {
+  if (realtimeRefreshTimer) clearTimeout(realtimeRefreshTimer);
+  realtimeRefreshTimer = setTimeout(() => {
+    realtimeRefreshTimer = null;
+    void flushRealtimeUpdates();
+  }, delay);
+}
+
+function queueRealtimeArea(area) {
+  if (!area || !session?.online) return;
+  realtimePendingAreas.add(area);
+  scheduleRealtimeRefresh();
+}
+
+function queueFullRealtimeRefresh() {
+  if (!session?.online) return;
+  Object.values(REALTIME_TABLE_AREAS).forEach((area) => realtimePendingAreas.add(area));
+  scheduleRealtimeRefresh(250);
+}
+
+async function flushRealtimeUpdates() {
+  if (!realtimePendingAreas.size || !isOnlineSession()) return;
+  if (realtimeRefreshRunning || realtimeInteractionLocked()) {
+    scheduleRealtimeRefresh(900);
+    return;
+  }
+
+  const areas = new Set(realtimePendingAreas);
+  realtimePendingAreas.clear();
+  realtimeRefreshRunning = true;
+  try {
+    if (areas.has("settings")) await loadOnlineSettings();
+    if (areas.has("profiles")) await loadOnlineProfilesData();
+    if (areas.has("tables")) await loadOnlineTableData();
+    if (areas.has("stock")) await loadOnlineStockData();
+    if (areas.has("clients")) await loadOnlineClientsData();
+    if (areas.has("sales")) await loadOnlineSalesData();
+    else if (areas.has("kitchen")) await loadOnlineKitchenData();
+    if (areas.has("cash")) await loadOnlineCashData();
+    if (areas.has("suppliers")) await loadOnlineSupplierData();
+    realtimeLastUpdateAt = new Date().toISOString();
+    saveState();
+    if (session && realtimeCanRender(areas)) renderApp();
+  } catch (error) {
+    console.warn("Falha ao aplicar atualizacao em tempo real", error);
+  } finally {
+    realtimeRefreshRunning = false;
+    if (realtimePendingAreas.size) scheduleRealtimeRefresh(900);
+  }
+}
+
+function stopRealtimeSync() {
+  if (realtimeRefreshTimer) clearTimeout(realtimeRefreshTimer);
+  if (realtimeReconnectTimer) clearTimeout(realtimeReconnectTimer);
+  realtimeRefreshTimer = null;
+  realtimeReconnectTimer = null;
+  realtimePendingAreas.clear();
+  const channel = realtimeChannel;
+  realtimeChannel = null;
+  realtimeSubscriptionStatus = "disconnected";
+  if (channel && supabaseClient) void supabaseClient.removeChannel(channel).catch(() => {});
+  updateConnectionIndicators();
+}
+
+function startRealtimeSync() {
+  if (!session?.online || !isSupabaseReady() || !hasNetworkConnection() || realtimeChannel) return;
+  realtimeSubscriptionStatus = "connecting";
+  const channel = supabaseClient.channel(`barcontrol-live-${uuid()}`);
+  Object.entries(REALTIME_TABLE_AREAS).forEach(([table, area]) => {
+    channel.on("postgres_changes", { event: "*", schema: "public", table }, () => queueRealtimeArea(area));
+  });
+  realtimeChannel = channel;
+  channel.subscribe((status) => {
+    if (realtimeChannel !== channel) return;
+    if (status === "SUBSCRIBED") {
+      realtimeSubscriptionStatus = "connected";
+      if (realtimeReconnectTimer) clearTimeout(realtimeReconnectTimer);
+      realtimeReconnectTimer = null;
+    } else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+      realtimeSubscriptionStatus = "disconnected";
+      realtimeChannel = null;
+      void supabaseClient.removeChannel(channel).catch(() => {});
+      realtimeReconnectTimer = setTimeout(() => {
+        realtimeReconnectTimer = null;
+        startRealtimeSync();
+      }, 5000);
+    }
+    updateConnectionIndicators();
+    if (session && currentView === "online" && !realtimeInteractionLocked()) renderApp();
+  });
+  updateConnectionIndicators();
 }
 
 async function testSupabaseConnection() {
@@ -2067,6 +2230,7 @@ async function loginWithSupabase(username, password) {
     logAudit("Login online", `${session.name} acessou pelo Supabase.`);
     saveState();
     renderApp();
+    startRealtimeSync();
     if (pendingOfflineOperations().length) setTimeout(() => syncPendingOfflineSales(), 500);
     return true;
   } catch (error) {
@@ -2354,6 +2518,7 @@ async function restoreOnlineSession() {
         : getUserPermissions(session)[0] || "pos";
     if (["pos", "waiter", "sales", "cash"].includes(currentView)) await loadMercadoPagoPointStatus(true);
     renderApp();
+    startRealtimeSync();
     return true;
   } catch (error) {
     return false;
@@ -2645,6 +2810,23 @@ function mapKitchenOrderFromDb(row) {
   };
 }
 
+async function loadOnlineKitchenData() {
+  if (!isOnlineSession()) return false;
+  const result = await supabaseClient.from("kitchen_orders").select("*").order("created_at", { ascending: false });
+  if (result.error) {
+    console.warn("Falha ao atualizar cozinha em tempo real", result.error.message);
+    return false;
+  }
+  const onlineKitchenOrders = (result.data || []).map(mapKitchenOrderFromDb);
+  const onlineKitchenIds = new Set(onlineKitchenOrders.map((order) => order.id));
+  const pendingKitchenOrders = pendingOfflineSalePayloads()
+    .flatMap((payload) => payload.kitchenOrders || [])
+    .filter((order) => !onlineKitchenIds.has(order.id));
+  state.kitchenOrders = [...onlineKitchenOrders, ...pendingKitchenOrders];
+  saveState();
+  return true;
+}
+
 async function loadAllOnlineRows(table, orderColumn = "id") {
   const pageSize = 500;
   const rows = [];
@@ -2921,6 +3103,7 @@ async function loadOnlineProfilesData() {
 }
 
 async function logout() {
+  stopRealtimeSync();
   if (isSupabaseReady()) {
     await supabaseClient.auth.signOut({ scope: "local" }).catch(() => {});
   }
@@ -2961,7 +3144,7 @@ function renderLogin() {
               : `<button class="btn secondary install-app-btn" type="button" data-install-app>${icon("download")} Instalar no celular ou computador</button>`
           }
           <button class="btn secondary login-palette-toggle" type="button" data-login-palette-toggle>
-            ${icon("palette")} Cores: ${activePalette() === "brand" ? "Logo" : "Classicas"}
+            ${icon("palette")} Cores: ${paletteLabel()}
           </button>
         </form>
         ${
@@ -3075,11 +3258,11 @@ function renderApp() {
               ${icon(state.settings.theme === "dark" ? "sun" : "moon")}
             </button>
             <button
-              class="btn secondary compact palette-toggle ${activePalette() === "brand" ? "brand-active" : ""}"
+              class="btn secondary compact palette-toggle ${activePalette()}-active"
               type="button"
               id="palette-toggle"
-              title="${activePalette() === "brand" ? "Usar cores classicas" : "Usar cores da logo"}"
-              aria-label="${activePalette() === "brand" ? "Usar cores classicas" : "Usar cores da logo"}"
+              title="Alternar paleta. Atual: ${paletteLabel()}"
+              aria-label="Alternar paleta. Atual: ${paletteLabel()}"
             >
               ${icon("palette")} <span>Cores</span>
             </button>
@@ -3275,6 +3458,10 @@ function bindViewEvents() {
     if (!opened) notify("O navegador bloqueou a nova aba. Libere pop-ups para abrir outro atendimento.");
   });
   document.querySelector("[data-test-supabase]")?.addEventListener("click", testSupabaseConnection);
+  document.querySelector("[data-refresh-realtime]")?.addEventListener("click", () => {
+    queueFullRealtimeRefresh();
+    notify(realtimeInteractionLocked() ? "Atualizacao programada para depois da operacao atual." : "Atualizando dados dos outros computadores...");
+  });
   document.querySelector("[data-test-mercadopago]")?.addEventListener("click", async () => {
     await loadMercadoPagoPointStatus(true);
     notify(mercadoPagoPointStatus.message);
@@ -7628,7 +7815,7 @@ function renderSettings() {
           </label>
           <fieldset class="appearance-setting full">
             <legend>Paleta de cores neste aparelho</legend>
-            <p>Escolha as cores da nova logo ou volte ao visual classico quando quiser.</p>
+            <p>Escolha entre a identidade da distribuidora, o tema rubro-negro ou o visual classico.</p>
             <div class="palette-picker">
               <label class="palette-option">
                 <input type="radio" name="palette" value="brand" ${activePalette() === "brand" ? "checked" : ""} />
@@ -7638,6 +7825,16 @@ function renderSettings() {
                   </span>
                   <strong>Cores da logo</strong>
                   <small>Azul eletrico, vermelho e fundo azul-escuro.</small>
+                </span>
+              </label>
+              <label class="palette-option">
+                <input type="radio" name="palette" value="rubro" ${activePalette() === "rubro" ? "checked" : ""} />
+                <span class="palette-option-content">
+                  <span class="palette-preview rubro-preview" aria-hidden="true">
+                    <i></i><i></i><i></i><i></i>
+                  </span>
+                  <strong>Rubro-negro</strong>
+                  <small>Vermelho, preto e branco com clima de arquibancada.</small>
                 </span>
               </label>
               <label class="palette-option">
@@ -7680,6 +7877,10 @@ function renderSettings() {
 
 function renderOnline() {
   const safeUrl = supabaseConfig.url || "Nao configurada";
+  const realtimeConnected = realtimeSubscriptionStatus === "connected";
+  const realtimeDescription = realtimeConnected
+    ? `Canal conectado${realtimeLastUpdateAt ? `. Ultima atualizacao: ${dateTime(realtimeLastUpdateAt)}.` : "."} O SQL de tempo real precisa estar ativo no Supabase.`
+    : "Execute SUPABASE_TEMPO_REAL.sql e mantenha esta pagina conectada ao Supabase.";
   const keyPreview = supabaseConfig.publishableKey
     ? `${supabaseConfig.publishableKey.slice(0, 18)}...${supabaseConfig.publishableKey.slice(-6)}`
     : "Nao configurada";
@@ -7744,6 +7945,7 @@ function renderOnline() {
       </div>
       <div class="toolbar">
         <button class="btn secondary" type="button" data-test-supabase>Testar conexao Supabase</button>
+        <button class="btn secondary" type="button" data-refresh-realtime>Atualizar dados agora</button>
         <button class="btn secondary" type="button" data-test-mercadopago>Testar Mercado Pago Point</button>
         <button class="btn secondary" type="button" data-set-point-pdv>Ativar modo PDV Point</button>
         <button class="btn secondary" type="button" data-check-point-order>Consultar ultima cobranca Point</button>
@@ -7770,6 +7972,7 @@ function renderOnline() {
       ${onlineCard("Banco", "Schema criado no Supabase e pronto para receber dados reais.", "Conectado")}
       ${onlineCard("Login real", "Perfis, e-mail vinculado, Auth e permissoes online estao ativos.", "Conectado")}
       ${onlineCard("Dados do app", "Produtos, estoque, vendas, clientes, caixa, mesas e despesas estao conectados para teste.", "Conectado")}
+      ${onlineCard("Tempo real entre computadores", realtimeDescription, realtimeConnected ? "Ao vivo" : "Configurar")}
       ${onlineCard("Publicacao", "Proxima etapa: publicar os arquivos estaticos na Vercel com HTTPS.", "Proximo")}
       ${onlineCard("Mercado Pago Point", mercadoPagoPointStatus.message, mercadoPagoPointStatus.enabled ? "Configurado" : "Pendente")}
       ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
@@ -8222,6 +8425,7 @@ function renderStockExpiryModal() {
 function closeModal() {
   currentModal = null;
   renderApp();
+  if (realtimePendingAreas.size) scheduleRealtimeRefresh(80);
 }
 
 function renderOrderModal() {
@@ -11533,7 +11737,7 @@ async function saveSettings(event) {
     cnpj: form.get("cnpj").trim(),
     address: form.get("address").trim(),
     serviceFee: Number(form.get("serviceFee") || 0),
-    palette: form.get("palette") === "classic" ? "classic" : "brand",
+    palette: ["brand", "rubro", "classic"].includes(form.get("palette")) ? form.get("palette") : "brand",
     receiptFooter: form.get("receiptFooter").trim(),
     closingDifferenceLimit: Math.max(0, Number(form.get("closingDifferenceLimit") || 5)),
     pricingDefaults: {
@@ -12954,6 +13158,7 @@ setInterval(async () => {
 
 syncChannel?.addEventListener("message", (event) => {
   if (event.data?.type !== "state-updated") return;
+  if (realtimeInteractionLocked()) return;
   suppressBroadcast = true;
   state = loadState();
   if (session) {
@@ -12978,6 +13183,7 @@ window.addEventListener("appinstalled", () => {
 window.addEventListener("offline", () => {
   connectionState.browserOnline = false;
   setCloudReachable(false, "O aparelho esta sem internet.");
+  stopRealtimeSync();
   if (session) notify("Modo offline ativado. As proximas vendas ficarao guardadas neste aparelho.");
 });
 
@@ -12990,6 +13196,8 @@ window.addEventListener("online", async () => {
   if (session && (await ensureDailyCashOpen({ notifyUser: true }))) renderApp();
   if (session && pendingOfflineOperations().length) await syncPendingOfflineSales();
   else if (session) notify("Conexao restabelecida.");
+  startRealtimeSync();
+  queueFullRealtimeRefresh();
 });
 
 async function bootstrapApp() {

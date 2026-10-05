@@ -4036,6 +4036,224 @@ body[data-palette="brand"][data-theme="dark"] .notice {
   background: #09213a;
 }
 
+/* Paleta opcional rubro-negra, mantendo a marca propria da distribuidora. */
+body[data-palette="rubro"] {
+  --ink: #1b1215;
+  --muted: #6f5960;
+  --line: #e2b5bb;
+  --soft: #fff2f3;
+  --paper: #ffffff;
+  --brand: #d41424;
+  --brand-strong: #a90d19;
+  --navy: #09090b;
+  --wine: #a90d19;
+  --red: #d41424;
+  --blue: #3f3f46;
+  --shadow: 0 18px 42px rgba(103, 8, 17, 0.16);
+  --shadow-soft: 0 8px 24px rgba(103, 8, 17, 0.1);
+  background: linear-gradient(180deg, #fff5f6 0%, #ffffff 56%, #f5f5f5 100%);
+}
+
+body[data-palette="rubro"][data-theme="dark"] {
+  --ink: #fff5f6;
+  --muted: #d1b2b7;
+  --line: #59242b;
+  --soft: #211013;
+  --paper: #121214;
+  --brand: #ef3340;
+  --brand-strong: #ff626c;
+  background: #09090b;
+}
+
+body[data-palette="rubro"] .sidebar {
+  border-right-color: rgba(239, 51, 64, 0.62);
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.22), transparent 46%),
+    repeating-linear-gradient(180deg, #09090b 0 76px, #b90f1c 76px 94px, #09090b 94px 170px);
+  box-shadow: 10px 0 34px rgba(77, 5, 11, 0.2);
+}
+
+body[data-palette="rubro"] .brand-mark {
+  border-color: #ef3340;
+  background: #ffffff;
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.18),
+    0 10px 28px rgba(212, 20, 36, 0.34);
+}
+
+body[data-palette="rubro"] .nav button.active,
+body[data-palette="rubro"] .nav button:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: linear-gradient(90deg, rgba(212, 20, 36, 0.86) 0 72%, rgba(8, 8, 10, 0.92) 72% 100%);
+}
+
+body[data-palette="rubro"] .nav button.active .nav-icon {
+  background: #ffffff;
+  color: #b90f1c;
+  box-shadow: inset 0 -3px 0 #09090b;
+}
+
+body[data-palette="rubro"] .sidebar-footer {
+  border-top-color: rgba(239, 51, 64, 0.5);
+  background: rgba(6, 6, 8, 0.88);
+}
+
+body[data-palette="rubro"] .topbar {
+  border-bottom: 0;
+  box-shadow: 0 8px 26px rgba(89, 7, 15, 0.12);
+}
+
+body[data-palette="rubro"] .topbar::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 4px;
+  background: repeating-linear-gradient(90deg, #09090b 0 72px, #d41424 72px 144px);
+}
+
+body[data-palette="rubro"] .btn.primary,
+body[data-palette="rubro"] .payment-choice input:checked + span {
+  border-color: #b90f1c;
+  background: linear-gradient(105deg, #d41424 0 76%, #09090b 76% 100%);
+  color: #ffffff;
+  box-shadow: 0 10px 24px rgba(150, 9, 21, 0.24);
+}
+
+body[data-palette="rubro"] .btn.secondary.active,
+body[data-palette="rubro"] .category-pill.active {
+  border-color: #d41424;
+  background: #ffe6e8;
+  color: #970b16;
+  box-shadow: inset 0 -3px 0 #09090b;
+}
+
+body[data-palette="rubro"] .field input:focus,
+body[data-palette="rubro"] .field select:focus,
+body[data-palette="rubro"] .field textarea:focus,
+body[data-palette="rubro"] .field-input:focus {
+  border-color: #d41424;
+  box-shadow: 0 0 0 3px rgba(212, 20, 36, 0.16);
+}
+
+body[data-palette="rubro"] .card:not(.stock-card) .card-head {
+  background: linear-gradient(90deg, #fff0f2 0 82%, #f1f1f2 82% 100%);
+  box-shadow: inset 4px 0 0 #d41424;
+}
+
+body[data-palette="rubro"] .metric {
+  border-top: 3px solid #d41424;
+  background: linear-gradient(180deg, #ffffff 0%, #fff7f8 100%);
+}
+
+body[data-palette="rubro"] .metrics .metric:nth-child(even) {
+  border-top-color: #18181b;
+}
+
+body[data-palette="rubro"] .metric-icon,
+body[data-palette="rubro"] .category-pill span,
+body[data-palette="rubro"] .category-badge {
+  border: 1px solid #f0a1aa;
+  background: #ffe7e9;
+  color: #a90d19;
+  box-shadow: inset 0 -3px 0 #18181b;
+}
+
+body[data-palette="rubro"] .stock-card {
+  border-color: #d41424;
+  box-shadow: 0 18px 38px rgba(117, 7, 18, 0.17);
+}
+
+body[data-palette="rubro"] .stock-card .card-head,
+body[data-palette="rubro"] .stock-table th {
+  background: linear-gradient(90deg, #101012 0 74%, #c31120 74% 100%);
+  color: #ffffff;
+}
+
+body[data-palette="rubro"] .check-tile:has(input:checked) {
+  border-color: #d41424;
+  background: #fff0f2;
+  box-shadow: 0 8px 18px rgba(117, 7, 18, 0.12);
+}
+
+body[data-palette="rubro"] .check-tile:has(input:checked) .check-icon {
+  background: #d41424;
+  color: #ffffff;
+  box-shadow: inset 0 -3px 0 #09090b;
+}
+
+body[data-palette="rubro"] .cash-change-panel,
+body[data-palette="rubro"] .discount-panel,
+body[data-palette="rubro"] .split-payment-panel,
+body[data-palette="rubro"] .notice {
+  border-color: rgba(212, 20, 36, 0.34);
+  background: #fff1f2;
+}
+
+body[data-palette="rubro"] .checkout-dock,
+body[data-palette="rubro"] .post-sale-ticket {
+  border-color: rgba(212, 20, 36, 0.42);
+  box-shadow:
+    inset 0 3px 0 #d41424,
+    inset 0 -3px 0 #09090b,
+    var(--shadow);
+}
+
+body[data-palette="rubro"] .login-panel {
+  border-top: 4px solid #d41424;
+  border-bottom: 4px solid #09090b;
+  box-shadow:
+    0 0 0 1px rgba(212, 20, 36, 0.2),
+    0 24px 58px rgba(96, 6, 15, 0.2);
+}
+
+body[data-palette="rubro"] .palette-toggle.rubro-active {
+  border-color: #ef3340;
+  background: linear-gradient(135deg, #d41424 0 58%, #09090b 58% 100%);
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(112, 7, 17, 0.22);
+}
+
+body[data-palette="rubro"][data-theme="dark"] .topbar,
+body[data-palette="rubro"][data-theme="dark"] .card,
+body[data-palette="rubro"][data-theme="dark"] .login-panel,
+body[data-palette="rubro"][data-theme="dark"] .product-tile,
+body[data-palette="rubro"][data-theme="dark"] .quick-product-tile,
+body[data-palette="rubro"][data-theme="dark"] .mobile-product,
+body[data-palette="rubro"][data-theme="dark"] .order-card,
+body[data-palette="rubro"][data-theme="dark"] .table-tile,
+body[data-palette="rubro"][data-theme="dark"] .table-tools {
+  border-color: #59242b;
+  background: #121214;
+}
+
+body[data-palette="rubro"][data-theme="dark"] .card:not(.stock-card) .card-head,
+body[data-palette="rubro"][data-theme="dark"] th {
+  background: linear-gradient(90deg, #1b1012 0 78%, #5a0a12 78% 100%);
+  color: #fff5f6;
+}
+
+body[data-palette="rubro"][data-theme="dark"] .metric {
+  background: linear-gradient(180deg, #191416 0%, #111113 100%);
+}
+
+body[data-palette="rubro"][data-theme="dark"] .btn.secondary.active,
+body[data-palette="rubro"][data-theme="dark"] .category-pill.active,
+body[data-palette="rubro"][data-theme="dark"] .check-tile:has(input:checked) {
+  border-color: #ef3340;
+  background: #3b1116;
+  color: #ffe5e7;
+}
+
+body[data-palette="rubro"][data-theme="dark"] .cash-change-panel,
+body[data-palette="rubro"][data-theme="dark"] .discount-panel,
+body[data-palette="rubro"][data-theme="dark"] .split-payment-panel,
+body[data-palette="rubro"][data-theme="dark"] .notice {
+  border-color: rgba(239, 51, 64, 0.44);
+  background: #2b1115;
+}
+
 .appearance-setting {
   min-width: 0;
   margin: 2px 0 6px;
@@ -4057,7 +4275,7 @@ body[data-palette="brand"][data-theme="dark"] .notice {
 
 .palette-picker {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -4128,6 +4346,10 @@ body[data-palette="brand"][data-theme="dark"] .notice {
 .brand-preview i:nth-child(2) { background: #078cf1; }
 .brand-preview i:nth-child(3) { background: #e21b2f; }
 .brand-preview i:nth-child(4) { background: #eef8ff; }
+.rubro-preview i:nth-child(1) { background: #09090b; }
+.rubro-preview i:nth-child(2) { background: #d41424; }
+.rubro-preview i:nth-child(3) { background: #09090b; }
+.rubro-preview i:nth-child(4) { background: #ffffff; }
 .classic-preview i:nth-child(1) { background: #111827; }
 .classic-preview i:nth-child(2) { background: #0ea5e9; }
 .classic-preview i:nth-child(3) { background: #0f766e; }
@@ -4135,6 +4357,12 @@ body[data-palette="brand"][data-theme="dark"] .notice {
 
 body[data-theme="dark"] .appearance-setting legend {
   color: #e5e7eb;
+}
+
+@media (max-width: 1100px) {
+  .palette-picker {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
