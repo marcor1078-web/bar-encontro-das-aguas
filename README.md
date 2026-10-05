@@ -141,3 +141,12 @@ navegador nem desinstale o app nesse aparelho.
 Em modo online, senhas reais ficam no Supabase Auth. O app pode editar perfil,
 permissoes e exibicao na tela inicial, mas alteracao de senha deve ser feita em
 `Supabase > Authentication > Users`.
+
+## Creditos visuais
+
+O arquivo `icons/flamengo-rowing-crest.png` reproduz o escudo de remo do Clube de
+Regatas do Flamengo, de autoria do clube, obtido no Wikimedia Commons e usado sem
+alteracoes sob a licenca CC BY-SA 4.0:
+
+- https://commons.wikimedia.org/wiki/File:Flamengo-RJ_(Rowing;_2018).svg
+- https://creativecommons.org/licenses/by-sa/4.0/

@@ -712,6 +712,13 @@ button:disabled {
   font-size: clamp(1rem, 2vw, 1.22rem);
 }
 
+.rubro-login-badge,
+.rubro-sidebar-crest,
+.rubro-sidebar-ribbon,
+.rubro-topbar-crest {
+  display: none;
+}
+
 .login-panel {
   align-self: center;
   margin: 24px;
@@ -1161,6 +1168,12 @@ button:disabled {
 .brand-block {
   padding: 22px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.brand-emblems {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .brand-mark {
@@ -4091,12 +4104,117 @@ body[data-palette="rubro"] .sidebar {
   box-shadow: 10px 0 34px rgba(77, 5, 11, 0.2);
 }
 
+body[data-palette="rubro"] .login-brand {
+  position: relative;
+  overflow: hidden;
+  padding: 24px clamp(28px, 6vw, 72px);
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.22), transparent 42%, rgba(0, 0, 0, 0.34)),
+    repeating-linear-gradient(180deg, #070709 0 82px, #c81022 82px 130px, #070709 130px 212px);
+  box-shadow: inset -10px 0 0 #c81022;
+}
+
+body[data-palette="rubro"] .login-brand::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("/icons/flamengo-rowing-crest.png") right -70px bottom -100px / min(44vw, 520px) auto no-repeat;
+  opacity: 0.16;
+  pointer-events: none;
+}
+
+body[data-palette="rubro"] .login-brand > * {
+  position: relative;
+  z-index: 1;
+}
+
+body[data-palette="rubro"] .login-logo {
+  width: min(100%, 440px);
+  max-height: 48vh;
+  border: 3px solid #ffffff;
+  background: #070709;
+  box-shadow:
+    0 0 0 8px #c81022,
+    0 24px 60px rgba(0, 0, 0, 0.56);
+  filter: none;
+}
+
+body[data-palette="rubro"] .rubro-login-badge {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+  border: 2px solid #ffffff;
+  border-radius: 8px;
+  background: linear-gradient(105deg, #c81022 0 62%, #070709 62% 100%);
+  color: #ffffff;
+  padding: 10px 22px 10px 12px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.38);
+  text-align: left;
+}
+
+body[data-palette="rubro"] .rubro-login-badge img {
+  width: 64px;
+  height: 76px;
+  object-fit: contain;
+  filter: drop-shadow(0 5px 8px rgba(0, 0, 0, 0.38));
+}
+
+body[data-palette="rubro"] .rubro-login-badge span,
+body[data-palette="rubro"] .rubro-login-badge strong,
+body[data-palette="rubro"] .rubro-login-badge small {
+  display: block;
+}
+
+body[data-palette="rubro"] .rubro-login-badge strong {
+  font-size: clamp(1.35rem, 3vw, 2rem);
+  line-height: 1;
+}
+
+body[data-palette="rubro"] .rubro-login-badge small {
+  margin-top: 5px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
 body[data-palette="rubro"] .brand-mark {
   border-color: #ef3340;
   background: #ffffff;
   box-shadow:
     0 0 0 2px rgba(255, 255, 255, 0.18),
     0 10px 28px rgba(212, 20, 36, 0.34);
+}
+
+body[data-palette="rubro"] .rubro-sidebar-crest {
+  display: block;
+  width: 58px;
+  height: 72px;
+  object-fit: contain;
+  filter: drop-shadow(0 9px 12px rgba(0, 0, 0, 0.48));
+}
+
+body[data-palette="rubro"] .rubro-sidebar-ribbon {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 5px;
+  background: linear-gradient(90deg, #c81022 0 64%, #050506 64% 100%);
+  color: #ffffff;
+  padding: 7px 9px;
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.32);
+}
+
+body[data-palette="rubro"] .brand-block .rubro-sidebar-ribbon b {
+  font-size: 0.82rem;
+}
+
+body[data-palette="rubro"] .brand-block .rubro-sidebar-ribbon small {
+  color: #ffffff;
+  font-size: 0.57rem;
+  font-weight: 900;
 }
 
 body[data-palette="rubro"] .nav button.active,
@@ -4118,7 +4236,36 @@ body[data-palette="rubro"] .sidebar-footer {
 
 body[data-palette="rubro"] .topbar {
   border-bottom: 0;
+  background:
+    linear-gradient(90deg, rgba(200, 16, 34, 0.96) 0 10px, transparent 10px),
+    #08080a;
+  color: #ffffff;
   box-shadow: 0 8px 26px rgba(89, 7, 15, 0.12);
+}
+
+body[data-palette="rubro"] .topbar p {
+  color: #fecaca;
+}
+
+body[data-palette="rubro"] .topbar-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+body[data-palette="rubro"] .rubro-topbar-crest {
+  display: block;
+  width: 36px;
+  height: 44px;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 7px rgba(0, 0, 0, 0.5));
+}
+
+body[data-palette="rubro"] .topbar .icon-btn:not(.live-refresh),
+body[data-palette="rubro"] .topbar .btn.secondary:not(.palette-toggle) {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
 }
 
 body[data-palette="rubro"] .topbar::after {
@@ -4127,8 +4274,13 @@ body[data-palette="rubro"] .topbar::after {
   right: 0;
   bottom: 0;
   left: 0;
-  height: 4px;
-  background: repeating-linear-gradient(90deg, #09090b 0 72px, #d41424 72px 144px);
+  height: 6px;
+  background: repeating-linear-gradient(90deg, #d41424 0 80px, #ffffff 80px 86px, #09090b 86px 166px);
+}
+
+body[data-palette="rubro"] .content {
+  border-top: 10px solid transparent;
+  border-image: repeating-linear-gradient(90deg, #c81022 0 92px, #08080a 92px 184px) 10;
 }
 
 body[data-palette="rubro"] .btn.primary,
@@ -4390,6 +4542,34 @@ body[data-theme="dark"] .appearance-setting legend {
 
   .palette-option-content {
     grid-template-columns: 84px minmax(0, 1fr);
+  }
+
+  body[data-palette="rubro"] .rubro-login-badge {
+    margin-top: 16px;
+    padding: 8px 14px 8px 9px;
+  }
+
+  body[data-palette="rubro"] .rubro-login-badge img {
+    width: 46px;
+    height: 56px;
+  }
+
+  body[data-palette="rubro"] .rubro-login-badge strong {
+    font-size: 1.15rem;
+  }
+
+  body[data-palette="rubro"] .rubro-topbar-crest {
+    width: 28px;
+    height: 34px;
+  }
+
+  body[data-palette="rubro"] .topbar-heading {
+    justify-content: center;
+    gap: 0;
+  }
+
+  body[data-palette="rubro"] .topbar-heading > div {
+    display: none;
   }
 }
 

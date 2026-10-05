@@ -12,6 +12,7 @@ const MP_POLL_INTERVAL_MS = 2500;
 const APP_DISPLAY_NAME = "DISTRIBUIDORA ENCONTRO DAS ÁGUAS";
 const BRAND_LOGO_URL = "/icons/distribuidora-encontro-das-aguas.jpeg";
 const BRAND_ICON_URL = "/icons/icon-192.png";
+const FLAMENGO_CREST_URL = "/icons/flamengo-rowing-crest.png";
 const CURRENT_SERVICE_NUMBER = Math.max(1, Number(new URLSearchParams(window.location.search).get("atendimento")) || 1);
 document.title = `${APP_DISPLAY_NAME} - Atendimento ${CURRENT_SERVICE_NUMBER}`;
 const LEGACY_APP_NAMES = [
@@ -3124,6 +3125,10 @@ function renderLogin() {
     <main class="login-shell">
       <section class="login-brand">
         <img class="login-logo" src="${BRAND_LOGO_URL}" alt="Logo ${APP_DISPLAY_NAME}" />
+        <div class="rubro-login-badge" aria-label="Tema Flamengo rubro-negro">
+          <img src="${FLAMENGO_CREST_URL}" alt="Escudo do Clube de Regatas do Flamengo" />
+          <span><strong>FLAMENGO</strong><small>NAÇÃO RUBRO-NEGRA</small></span>
+        </div>
         <h1>${state.settings.barName || APP_DISPLAY_NAME}</h1>
         <p>Caixa, estoque, vendas e equipe em uma operacao unica para a distribuidora.</p>
       </section>
@@ -3213,9 +3218,13 @@ function renderApp() {
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
         <div class="brand-block">
-          <img class="brand-mark" src="${BRAND_ICON_URL}" alt="" />
+          <div class="brand-emblems">
+            <img class="brand-mark" src="${BRAND_ICON_URL}" alt="Logo ${APP_DISPLAY_NAME}" />
+            <img class="rubro-sidebar-crest" src="${FLAMENGO_CREST_URL}" alt="Escudo do Clube de Regatas do Flamengo" />
+          </div>
           <strong>${state.settings.barName || APP_DISPLAY_NAME}</strong>
           <span>${roles[session.role].label}</span>
+          <div class="rubro-sidebar-ribbon"><b>FLAMENGO</b><small>TEMA RUBRO-NEGRO</small></div>
         </div>
         <nav class="nav">
           ${nav
@@ -3243,9 +3252,12 @@ function renderApp() {
       <main class="main">
         <header class="topbar">
           <button class="icon-btn mobile-menu" type="button" id="open-menu" title="Menu">${icon("menu")}</button>
-          <div>
-            <h1>${title}</h1>
-            <p>${topbarSubtitle(currentView)}</p>
+          <div class="topbar-heading">
+            <img class="rubro-topbar-crest" src="${FLAMENGO_CREST_URL}" alt="" />
+            <div>
+              <h1>${title}</h1>
+              <p>${topbarSubtitle(currentView)}</p>
+            </div>
           </div>
           <div class="top-actions">
             <button class="connection-chip ${connection.tone}" type="button" data-connection-chip data-sync-pending title="${connection.title}">
