@@ -3608,6 +3608,11 @@ function bindViewEvents() {
   document.querySelectorAll("[data-remove-expense]").forEach((button) => {
     button.addEventListener("click", () => removeExpense(button.dataset.removeExpense));
   });
+  document.querySelectorAll("[data-remove-paid-expense-invoice]").forEach((button) => {
+    button.addEventListener("click", () =>
+      removePaidExpenseInvoice(button.dataset.expenseId, button.dataset.removePaidExpenseInvoice),
+    );
+  });
 
   document.querySelectorAll("[data-pay-client]").forEach((button) => {
     button.addEventListener("click", () => payClient(button.dataset.payClient));
@@ -7899,6 +7904,11 @@ function renderSuppliers() {
                           <div class="toolbar">
                             <button class="btn compact primary" type="button" data-open-modal="expensePayment" data-id="${expense.id}" data-invoice-id="${invoice.id}" ${invoice.balance <= 0 ? "disabled" : ""}>Pagar esta</button>
                             ${
+                              invoice.status === "Pago"
+                                ? `<button class="btn compact danger" type="button" data-remove-paid-expense-invoice="${invoice.id}" data-expense-id="${expense.id}">Remover paga</button>`
+                                : ""
+                            }
+                            ${
                               index === 0
                                 ? `${expense.recurring ? "" : `<button class="btn compact secondary" type="button" data-open-modal="expenseCharge" data-id="${expense.id}">Nova fatura</button>`}
                                   <button class="btn compact secondary" type="button" data-open-modal="expense" data-id="${expense.id}">Editar</button>
@@ -11766,6 +11776,135 @@ async function removeExpense(expenseId) {
   logAudit("Despesa removida", `${expense.description}: ${money(expense.amount)}.`);
   saveState();
   notify("Despesa removida.");
+  renderApp();
+}
+
+function expenseAfterRemovingPaidInvoice(expense, invoice) {
+  const invoices = expenseInvoices(expense);
+  const remainingInvoices = invoices.filter((entry) => entry.id !== invoice.id);
+  const nextAmount = Number(Math.max(0, Number(expense.amount || 0) - Number(invoice.amount || 0)).toFixed(2));
+  const nextPaidAmount = Number(Math.max(0, expensePaidAmount(expense) - Number(invoice.paidAmount || 0)).toFixed(2));
+  let paidToRemove = Number(invoice.paidAmount || 0);
+  let paymentHistory = [];
+
+  expenseMovementHistory(expense).forEach((movement) => {
+    if (movement.type === "charge" && movement.id === invoice.id) return;
+    if (movement.type !== "charge" && movement.invoiceId === invoice.id) {
+      paidToRemove = Math.max(0, paidToRemove - Number(movement.amount || 0));
+      return;
+    }
+    paymentHistory.push({ ...movement });
+  });
+
+  if (paidToRemove > 0.005) {
+    paymentHistory = paymentHistory.reduce((result, movement) => {
+      if (paidToRemove <= 0.005 || movement.type === "charge" || movement.invoiceId) {
+        result.push(movement);
+        return result;
+      }
+      const movementAmount = Number(movement.amount || 0);
+      const removedAmount = Math.min(movementAmount, paidToRemove);
+      paidToRemove = Number(Math.max(0, paidToRemove - removedAmount).toFixed(2));
+      const remainingAmount = Number(Math.max(0, movementAmount - removedAmount).toFixed(2));
+      if (remainingAmount > 0) result.push({ ...movement, amount: remainingAmount });
+      return result;
+    }, []);
+  }
+
+  let expenseDate = expense.expenseDate;
+  let dueDate = expense.dueDate;
+  if (invoice.initial && remainingInvoices.length) {
+    const promotedInvoice = remainingInvoices[0];
+    const promotedInvoiceId = expenseInitialInvoiceId(expense);
+    expenseDate = String(promotedInvoice.date || expenseDate || "").slice(0, 10);
+    dueDate = promotedInvoice.dueDate || dueDate;
+    paymentHistory = paymentHistory
+      .filter((movement) => !(movement.type === "charge" && movement.id === promotedInvoice.id))
+      .map((movement) =>
+        movement.type !== "charge" && movement.invoiceId === promotedInvoice.id
+          ? { ...movement, invoiceId: promotedInvoiceId }
+          : movement,
+      );
+  }
+
+  const paid = nextAmount > 0 && nextPaidAmount >= nextAmount;
+  return {
+    ...expense,
+    amount: nextAmount,
+    expenseDate,
+    dueDate,
+    paidAmount: Math.min(nextAmount, nextPaidAmount),
+    paymentHistory,
+    paid,
+    paidAt: paid ? expense.paidAt : null,
+  };
+}
+
+async function removePaidExpenseInvoice(expenseId, invoiceId) {
+  const expense = (state.expenses || []).find((entry) => entry.id === expenseId);
+  const invoice = expenseInvoices(expense).find((entry) => entry.id === invoiceId);
+  if (!expense || !invoice) {
+    notify("A conta paga nao foi encontrada.");
+    return;
+  }
+  if (invoice.status !== "Pago") {
+    notify("Somente contas totalmente pagas podem ser removidas por esta opcao.");
+    return;
+  }
+  if (!confirm(`Remover a fatura paga "${expenseInvoiceLabel(invoice)}" de ${expense.description}, no valor de ${money(invoice.amount)}?`)) return;
+
+  const invoices = expenseInvoices(expense);
+  if (invoices.length === 1) {
+    if (isOnlineSession()) {
+      const { error } = await supabaseClient.from("expenses").delete().eq("id", expense.id);
+      if (error) {
+        notify(`Erro ao remover conta paga online: ${error.message}`);
+        return;
+      }
+      await loadOnlineSupplierData();
+      logAudit("Conta paga removida online", `${expense.description}: ${money(invoice.amount)}.`);
+    } else {
+      state.expenses = (state.expenses || []).filter((entry) => entry.id !== expense.id);
+      logAudit("Conta paga removida", `${expense.description}: ${money(invoice.amount)}.`);
+      saveState();
+    }
+    notify("Conta paga removida.");
+    renderApp();
+    return;
+  }
+
+  const updatedExpense = expenseAfterRemovingPaidInvoice(expense, invoice);
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient
+      .from("expenses")
+      .update({
+        amount: updatedExpense.amount,
+        expense_date: updatedExpense.expenseDate,
+        due_date: updatedExpense.dueDate,
+        paid_amount: updatedExpense.paidAmount,
+        payment_history: updatedExpense.paymentHistory,
+        paid: updatedExpense.paid,
+        paid_at: updatedExpense.paidAt,
+      })
+      .eq("id", expense.id);
+    if (error) {
+      notify(`Erro ao remover fatura paga online: ${error.message}`);
+      return;
+    }
+    await loadOnlineSupplierData();
+    logAudit(
+      "Fatura paga removida online",
+      `${expense.description} / ${expenseInvoiceLabel(invoice)}: ${money(invoice.amount)}.`,
+    );
+  } else {
+    state.expenses = (state.expenses || []).map((entry) => (entry.id === expense.id ? updatedExpense : entry));
+    logAudit(
+      "Fatura paga removida",
+      `${expense.description} / ${expenseInvoiceLabel(invoice)}: ${money(invoice.amount)}.`,
+    );
+    saveState();
+  }
+  notify(`Fatura paga removida. Saldo restante da conta: ${money(expenseBalance(updatedExpense))}.`);
   renderApp();
 }
 
