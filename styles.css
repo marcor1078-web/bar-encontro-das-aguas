@@ -1027,6 +1027,32 @@ button:disabled {
   font-size: 0.82rem;
 }
 
+.table-split-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--brand) 42%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--brand) 9%, var(--paper));
+}
+
+.table-split-entry > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.table-split-entry span {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.table-split-entry .btn {
+  flex: 0 0 auto;
+}
+
 .demo-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3670,6 +3696,15 @@ body[data-theme="dark"] #manual-charge-form .modal-actions {
 
   #sale-payment-form .installment-choice-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .table-split-entry {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .table-split-entry .btn {
+    width: 100%;
   }
 
   .permission-head {

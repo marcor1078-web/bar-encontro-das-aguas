@@ -5272,6 +5272,7 @@ async function saveTableSplitPlan(event) {
   const formElement = event.currentTarget;
   const table = state.tables.find((entry) => entry.id === String(new FormData(formElement).get("tableId") || ""));
   if (!table || !table.items?.length || !(await ensureTableSplitSchema())) return;
+  const openedFromCheckout = tableCheckout?.id === table.id;
   let splitBill;
   try {
     splitBill = buildTableSplitPlan(new FormData(formElement), table);
@@ -5297,6 +5298,11 @@ async function saveTableSplitPlan(event) {
     saveState();
   }
   selectedTableId = table.id;
+  if (openedFromCheckout) {
+    cart = [];
+    tableCheckout = null;
+    currentView = "tables";
+  }
   currentModal = null;
   logAudit("Conta dividida", `${table.name}: ${splitBill.people.length} pessoa(s), ${tableSplitModeLabel(splitBill.mode)}.`);
   notify("Divisao salva. Escolha uma pessoa para receber no balcao.");
@@ -8687,6 +8693,8 @@ function renderSalePaymentModal() {
   const totals = saleTotalsForItems(cart);
   const { subtotal, serviceFee, total } = totals;
   const splitPersonName = tableCheckout?.splitPersonName || "";
+  const checkoutTable = tableCheckout?.id ? state.tables.find((table) => table.id === tableCheckout.id) : null;
+  const canSplitTableAtCheckout = Boolean(checkoutTable?.items?.length && !tableCheckout?.splitPersonId && !checkoutTable.splitBill);
   return `
     <form id="sale-payment-form">
       <div class="modal-head">
@@ -8704,6 +8712,14 @@ function renderSalePaymentModal() {
           <div class="summary-row" data-discount-summary-row hidden><span>Desconto</span><strong data-sale-discount>${money(0)}</strong></div>
           <div class="summary-row total"><span>Total a pagar</span><strong data-sale-total>${money(total)}</strong></div>
         </div>
+        ${
+          canSplitTableAtCheckout
+            ? `<div class="table-split-entry">
+                <div><strong>Conta para duas ou mais pessoas?</strong><span>Divida igualmente, por produtos ou informe valores diferentes.</span></div>
+                <button class="btn secondary" type="button" data-open-modal="tableSplit" data-id="${checkoutTable.id}">Dividir entre pessoas</button>
+              </div>`
+            : ""
+        }
         ${
           splitPersonName
             ? '<div class="notice compact">O desconto deve ser aplicado antes de dividir a conta. Esta parte sera recebida pelo valor salvo.</div><input name="discountType" type="hidden" value="none" />'
