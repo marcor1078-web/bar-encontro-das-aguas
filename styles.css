@@ -4851,6 +4851,10 @@ body .table-tile.active {
   margin-top: 12px;
 }
 
+.counter-split-status {
+  margin-bottom: 16px;
+}
+
 body[data-theme="dark"] .table-split-total,
 body[data-theme="dark"] .split-item-card,
 body[data-theme="dark"] .table-split-person {

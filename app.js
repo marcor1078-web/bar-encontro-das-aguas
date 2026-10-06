@@ -512,6 +512,7 @@ const defaultState = {
       supplierId: "sup-002",
     },
   ],
+  counterSplits: {},
   tables: Array.from({ length: 12 }, (_, index) => ({
     id: `table-${index + 1}`,
     name: `Mesa ${index + 1}`,
@@ -742,6 +743,9 @@ function migrateState(nextState) {
   nextState.cashSessions = nextState.cashSessions || structuredClone(defaultState.cashSessions);
   nextState.inventoryCounts = nextState.inventoryCounts || structuredClone(defaultState.inventoryCounts);
   nextState.stockLots = nextState.stockLots || structuredClone(defaultState.stockLots);
+  nextState.counterSplits = nextState.counterSplits && typeof nextState.counterSplits === "object"
+    ? nextState.counterSplits
+    : {};
   nextState.tables = (nextState.tables || structuredClone(defaultState.tables)).map((table) => ({
     customerName: "",
     splitBill: null,
@@ -3625,6 +3629,12 @@ function bindViewEvents() {
     button.addEventListener("click", () => cancelTableSplit(button.dataset.cancelTableSplit));
   });
 
+  document.querySelectorAll("[data-pay-counter-share]").forEach((button) => {
+    button.addEventListener("click", () => startCounterSplitPayment(button.dataset.payCounterShare));
+  });
+
+  document.querySelector("[data-cancel-counter-split]")?.addEventListener("click", cancelCounterSplit);
+
   document.querySelectorAll("[data-table-item-minus]").forEach((button) => {
     button.addEventListener("click", () =>
       changeTableItemQty(button.dataset.tableId, button.dataset.tableItemMinus, -1),
@@ -3765,6 +3775,7 @@ function metric(label, value, help, icon) {
 }
 
 function renderPos() {
+  const counterSplitBill = currentCounterSplitBill();
   const term = searchTerm.trim().toLowerCase();
   const quickProductsBase = state.products.filter((product) => product.active && product.favorite);
   const visibleProductsBase = term ? state.products.filter((product) => product.active) : quickProductsBase;
@@ -3789,7 +3800,7 @@ function renderPos() {
       </div>
       <div class="toolbar">
         <input class="field-input search" data-search type="search" placeholder="Buscar produto" />
-        <button class="btn secondary" type="button" data-open-modal="manualCharge">${icon("cash")} Cobranca avulsa</button>
+        <button class="btn secondary" type="button" data-open-modal="manualCharge" ${counterSplitBill ? "disabled" : ""}>${icon("cash")} Cobranca avulsa</button>
         <button class="btn primary" type="button" data-new-service>Novo atendimento</button>
       </div>
     </div>
@@ -3804,6 +3815,8 @@ function renderPos() {
           </section>`
         : ""
     }
+
+    ${counterSplitBill ? renderCounterSplitStatus(counterSplitBill) : ""}
 
     <div class="pos-layout">
       <section class="card pad">
@@ -3832,7 +3845,7 @@ function renderPos() {
               ? products
                   .map(
                     (product) => `
-                      <button class="quick-product-tile" type="button" data-add-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
+                      <button class="quick-product-tile" type="button" data-add-product="${product.id}" ${counterSplitBill || productAvailableStock(product) <= 0 ? "disabled" : ""}>
                         ${productImageMarkup(product, "quick-product-photo")}
                         <span class="quick-product-copy">
                           <strong>${escapeHtml(product.name)}</strong>
@@ -3850,7 +3863,7 @@ function renderPos() {
       <aside class="card cart">
         <div class="card-head">
           <h2 class="card-title">${tableCheckout ? `Fechamento - ${tableCheckout.name}${tableCheckout.splitPersonName ? ` / ${escapeHtml(tableCheckout.splitPersonName)}` : ""}` : "Comanda"}</h2>
-          <button class="btn compact secondary" type="button" data-clear-cart>Limpar</button>
+          <button class="btn compact secondary" type="button" data-clear-cart ${counterSplitBill && !tableCheckout ? "disabled" : ""}>Limpar</button>
         </div>
         ${
           tableCheckout
@@ -4006,6 +4019,46 @@ function renderTableSplitStatus(table) {
           .join("")}
       </div>
       ${paidCount ? "" : `<button class="btn compact secondary" type="button" data-cancel-table-split="${table.id}">Cancelar divisao</button>`}
+    </section>
+  `;
+}
+
+function renderCounterSplitStatus(splitBill) {
+  const people = splitBillPeople(splitBill);
+  if (!people.length) return "";
+  const paidCount = people.filter((person) => person.status === "paid").length;
+  return `
+    <section class="table-split-status counter-split-status">
+      <div class="table-split-heading">
+        <div>
+          <strong>Venda dividida: ${tableSplitModeLabel(splitBill.mode)}</strong>
+          <span>Atendimento ${CURRENT_SERVICE_NUMBER} - ${paidCount} de ${people.length} pagamento(s) concluido(s)</span>
+        </div>
+        <span class="status ${paidCount === people.length ? "green" : "amber"}">${money(splitBillPendingTotal(splitBill))} restante</span>
+      </div>
+      <div class="table-split-people">
+        ${people
+          .map(
+            (person, index) => `
+              <article class="table-split-person ${person.status === "paid" ? "paid" : "pending"}">
+                <div>
+                  <small>Parte ${index + 1}</small>
+                  <strong>${escapeHtml(person.name)}</strong>
+                  <span>${money(person.amount)}</span>
+                </div>
+                ${
+                  person.status === "paid"
+                    ? `<span class="status green">Pago${person.payment ? ` - ${escapeHtml(person.payment)}` : ""}</span>`
+                    : person.status === "processing"
+                      ? `<button class="btn compact secondary" type="button" data-pay-counter-share="${person.id}">Retomar pagamento</button>`
+                      : `<button class="btn compact primary" type="button" data-pay-counter-share="${person.id}">Receber no balcao</button>`
+                }
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+      ${paidCount ? "" : '<button class="btn compact secondary" type="button" data-cancel-counter-split>Cancelar divisao</button>'}
     </section>
   `;
 }
@@ -4202,6 +4255,10 @@ function renderKitchen() {
 function addToCart(productId) {
   if (tableCheckout?.splitPersonId) {
     notify("Finalize ou cancele esta parte da conta antes de alterar os produtos.");
+    return;
+  }
+  if (currentCounterSplitBill()) {
+    notify("Conclua ou cancele a divisao deste atendimento antes de incluir outros produtos.");
     return;
   }
   const product = state.products.find((item) => item.id === productId);
@@ -4574,11 +4631,15 @@ async function finalizeSale({
   }
 
   const checkout = tableCheckout;
-  const splitTable = checkout?.splitPersonId ? state.tables.find((entry) => entry.id === checkout.id) : null;
-  const splitPerson = checkout?.splitPersonId
-    ? tableSplitPeople(splitTable).find((entry) => entry.id === checkout.splitPersonId)
+  const counterSplitBill = checkout?.splitSource === "counter" ? currentCounterSplitBill() : null;
+  const splitTable = checkout?.splitPersonId && checkout?.splitSource !== "counter"
+    ? state.tables.find((entry) => entry.id === checkout.id)
     : null;
-  if (checkout?.splitPersonId && (!splitTable?.splitBill || !splitPerson || splitPerson.status === "paid")) {
+  const activeSplitBill = counterSplitBill || splitTable?.splitBill || null;
+  const splitPerson = checkout?.splitPersonId
+    ? splitBillPeople(activeSplitBill).find((entry) => entry.id === checkout.splitPersonId)
+    : null;
+  if (checkout?.splitPersonId && (!activeSplitBill || !splitPerson || splitPerson.status === "paid")) {
     notify("Esta parte da conta nao esta mais disponivel. Atualize a mesa e confira os pagamentos.");
     return false;
   }
@@ -4656,7 +4717,7 @@ async function finalizeSale({
   }
 
   const printDetails = {
-    tableName: checkout?.name || "",
+    tableName: checkout?.splitSource === "counter" ? "" : checkout?.name || "",
     customerName: [checkout?.customerName, checkout?.splitPersonName].filter(Boolean).join(" / "),
     terminalLabel: ticketTerminalLabel(selectedTerminal),
     cashReceived,
@@ -4672,11 +4733,11 @@ async function finalizeSale({
     payment,
     paymentBreakdown: paymentParts,
     clientId: fiadoAmount > 0 ? selectedClientId : null,
-    tableId: checkout?.id || null,
+    tableId: checkout?.splitSource === "counter" ? null : checkout?.id || null,
     splitBillId: checkout?.splitBillId || "",
     splitPersonId: checkout?.splitPersonId || "",
     splitPersonName: checkout?.splitPersonName || "",
-    splitMode: splitTable?.splitBill?.mode || "",
+    splitMode: activeSplitBill?.mode || "",
     splitClaimId: checkout?.splitClaimId || "",
     tableName: printDetails.tableName,
     customerName: printDetails.customerName,
@@ -4703,7 +4764,7 @@ async function finalizeSale({
     cost,
   };
 
-  const splitCompletion = completedTableSplit(splitTable, checkout, sale);
+  const splitCompletion = completedSplitBill(activeSplitBill, checkout, sale);
   if (checkout?.splitPersonId && !splitCompletion) {
     notify("Nao foi possivel confirmar esta parte da divisao. A venda continua aberta.");
     return false;
@@ -4715,7 +4776,7 @@ async function finalizeSale({
   const queuedRelations = shouldQueueForCloud
     ? queueOfflineSale(sale, fiadoAmount, {
         releaseTable,
-        splitBill: splitCompletion ? splitCompletion.splitBill : null,
+        splitBill: splitCompletion && checkout?.splitSource !== "counter" ? splitCompletion.splitBill : null,
       })
     : null;
   if (!shouldQueueForCloud) createKitchenOrders(sale);
@@ -4746,7 +4807,7 @@ async function finalizeSale({
 
   logAudit("Venda finalizada", `${money(total)} em ${paymentDisplay(sale)}${totals.discount.amount > 0 ? ` com desconto de ${money(totals.discount.amount)}` : ""}.`);
 
-  if (checkout) {
+  if (checkout && checkout.splitSource !== "counter") {
     state.tables = state.tables.map((entry) =>
       entry.id === checkout.id
         ? releaseTable
@@ -4759,6 +4820,18 @@ async function finalizeSale({
       splitCompletion
         ? `${checkout.name} / ${splitCompletion.person.name}: ${money(total)}. ${splitCompletion.complete ? "Conta concluida." : `${money(tableSplitPendingTotal({ splitBill: splitCompletion.splitBill }))} restante.`}`
         : `${checkout.name}: ${money(total)}.`,
+    );
+  }
+
+  if (checkout?.splitSource === "counter" && splitCompletion) {
+    saveCurrentCounterSplitBill(splitCompletion.complete ? null : splitCompletion.splitBill);
+    logAudit(
+      "Parte do balcao recebida",
+      `Atendimento ${CURRENT_SERVICE_NUMBER} / ${splitCompletion.person.name}: ${money(total)}. ${
+        splitCompletion.complete
+          ? "Venda dividida concluida."
+          : `${money(splitBillPendingTotal(splitCompletion.splitBill))} restante.`
+      }`,
     );
   }
 
@@ -4778,11 +4851,17 @@ async function finalizeSale({
         ? "Venda concluida e protegida neste computador. Ela sera sincronizada automaticamente quando a conexao estabilizar."
         : checkout
           ? splitCompletion && !splitCompletion.complete
-            ? `Parte de ${splitCompletion.person.name} recebida. A mesa continua aberta para os demais pagamentos.`
-            : "Conta da mesa fechada e sincronizada."
+            ? checkout.splitSource === "counter"
+              ? `Parte de ${splitCompletion.person.name} recebida. As demais partes continuam pendentes no balcao.`
+              : `Parte de ${splitCompletion.person.name} recebida. A mesa continua aberta para os demais pagamentos.`
+            : checkout.splitSource === "counter"
+              ? "Venda dividida do balcao concluida e sincronizada."
+              : "Conta da mesa fechada e sincronizada."
           : "Venda finalizada e sincronizada."
       : splitCompletion && !splitCompletion.complete
-        ? `Parte de ${splitCompletion.person.name} recebida. A mesa continua aberta.`
+        ? checkout?.splitSource === "counter"
+          ? `Parte de ${splitCompletion.person.name} recebida. As demais partes continuam pendentes no balcao.`
+          : `Parte de ${splitCompletion.person.name} recebida. A mesa continua aberta.`
         : "Venda finalizada.",
   );
   renderApp();
@@ -5146,6 +5225,31 @@ function tableSplitPendingTotal(table) {
   return Number(tableSplitPendingPeople(table).reduce((sum, person) => sum + Number(person.amount || 0), 0).toFixed(2));
 }
 
+function currentCounterSplitBill() {
+  return state.counterSplits?.[String(CURRENT_SERVICE_NUMBER)] || null;
+}
+
+function saveCurrentCounterSplitBill(splitBill) {
+  const next = { ...(state.counterSplits || {}) };
+  if (splitBill) next[String(CURRENT_SERVICE_NUMBER)] = splitBill;
+  else delete next[String(CURRENT_SERVICE_NUMBER)];
+  state.counterSplits = next;
+  saveState();
+}
+
+function splitBillPeople(splitBill) {
+  return Array.isArray(splitBill?.people) ? splitBill.people : [];
+}
+
+function splitBillPendingTotal(splitBill) {
+  return Number(
+    splitBillPeople(splitBill)
+      .filter((person) => person.status !== "paid")
+      .reduce((sum, person) => sum + Number(person.amount || 0), 0)
+      .toFixed(2),
+  );
+}
+
 function allocateItemsByWeights(items, weights) {
   const allocations = weights.map(() => []);
   (items || []).forEach((item) => {
@@ -5163,9 +5267,9 @@ function tableSplitModeLabel(mode) {
   return "Partes iguais";
 }
 
-function completedTableSplit(table, checkout, sale) {
-  if (!table?.splitBill || !checkout?.splitPersonId) return null;
-  const splitBill = structuredClone(table.splitBill);
+function completedSplitBill(sourceSplitBill, checkout, sale) {
+  if (!sourceSplitBill || !checkout?.splitPersonId) return null;
+  const splitBill = structuredClone(sourceSplitBill);
   const person = splitBill.people.find((entry) => entry.id === checkout.splitPersonId);
   if (!person || person.status === "paid") return null;
   if (person.claimId && checkout.splitClaimId && person.claimId !== checkout.splitClaimId) return null;
@@ -5184,6 +5288,10 @@ function completedTableSplit(table, checkout, sale) {
   return { splitBill, complete, person };
 }
 
+function completedTableSplit(table, checkout, sale) {
+  return completedSplitBill(table?.splitBill, checkout, sale);
+}
+
 async function ensureTableSplitSchema() {
   if (!isOnlineSession()) return true;
   const { error } = await supabaseClient.from("bar_tables").select("split_bill").limit(1);
@@ -5196,7 +5304,7 @@ function buildTableSplitPlan(form, table) {
   const count = Math.min(MAX_TABLE_SPLIT_PEOPLE, Math.max(2, Math.trunc(Number(form.get("peopleCount") || 2))));
   const mode = ["equal", "items", "custom"].includes(String(form.get("splitMode"))) ? String(form.get("splitMode")) : "equal";
   const subtotal = Number(tableTotalValue(table).toFixed(2));
-  const serviceFee = Number(tableServiceFee(subtotal).toFixed(2));
+  const serviceFee = table.isCounter ? 0 : Number(tableServiceFee(subtotal).toFixed(2));
   const total = Number((subtotal + serviceFee).toFixed(2));
   const names = Array.from({ length: count }, (_, index) => String(form.get(`personName-${index}`) || "").trim() || `Pessoa ${index + 1}`);
   let personTotals = [];
@@ -5257,12 +5365,15 @@ function buildTableSplitPlan(form, table) {
 
   return {
     id: uuid(),
+    source: table.isCounter ? "counter" : "table",
+    serviceNumber: table.isCounter ? CURRENT_SERVICE_NUMBER : null,
     mode,
     createdAt: new Date().toISOString(),
     createdBy: session.id,
     subtotal,
     serviceFee,
     total,
+    originalItems: table.isCounter ? structuredClone(table.items) : [],
     people,
   };
 }
@@ -5270,14 +5381,32 @@ function buildTableSplitPlan(form, table) {
 async function saveTableSplitPlan(event) {
   event.preventDefault();
   const formElement = event.currentTarget;
-  const table = state.tables.find((entry) => entry.id === String(new FormData(formElement).get("tableId") || ""));
-  if (!table || !table.items?.length || !(await ensureTableSplitSchema())) return;
+  const form = new FormData(formElement);
+  const isCounter = String(form.get("splitSource") || "") === "counter";
+  const table = isCounter
+    ? { id: `counter-${CURRENT_SERVICE_NUMBER}`, name: "Venda do balcao", customerName: "", items: structuredClone(cart), isCounter: true }
+    : state.tables.find((entry) => entry.id === String(form.get("tableId") || ""));
+  if (!table || !table.items?.length) return;
+  if (!isCounter && !(await ensureTableSplitSchema())) return;
   const openedFromCheckout = tableCheckout?.id === table.id;
   let splitBill;
   try {
-    splitBill = buildTableSplitPlan(new FormData(formElement), table);
+    splitBill = buildTableSplitPlan(form, table);
   } catch (error) {
     notify(error.message || "Revise a divisao da conta.");
+    return;
+  }
+
+  if (isCounter) {
+    saveCurrentCounterSplitBill(splitBill);
+    cart = [];
+    tableCheckout = null;
+    currentModal = null;
+    currentView = "pos";
+    logAudit("Venda de balcao dividida", `Atendimento ${CURRENT_SERVICE_NUMBER}: ${splitBill.people.length} pessoa(s), ${tableSplitModeLabel(splitBill.mode)}.`);
+    notify("Divisao salva. Escolha uma pessoa para receber no balcao.");
+    saveState();
+    renderApp();
     return;
   }
 
@@ -5372,8 +5501,50 @@ async function startTableSplitPayment(tableId, personId) {
   renderApp();
 }
 
+function startCounterSplitPayment(personId) {
+  const splitBill = currentCounterSplitBill();
+  const person = splitBillPeople(splitBill).find((entry) => entry.id === personId);
+  if (!splitBill || !person || person.status === "paid") return;
+  const resuming = person.status === "processing";
+  const claimId = resuming && person.claimId ? person.claimId : uuid();
+  const claimedAt = new Date().toISOString();
+  const nextSplitBill = structuredClone(splitBill);
+  const claimedPerson = nextSplitBill.people.find((entry) => entry.id === personId);
+  Object.assign(claimedPerson, { status: "processing", claimId, claimedAt, claimedBy: session.id });
+  saveCurrentCounterSplitBill(nextSplitBill);
+  cart = structuredClone(claimedPerson.items || []);
+  tableCheckout = {
+    id: null,
+    name: "Balcao",
+    customerName: "",
+    splitSource: "counter",
+    splitBillId: nextSplitBill.id,
+    splitPersonId: claimedPerson.id,
+    splitPersonName: claimedPerson.name,
+    splitClaimId: claimId,
+    splitSubtotal: Number(claimedPerson.subtotal || 0),
+    splitServiceFee: 0,
+    splitTotal: Number(claimedPerson.amount || 0),
+  };
+  currentModal = null;
+  currentView = "pos";
+  notify(`${claimedPerson.name}: pagamento ${resuming ? "retomado" : "carregado"} no balcao por ${money(claimedPerson.amount)}.`);
+  renderApp();
+}
+
 async function releaseTableSplitPaymentClaim(checkout = tableCheckout) {
   if (!checkout?.splitPersonId || !checkout?.splitClaimId) return;
+  if (checkout.splitSource === "counter") {
+    const splitBill = currentCounterSplitBill();
+    if (!splitBill || splitBill.id !== checkout.splitBillId) return;
+    const nextSplitBill = structuredClone(splitBill);
+    const person = nextSplitBill.people.find((entry) => entry.id === checkout.splitPersonId);
+    if (person?.status === "processing" && person.claimId === checkout.splitClaimId) {
+      Object.assign(person, { status: "pending", claimId: null, claimedAt: null, claimedBy: null });
+      saveCurrentCounterSplitBill(nextSplitBill);
+    }
+    return;
+  }
   if (isOnlineSession()) {
     const { error } = await supabaseClient.rpc("release_table_split_payment", {
       p_table_id: checkout.id,
@@ -5396,6 +5567,27 @@ async function releaseTableSplitPaymentClaim(checkout = tableCheckout) {
       : entry);
     saveState();
   }
+}
+
+function cancelCounterSplit() {
+  const splitBill = currentCounterSplitBill();
+  if (!splitBill) return;
+  if (splitBillPeople(splitBill).some((person) => person.status === "paid")) {
+    notify("A divisao nao pode ser cancelada porque ja existe pagamento concluido.");
+    return;
+  }
+  if (splitBillPeople(splitBill).some((person) => person.status === "processing")) {
+    notify("Limpe o atendimento em andamento antes de cancelar a divisao.");
+    return;
+  }
+  if (!confirm("Cancelar esta divisao e restaurar a venda completa no balcao?")) return;
+  cart = structuredClone(splitBill.originalItems || []);
+  tableCheckout = null;
+  saveCurrentCounterSplitBill(null);
+  logAudit("Divisao do balcao cancelada", `Atendimento ${CURRENT_SERVICE_NUMBER}.`);
+  saveState();
+  notify("Divisao cancelada. A venda completa voltou para a comanda.");
+  renderApp();
 }
 
 async function cancelTableSplit(tableId) {
@@ -8656,6 +8848,7 @@ function renderModal() {
     lot: renderLotModal,
     table: renderTableModal,
     tableSplit: renderTableSplitModal,
+    counterSplit: renderTableSplitModal,
     addTables: renderAddTablesModal,
     user: renderUserModal,
     movement: renderMovementModal,
@@ -8673,7 +8866,7 @@ function renderModal() {
   };
   const modalClass = currentModal.type === "salePayment"
     ? "modal sale-payment-modal"
-    : currentModal.type === "tableSplit"
+    : ["tableSplit", "counterSplit"].includes(currentModal.type)
       ? "modal table-split-modal"
     : currentModal.type === "inventoryIntelligence"
       ? "modal inventory-intelligence-modal"
@@ -8695,6 +8888,8 @@ function renderSalePaymentModal() {
   const splitPersonName = tableCheckout?.splitPersonName || "";
   const checkoutTable = tableCheckout?.id ? state.tables.find((table) => table.id === tableCheckout.id) : null;
   const canSplitTableAtCheckout = Boolean(checkoutTable?.items?.length && !tableCheckout?.splitPersonId && !checkoutTable.splitBill);
+  const canSplitCounterAtCheckout = Boolean(!tableCheckout && cart.length && !currentCounterSplitBill());
+  const canSplitAtCheckout = canSplitTableAtCheckout || canSplitCounterAtCheckout;
   return `
     <form id="sale-payment-form">
       <div class="modal-head">
@@ -8713,10 +8908,10 @@ function renderSalePaymentModal() {
           <div class="summary-row total"><span>Total a pagar</span><strong data-sale-total>${money(total)}</strong></div>
         </div>
         ${
-          canSplitTableAtCheckout
+          canSplitAtCheckout
             ? `<div class="table-split-entry">
                 <div><strong>Conta para duas ou mais pessoas?</strong><span>Divida igualmente, por produtos ou informe valores diferentes.</span></div>
-                <button class="btn secondary" type="button" data-open-modal="tableSplit" data-id="${checkoutTable.id}">Dividir entre pessoas</button>
+                <button class="btn secondary" type="button" data-open-modal="${canSplitTableAtCheckout ? "tableSplit" : "counterSplit"}" ${canSplitTableAtCheckout ? `data-id="${checkoutTable.id}"` : ""}>Dividir entre pessoas</button>
               </div>`
             : ""
         }
@@ -9677,7 +9872,10 @@ function renderTableModal() {
 }
 
 function renderTableSplitModal() {
-  const table = state.tables.find((item) => item.id === currentModal.id);
+  const isCounter = currentModal.type === "counterSplit";
+  const table = isCounter
+    ? { id: `counter-${CURRENT_SERVICE_NUMBER}`, name: "Venda do balcao", customerName: "", items: structuredClone(cart), isCounter: true }
+    : state.tables.find((item) => item.id === currentModal.id);
   if (!table?.items?.length) {
     return `
       <div class="modal-head">
@@ -9689,13 +9887,14 @@ function renderTableSplitModal() {
     `;
   }
   const subtotal = Number(tableTotalValue(table).toFixed(2));
-  const serviceFee = Number(tableServiceFee(subtotal).toFixed(2));
+  const serviceFee = table.isCounter ? 0 : Number(tableServiceFee(subtotal).toFixed(2));
   const total = Number((subtotal + serviceFee).toFixed(2));
   return `
     <form id="table-split-form">
       <input name="tableId" type="hidden" value="${table.id}" />
+      <input name="splitSource" type="hidden" value="${isCounter ? "counter" : "table"}" />
       <div class="modal-head">
-        <div><h2>Dividir ${escapeHtml(table.name)}</h2><p>${table.customerName ? escapeHtml(table.customerName) : "Conta da mesa"}</p></div>
+        <div><h2>${isCounter ? "Dividir venda do balcao" : `Dividir ${escapeHtml(table.name)}`}</h2><p>${isCounter ? `Atendimento ${CURRENT_SERVICE_NUMBER}` : table.customerName ? escapeHtml(table.customerName) : "Conta da mesa"}</p></div>
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body table-split-body">
