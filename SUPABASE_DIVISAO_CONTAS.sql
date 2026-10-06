@@ -1,5 +1,5 @@
--- Sincronizacao atomica das vendas registradas durante uma queda de internet.
--- Execute uma vez no SQL Editor do Supabase.
+-- Divisao de contas por pessoa, bloqueio contra cobranca duplicada e
+-- sincronizacao atomica da venda. Execute uma vez no SQL Editor do Supabase.
 
 alter table public.bar_tables
   add column if not exists split_bill jsonb;

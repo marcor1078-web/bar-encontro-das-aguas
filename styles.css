@@ -20,6 +20,10 @@
     sans-serif;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 /* Gestao avancada */
 .advanced-panel {
   overflow: hidden;
@@ -4649,4 +4653,228 @@ body[data-theme="dark"] .table-tile.fechamento em {
 body .table-tile.active {
   outline: 3px solid var(--brand);
   outline-offset: 2px;
+}
+
+/* Divisao de contas por pessoa */
+.table-split-modal {
+  width: min(1080px, 100%);
+  overflow-x: hidden;
+}
+
+.table-split-modal form,
+.table-split-body,
+.table-split-controls > *,
+.split-mode-grid > *,
+.split-person-grid > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.table-split-body {
+  display: grid;
+  gap: 16px;
+}
+
+.table-split-total {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.table-split-controls {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.5fr) minmax(0, 1.5fr);
+  gap: 14px;
+  align-items: end;
+}
+
+.split-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.split-person-section,
+.split-custom-section,
+.split-items-section,
+.table-split-status {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  padding: 14px;
+}
+
+.split-person-section h3,
+.split-custom-section h3,
+.split-items-section h3,
+.split-person-section p,
+.split-custom-section p,
+.split-items-section p {
+  margin: 0 0 8px;
+}
+
+.split-person-section p,
+.split-items-section p {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.split-person-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.table-split-section-head,
+.table-split-heading,
+.table-split-person {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.split-item-list,
+.table-split-people {
+  display: grid;
+  gap: 10px;
+}
+
+.split-item-card,
+.table-split-person {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--soft);
+  padding: 10px;
+}
+
+.split-item-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.split-item-title span,
+.split-item-card small,
+.table-split-heading span,
+.table-split-person small,
+.table-split-person span {
+  color: var(--muted);
+}
+
+.split-item-allocation-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(60px, 1fr));
+  gap: 7px;
+}
+
+.split-item-allocation-grid label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.split-item-allocation-grid input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 8px 6px;
+}
+
+.split-item-card small.ok {
+  color: var(--green);
+  font-weight: 800;
+}
+
+.split-item-card small.error {
+  color: var(--red);
+  font-weight: 800;
+}
+
+.table-split-heading {
+  margin-bottom: 12px;
+}
+
+.table-split-heading > div,
+.table-split-person > div {
+  display: grid;
+  gap: 2px;
+}
+
+.table-split-person.paid {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.table-split-status > .btn {
+  margin-top: 12px;
+}
+
+body[data-theme="dark"] .table-split-total,
+body[data-theme="dark"] .split-item-card,
+body[data-theme="dark"] .table-split-person {
+  background: #182235;
+}
+
+body[data-theme="dark"] .table-split-person.paid {
+  border-color: #166534;
+  background: #052e16;
+}
+
+[data-split-person-field][hidden],
+[data-split-custom-field][hidden],
+[data-split-item-person][hidden],
+[data-split-custom-panel][hidden],
+[data-split-items-panel][hidden] {
+  display: none !important;
+}
+
+@media (max-width: 760px) {
+  .table-split-controls,
+  .split-mode-grid,
+  .split-person-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .split-item-allocation-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .table-split-section-head,
+  .table-split-heading,
+  .table-split-person {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .table-split-person .btn {
+    width: 100%;
+  }
+}
+
+@media (max-width: 440px) {
+  .table-split-modal .modal-head,
+  .table-split-modal .modal-body,
+  .table-split-modal .modal-actions {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .table-split-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .split-mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .split-mode-grid .payment-choice:last-child {
+    grid-column: 1 / -1;
+  }
 }

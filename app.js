@@ -521,6 +521,7 @@ const defaultState = {
     serverId: null,
     clientId: "cl-001",
     items: [],
+    splitBill: null,
   })),
   cancellations: [],
   reconciliationReviews: [],
@@ -743,6 +744,7 @@ function migrateState(nextState) {
   nextState.stockLots = nextState.stockLots || structuredClone(defaultState.stockLots);
   nextState.tables = (nextState.tables || structuredClone(defaultState.tables)).map((table) => ({
     customerName: "",
+    splitBill: null,
     ...table,
   }));
   nextState.cancellations = nextState.cancellations || [];
@@ -1342,10 +1344,16 @@ function discountFromForm(form) {
 }
 
 function saleTotalsForItems(items = cart, discountInput = {}) {
-  const subtotal = items.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
-  const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
+  const itemSubtotal = items.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
+  const isSplitShare = Boolean(tableCheckout?.splitPersonId);
+  const subtotal = isSplitShare ? Number(tableCheckout.splitSubtotal || 0) : itemSubtotal;
+  const serviceFee = isSplitShare
+    ? Number(tableCheckout.splitServiceFee || 0)
+    : tableCheckout
+      ? tableServiceFee(subtotal)
+      : 0;
   const grossTotal = subtotal + serviceFee;
-  const discount = normalizeDiscount(discountInput);
+  const discount = isSplitShare ? normalizeDiscount({ type: "none", value: 0 }) : normalizeDiscount(discountInput);
   const rawDiscount = discount.type === "percent" ? grossTotal * (discount.value / 100) : discount.type === "amount" ? discount.value : 0;
   const discountAmount = Math.min(grossTotal, Math.max(0, rawDiscount));
   return {
@@ -1370,6 +1378,8 @@ function encodePaymentDetails({
   manualReference = "",
   terminalLabel = "",
   providerReferences = [],
+  splitPersonName = "",
+  splitMode = "",
 } = {}) {
   const parts = normalizePaymentBreakdown(breakdown);
   const normalizedDiscount = normalizeDiscount(discount);
@@ -1382,7 +1392,8 @@ function encodePaymentDetails({
     parts.some((part) => part.method === "Credito") ||
     normalizedDiscount.amount > 0 ||
     Boolean(paymentOrigin || manualReference || terminalLabel) ||
-    normalizedProviderReferences.length > 0;
+    normalizedProviderReferences.length > 0 ||
+    Boolean(splitPersonName || splitMode);
   if (!shouldEncode) return normalizePaymentMethod(payment);
   return `${PAYMENT_DETAILS_PREFIX}${JSON.stringify({
     payment: payment || (parts.length > 1 ? "Dividido" : parts[0]?.method || ""),
@@ -1394,6 +1405,8 @@ function encodePaymentDetails({
     manualReference: String(manualReference || ""),
     terminalLabel: String(terminalLabel || ""),
     providerReferences: normalizedProviderReferences,
+    splitPersonName: String(splitPersonName || ""),
+    splitMode: String(splitMode || ""),
   })}`;
 }
 
@@ -1411,6 +1424,8 @@ function parsePaymentDetails(value) {
       manualReference: "",
       terminalLabel: "",
       providerReferences: [],
+      splitPersonName: "",
+      splitMode: "",
     };
   }
 
@@ -1427,6 +1442,8 @@ function parsePaymentDetails(value) {
       manualReference: String(payload.manualReference || ""),
       terminalLabel: String(payload.terminalLabel || ""),
       providerReferences: normalizeProviderReferences(payload.providerReferences),
+      splitPersonName: String(payload.splitPersonName || ""),
+      splitMode: String(payload.splitMode || ""),
     };
   } catch (error) {
     return {
@@ -1439,6 +1456,8 @@ function parsePaymentDetails(value) {
       manualReference: "",
       terminalLabel: "",
       providerReferences: [],
+      splitPersonName: "",
+      splitMode: "",
     };
   }
 }
@@ -2332,7 +2351,7 @@ function buildOfflineKitchenOrders(sale) {
   }));
 }
 
-function queueOfflineSale(sale, fiadoAmount = 0) {
+function queueOfflineSale(sale, fiadoAmount = 0, { releaseTable = true, splitBill = null } = {}) {
   const kitchenOrders = buildOfflineKitchenOrders(sale);
   const clientTransaction = fiadoAmount > 0 && sale.clientId
     ? {
@@ -2352,6 +2371,11 @@ function queueOfflineSale(sale, fiadoAmount = 0) {
     cashierId: isUuid(sale.cashierId) ? sale.cashierId : "",
     clientId: isUuid(sale.clientId) ? sale.clientId : "",
     tableId: isUuid(sale.tableId) ? sale.tableId : "",
+    releaseTable: Boolean(releaseTable),
+    splitBill,
+    splitBillId: sale.splitBillId || "",
+    splitPersonId: sale.splitPersonId || "",
+    splitClaimId: sale.splitClaimId || "",
     payment: encodePaymentDetails({
       payment: sale.payment,
       breakdown: sale.paymentBreakdown,
@@ -2362,6 +2386,8 @@ function queueOfflineSale(sale, fiadoAmount = 0) {
       manualReference: sale.manualReference,
       terminalLabel: sale.terminalLabel,
       providerReferences: sale.providerReferences,
+      splitPersonName: sale.splitPersonName,
+      splitMode: sale.splitMode,
     }),
     serviceFee: Number(sale.serviceFee || 0),
     total: Number(sale.total || 0),
@@ -2788,6 +2814,8 @@ function mapSaleFromDb(row, items = []) {
     manualReference: paymentDetails.manualReference,
     terminalLabel: paymentDetails.terminalLabel,
     providerReferences: paymentDetails.providerReferences,
+    splitPersonName: paymentDetails.splitPersonName,
+    splitMode: paymentDetails.splitMode,
     discountAmount: Number(paymentDetails.discount?.amount || 0),
     syncStatus: "synced",
     status: row.status || "Concluida",
@@ -3030,6 +3058,7 @@ function mapTableFromDb(row) {
     serverId: row.server_id || null,
     clientId: row.client_id || null,
     items: Array.isArray(row.items) ? row.items : [],
+    splitBill: row.split_bill && typeof row.split_bill === "object" ? row.split_bill : null,
   };
 }
 
@@ -3076,10 +3105,15 @@ async function loadOnlineTableData() {
   }
 
   state.tables = result.data.map(mapTableFromDb).sort((a, b) => tableSortValue(a) - tableSortValue(b));
-  const pendingTableIds = new Set(pendingOfflineSalePayloads().map((payload) => payload.tableId).filter(Boolean));
+  const pendingTables = new Map();
+  pendingOfflineSalePayloads().forEach((payload) => {
+    if (payload.tableId) pendingTables.set(payload.tableId, payload);
+  });
   state.tables = state.tables.map((table) =>
-    pendingTableIds.has(table.id)
-      ? { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] }
+    pendingTables.has(table.id)
+      ? pendingTables.get(table.id).releaseTable !== false
+        ? { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [], splitBill: null }
+        : { ...table, status: "Fechamento", serverId: session?.id || table.serverId, splitBill: pendingTables.get(table.id).splitBill || table.splitBill }
       : table,
   );
   saveState();
@@ -3463,7 +3497,8 @@ function bindViewEvents() {
     button.addEventListener("click", () => changeCartQty(button.dataset.cartPlus, 1));
   });
 
-  document.querySelector("[data-clear-cart]")?.addEventListener("click", () => {
+  document.querySelector("[data-clear-cart]")?.addEventListener("click", async () => {
+    await releaseTableSplitPaymentClaim(tableCheckout);
     cart = [];
     tableCheckout = null;
     renderApp();
@@ -3580,6 +3615,14 @@ function bindViewEvents() {
 
   document.querySelectorAll("[data-close-table]").forEach((button) => {
     button.addEventListener("click", () => closeTable(button.dataset.closeTable));
+  });
+
+  document.querySelectorAll("[data-pay-table-share]").forEach((button) => {
+    button.addEventListener("click", () => startTableSplitPayment(button.dataset.tableId, button.dataset.payTableShare));
+  });
+
+  document.querySelectorAll("[data-cancel-table-split]").forEach((button) => {
+    button.addEventListener("click", () => cancelTableSplit(button.dataset.cancelTableSplit));
   });
 
   document.querySelectorAll("[data-table-item-minus]").forEach((button) => {
@@ -3734,10 +3777,9 @@ function renderPos() {
       .toLowerCase()
       .includes(term);
   });
-  const subtotal = cart.reduce((sum, item) => sum + item.qty * item.price, 0);
-  const serviceFee = tableCheckout ? tableServiceFee(subtotal) : 0;
-  const total = subtotal + serviceFee;
+  const { subtotal, serviceFee, total } = saleTotalsForItems(cart);
   const lastSaleForTickets = lastSaleForTicketsId ? state.sales.find((sale) => sale.id === lastSaleForTicketsId) : null;
+  const lastSaleTicketCount = lastSaleForTickets ? ticketUnitList(lastSaleForTickets).length : 0;
 
   return `
     <div class="section-title">
@@ -3756,9 +3798,9 @@ function renderPos() {
         ? `<section class="card pad post-sale-ticket">
             <div>
               <strong>Venda finalizada: ${money(lastSaleForTickets.total)}</strong>
-              <span>${lastSaleForTickets.items.reduce((sum, item) => sum + item.qty, 0)} ficha(s) individuais disponiveis para impressao.</span>
+              <span>${lastSaleTicketCount ? `${lastSaleTicketCount} ficha(s) individuais disponiveis para impressao.` : "Recibo individual disponivel para esta parte da conta."}</span>
             </div>
-            <button class="btn primary" type="button" data-print-last-tickets="${lastSaleForTickets.id}">${icon("print")} Imprimir fichas</button>
+            <button class="btn primary" type="button" ${lastSaleTicketCount ? `data-print-last-tickets="${lastSaleForTickets.id}"` : `data-print-sale="${lastSaleForTickets.id}"`}>${icon("print")} ${lastSaleTicketCount ? "Imprimir fichas" : "Imprimir recibo"}</button>
           </section>`
         : ""
     }
@@ -3807,10 +3849,18 @@ function renderPos() {
 
       <aside class="card cart">
         <div class="card-head">
-          <h2 class="card-title">${tableCheckout ? `Fechamento - ${tableCheckout.name}` : "Comanda"}</h2>
+          <h2 class="card-title">${tableCheckout ? `Fechamento - ${tableCheckout.name}${tableCheckout.splitPersonName ? ` / ${escapeHtml(tableCheckout.splitPersonName)}` : ""}` : "Comanda"}</h2>
           <button class="btn compact secondary" type="button" data-clear-cart>Limpar</button>
         </div>
-        ${tableCheckout ? `<div class="notice compact">Conta enviada da mesa. Escolha a forma de pagamento para finalizar no caixa.</div>` : ""}
+        ${
+          tableCheckout
+            ? `<div class="notice compact">${
+                tableCheckout.splitPersonName
+                  ? `Recebendo a parte de <strong>${escapeHtml(tableCheckout.splitPersonName)}</strong>. Os itens desta parte ficam travados para evitar baixa duplicada.`
+                  : "Conta enviada da mesa. Escolha a forma de pagamento para finalizar no caixa."
+              }</div>`
+            : ""
+        }
         <div class="cart-list">
           ${
             cart.length
@@ -3820,13 +3870,17 @@ function renderPos() {
                       <div class="cart-item">
                         <div>
                           <strong>${item.name}</strong>
-                          <span>${money(item.price)} cada</span>
+                          <span>${tableCheckout?.splitPersonId ? "Incluido proporcionalmente nesta parte" : `${money(item.price)} cada`}</span>
                         </div>
-                        <div class="qty-stepper">
-                          <button type="button" data-cart-minus="${item.productId}">-</button>
-                          <output>${item.qty}</output>
-                          <button type="button" data-cart-plus="${item.productId}">+</button>
-                        </div>
+                        ${
+                          tableCheckout?.splitPersonId
+                            ? '<span class="status blue">Rateado</span>'
+                            : `<div class="qty-stepper">
+                                <button type="button" data-cart-minus="${item.productId}">-</button>
+                                <output>${item.qty}</output>
+                                <button type="button" data-cart-plus="${item.productId}">+</button>
+                              </div>`
+                        }
                       </div>
                     `,
                   )
@@ -3852,7 +3906,7 @@ function renderPos() {
         cart.length
           ? `<button class="btn primary" type="button" data-finalize-sale>Finalizar venda</button>`
           : lastSaleForTickets
-            ? `<button class="btn primary" type="button" data-print-last-tickets="${lastSaleForTickets.id}">Imprimir fichas</button>`
+            ? `<button class="btn primary" type="button" ${lastSaleTicketCount ? `data-print-last-tickets="${lastSaleForTickets.id}"` : `data-print-sale="${lastSaleForTickets.id}"`}>${lastSaleTicketCount ? "Imprimir fichas" : "Imprimir recibo"}</button>`
             : `<button class="btn primary" type="button" data-finalize-sale disabled>Finalizar venda</button>`
       }
     </div>
@@ -3884,6 +3938,7 @@ function selectTable(tableId) {
 
 function renderTableItems(table) {
   if (!table?.items?.length) return '<div class="cart-list"><div class="empty">Mesa sem itens.</div></div>';
+  const locked = Boolean(table.splitBill);
 
   return `
     <div class="cart-list compact-cart">
@@ -3895,19 +3950,63 @@ function renderTableItems(table) {
                 <strong>${escapeHtml(item.name)}</strong>
                 <span>${qty(item.qty)} x ${money(item.price)} = ${money(item.qty * item.price)}</span>
               </div>
-              <div class="table-item-actions">
-                <div class="qty-stepper">
-                  <button type="button" data-table-id="${table.id}" data-table-item-minus="${item.productId}">-</button>
-                  <output>${qty(item.qty)}</output>
-                  <button type="button" data-table-id="${table.id}" data-table-item-plus="${item.productId}">+</button>
-                </div>
-                <button class="btn compact danger" type="button" data-table-id="${table.id}" data-remove-table-item="${item.productId}">Remover</button>
-              </div>
+              ${
+                locked
+                  ? '<span class="status amber">Em divisao</span>'
+                  : `<div class="table-item-actions">
+                      <div class="qty-stepper">
+                        <button type="button" data-table-id="${table.id}" data-table-item-minus="${item.productId}">-</button>
+                        <output>${qty(item.qty)}</output>
+                        <button type="button" data-table-id="${table.id}" data-table-item-plus="${item.productId}">+</button>
+                      </div>
+                      <button class="btn compact danger" type="button" data-table-id="${table.id}" data-remove-table-item="${item.productId}">Remover</button>
+                    </div>`
+              }
             </div>
           `,
         )
         .join("")}
     </div>
+  `;
+}
+
+function renderTableSplitStatus(table) {
+  const people = tableSplitPeople(table);
+  if (!people.length) return "";
+  const paidCount = tableSplitPaidPeople(table).length;
+  return `
+    <section class="table-split-status">
+      <div class="table-split-heading">
+        <div>
+          <strong>Conta dividida: ${tableSplitModeLabel(table.splitBill.mode)}</strong>
+          <span>${paidCount} de ${people.length} pagamento(s) concluido(s)</span>
+        </div>
+        <span class="status ${paidCount === people.length ? "green" : "amber"}">${money(tableSplitPendingTotal(table))} restante</span>
+      </div>
+      <div class="table-split-people">
+        ${people
+          .map(
+            (person, index) => `
+              <article class="table-split-person ${person.status === "paid" ? "paid" : "pending"}">
+                <div>
+                  <small>Parte ${index + 1}</small>
+                  <strong>${escapeHtml(person.name)}</strong>
+                  <span>${money(person.amount)}</span>
+                </div>
+                ${
+                  person.status === "paid"
+                    ? `<span class="status green">Pago${person.payment ? ` - ${escapeHtml(person.payment)}` : ""}</span>`
+                    : person.status === "processing"
+                      ? '<span class="status blue">Em atendimento</span>'
+                    : `<button class="btn compact primary" type="button" data-pay-table-share="${person.id}" data-table-id="${table.id}">Receber no balcao</button>`
+                }
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+      ${paidCount ? "" : `<button class="btn compact secondary" type="button" data-cancel-table-split="${table.id}">Cancelar divisao</button>`}
+    </section>
   `;
 }
 
@@ -3937,7 +4036,7 @@ function renderTables() {
                   <strong>${table.name}</strong>
                   ${table.customerName ? `<em>${escapeHtml(table.customerName)}</em>` : ""}
                   <span>${table.status}</span>
-                  <small>${money(tableTotalValue(table))}</small>
+                  <small>${table.splitBill ? `${money(tableSplitPendingTotal(table))} restante` : money(tableTotalValue(table))}</small>
                 </button>
               `,
             )
@@ -3954,12 +4053,18 @@ function renderTables() {
             ? `
               ${selectedTable.customerName ? `<div class="table-customer">Cliente: <strong>${escapeHtml(selectedTable.customerName)}</strong></div>` : ""}
               ${renderTableItems(selectedTable)}
+              ${renderTableSplitStatus(selectedTable)}
               <div class="cart-total">
                 <div class="total-row"><span>Subtotal</span><strong>${money(tableTotal)}</strong></div>
                 <div class="total-row"><span>Servico ${state.settings.serviceFee || 0}%</span><strong>${money(tableServiceFee(tableTotal))}</strong></div>
                 <div class="total-row"><span>Total</span><strong>${money(tableTotal + tableServiceFee(tableTotal))}</strong></div>
-                <button class="btn secondary" type="button" data-open-modal="table" data-id="${selectedTable.id}">Editar pedido</button>
-                <button class="btn primary" type="button" data-close-table="${selectedTable.id}" ${selectedTable.items?.length ? "" : "disabled"}>Enviar para balcao</button>
+                ${
+                  selectedTable.splitBill
+                    ? '<div class="notice compact">A mesa sera liberada automaticamente depois que todas as partes forem pagas.</div>'
+                    : `<button class="btn secondary" type="button" data-open-modal="table" data-id="${selectedTable.id}">Editar pedido</button>
+                       <button class="btn secondary" type="button" data-open-modal="tableSplit" data-id="${selectedTable.id}" ${selectedTable.items?.length ? "" : "disabled"}>Dividir conta</button>
+                       <button class="btn primary" type="button" data-close-table="${selectedTable.id}" ${selectedTable.items?.length ? "" : "disabled"}>Enviar para balcao</button>`
+                }
               </div>
             `
             : '<div class="empty">Escolha uma mesa no mapa para abrir, editar ou enviar para o balcao.</div>'
@@ -4095,6 +4200,10 @@ function renderKitchen() {
 }
 
 function addToCart(productId) {
+  if (tableCheckout?.splitPersonId) {
+    notify("Finalize ou cancele esta parte da conta antes de alterar os produtos.");
+    return;
+  }
   const product = state.products.find((item) => item.id === productId);
   const availableStock = productAvailableStock(product);
   if (!product || availableStock <= 0) {
@@ -4126,6 +4235,10 @@ function addToCart(productId) {
 }
 
 function changeCartQty(productId, change) {
+  if (tableCheckout?.splitPersonId) {
+    notify("Os itens desta parte estao travados para evitar baixa duplicada no estoque.");
+    return;
+  }
   const item = cart.find((entry) => entry.productId === productId);
   const product = state.products.find((entry) => entry.id === productId);
   if (!item || !product) return;
@@ -4461,6 +4574,18 @@ async function finalizeSale({
   }
 
   const checkout = tableCheckout;
+  const splitTable = checkout?.splitPersonId ? state.tables.find((entry) => entry.id === checkout.id) : null;
+  const splitPerson = checkout?.splitPersonId
+    ? tableSplitPeople(splitTable).find((entry) => entry.id === checkout.splitPersonId)
+    : null;
+  if (checkout?.splitPersonId && (!splitTable?.splitBill || !splitPerson || splitPerson.status === "paid")) {
+    notify("Esta parte da conta nao esta mais disponivel. Atualize a mesa e confira os pagamentos.");
+    return false;
+  }
+  if (checkout?.splitPersonId && splitPerson.claimId && splitPerson.claimId !== checkout.splitClaimId) {
+    notify("Esta parte esta reservada em outro atendimento.");
+    return false;
+  }
   const totals = saleTotalsForItems(cart, discount);
   const { serviceFee, total } = totals;
   const cost = cart.reduce((sum, item) => sum + item.qty * item.cost, 0);
@@ -4516,7 +4641,9 @@ async function finalizeSale({
         paymentBreakdown: paymentParts,
         terminalKey,
         items: structuredClone(cart),
-        description: checkout ? `Fechamento ${checkout.name}` : "Venda balcao",
+        description: checkout
+          ? `Fechamento ${checkout.name}${checkout.splitPersonName ? ` - ${checkout.splitPersonName}` : ""}`
+          : "Venda balcao",
       });
       if (!pointPayment.ok) return false;
       selectedTerminal = pointPayment.terminal;
@@ -4530,14 +4657,13 @@ async function finalizeSale({
 
   const printDetails = {
     tableName: checkout?.name || "",
-    customerName: checkout?.customerName || "",
+    customerName: [checkout?.customerName, checkout?.splitPersonName].filter(Boolean).join(" / "),
     terminalLabel: ticketTerminalLabel(selectedTerminal),
     cashReceived,
     cashChange,
   };
 
   const shouldQueueForCloud = Boolean(session?.online && isSupabaseReady());
-  applyCartStock(cart);
 
   const sale = {
     id: shouldQueueForCloud ? uuid() : id("sale"),
@@ -4547,6 +4673,11 @@ async function finalizeSale({
     paymentBreakdown: paymentParts,
     clientId: fiadoAmount > 0 ? selectedClientId : null,
     tableId: checkout?.id || null,
+    splitBillId: checkout?.splitBillId || "",
+    splitPersonId: checkout?.splitPersonId || "",
+    splitPersonName: checkout?.splitPersonName || "",
+    splitMode: splitTable?.splitBill?.mode || "",
+    splitClaimId: checkout?.splitClaimId || "",
     tableName: printDetails.tableName,
     customerName: printDetails.customerName,
     terminalLabel: printDetails.terminalLabel,
@@ -4572,8 +4703,21 @@ async function finalizeSale({
     cost,
   };
 
+  const splitCompletion = completedTableSplit(splitTable, checkout, sale);
+  if (checkout?.splitPersonId && !splitCompletion) {
+    notify("Nao foi possivel confirmar esta parte da divisao. A venda continua aberta.");
+    return false;
+  }
+  const releaseTable = !splitCompletion || splitCompletion.complete;
+
+  applyCartStock(cart);
   state.sales.push(sale);
-  const queuedRelations = shouldQueueForCloud ? queueOfflineSale(sale, fiadoAmount) : null;
+  const queuedRelations = shouldQueueForCloud
+    ? queueOfflineSale(sale, fiadoAmount, {
+        releaseTable,
+        splitBill: splitCompletion ? splitCompletion.splitBill : null,
+      })
+    : null;
   if (!shouldQueueForCloud) createKitchenOrders(sale);
   storeDailySalesTotal(localDateKey(sale.date), "automatico");
 
@@ -4605,10 +4749,17 @@ async function finalizeSale({
   if (checkout) {
     state.tables = state.tables.map((entry) =>
       entry.id === checkout.id
-        ? { ...entry, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] }
+        ? releaseTable
+          ? { ...entry, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [], splitBill: null }
+          : { ...entry, status: "Fechamento", serverId: session.id, splitBill: splitCompletion.splitBill }
         : entry,
     );
-    logAudit("Mesa fechada no balcao", `${checkout.name}: ${money(total)}.`);
+    logAudit(
+      splitCompletion ? "Parte da mesa recebida" : "Mesa fechada no balcao",
+      splitCompletion
+        ? `${checkout.name} / ${splitCompletion.person.name}: ${money(total)}. ${splitCompletion.complete ? "Conta concluida." : `${money(tableSplitPendingTotal({ splitBill: splitCompletion.splitBill }))} restante.`}`
+        : `${checkout.name}: ${money(total)}.`,
+    );
   }
 
   cart = [];
@@ -4626,9 +4777,13 @@ async function finalizeSale({
       ? stillPending
         ? "Venda concluida e protegida neste computador. Ela sera sincronizada automaticamente quando a conexao estabilizar."
         : checkout
-          ? "Conta da mesa fechada e sincronizada."
+          ? splitCompletion && !splitCompletion.complete
+            ? `Parte de ${splitCompletion.person.name} recebida. A mesa continua aberta para os demais pagamentos.`
+            : "Conta da mesa fechada e sincronizada."
           : "Venda finalizada e sincronizada."
-      : "Venda finalizada.",
+      : splitCompletion && !splitCompletion.complete
+        ? `Parte de ${splitCompletion.person.name} recebida. A mesa continua aberta.`
+        : "Venda finalizada.",
   );
   renderApp();
   return true;
@@ -4952,6 +5107,319 @@ function tableServiceFee(subtotal) {
   return subtotal * (Number(state.settings.serviceFee || 0) / 100);
 }
 
+const MAX_TABLE_SPLIT_PEOPLE = 8;
+
+function splitWeightedValue(total, weights, precision = 2) {
+  const factor = 10 ** precision;
+  const totalUnits = Math.round(Math.max(0, Number(total || 0)) * factor);
+  const safeWeights = weights.map((weight) => Math.max(0, Number(weight || 0)));
+  const weightTotal = safeWeights.reduce((sum, weight) => sum + weight, 0);
+  if (!safeWeights.length || weightTotal <= 0) return safeWeights.map(() => 0);
+  const raw = safeWeights.map((weight) => (totalUnits * weight) / weightTotal);
+  const units = raw.map(Math.floor);
+  let remaining = totalUnits - units.reduce((sum, value) => sum + value, 0);
+  raw
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index)
+    .forEach(({ index }) => {
+      if (remaining <= 0) return;
+      units[index] += 1;
+      remaining -= 1;
+    });
+  return units.map((value) => value / factor);
+}
+
+function tableSplitPeople(table) {
+  return Array.isArray(table?.splitBill?.people) ? table.splitBill.people : [];
+}
+
+function tableSplitPaidPeople(table) {
+  return tableSplitPeople(table).filter((person) => person.status === "paid");
+}
+
+function tableSplitPendingPeople(table) {
+  return tableSplitPeople(table).filter((person) => person.status !== "paid");
+}
+
+function tableSplitPendingTotal(table) {
+  if (!table?.splitBill) return tableTotalValue(table) + tableServiceFee(tableTotalValue(table));
+  return Number(tableSplitPendingPeople(table).reduce((sum, person) => sum + Number(person.amount || 0), 0).toFixed(2));
+}
+
+function allocateItemsByWeights(items, weights) {
+  const allocations = weights.map(() => []);
+  (items || []).forEach((item) => {
+    splitWeightedValue(item.qty, weights, 3).forEach((quantity, index) => {
+      if (quantity <= 0) return;
+      allocations[index].push({ ...item, qty: quantity });
+    });
+  });
+  return allocations;
+}
+
+function tableSplitModeLabel(mode) {
+  if (mode === "items") return "Por produtos";
+  if (mode === "custom") return "Valores personalizados";
+  return "Partes iguais";
+}
+
+function completedTableSplit(table, checkout, sale) {
+  if (!table?.splitBill || !checkout?.splitPersonId) return null;
+  const splitBill = structuredClone(table.splitBill);
+  const person = splitBill.people.find((entry) => entry.id === checkout.splitPersonId);
+  if (!person || person.status === "paid") return null;
+  if (person.claimId && checkout.splitClaimId && person.claimId !== checkout.splitClaimId) return null;
+  Object.assign(person, {
+    status: "paid",
+    paidAt: sale.date,
+    saleId: sale.id,
+    payment: paymentDisplay(sale),
+    paymentBreakdown: sale.paymentBreakdown,
+    terminalLabel: sale.terminalLabel || "",
+    claimId: null,
+    claimedAt: null,
+  });
+  splitBill.updatedAt = sale.date;
+  const complete = splitBill.people.every((entry) => entry.status === "paid");
+  return { splitBill, complete, person };
+}
+
+async function ensureTableSplitSchema() {
+  if (!isOnlineSession()) return true;
+  const { error } = await supabaseClient.from("bar_tables").select("split_bill").limit(1);
+  if (!error) return true;
+  notify("Execute SUPABASE_DIVISAO_CONTAS.sql no Supabase antes de dividir contas online.");
+  return false;
+}
+
+function buildTableSplitPlan(form, table) {
+  const count = Math.min(MAX_TABLE_SPLIT_PEOPLE, Math.max(2, Math.trunc(Number(form.get("peopleCount") || 2))));
+  const mode = ["equal", "items", "custom"].includes(String(form.get("splitMode"))) ? String(form.get("splitMode")) : "equal";
+  const subtotal = Number(tableTotalValue(table).toFixed(2));
+  const serviceFee = Number(tableServiceFee(subtotal).toFixed(2));
+  const total = Number((subtotal + serviceFee).toFixed(2));
+  const names = Array.from({ length: count }, (_, index) => String(form.get(`personName-${index}`) || "").trim() || `Pessoa ${index + 1}`);
+  let personTotals = [];
+  let personSubtotals = [];
+  let serviceShares = [];
+  let itemAllocations = [];
+
+  if (mode === "items") {
+    itemAllocations = Array.from({ length: count }, () => []);
+    for (let itemIndex = 0; itemIndex < table.items.length; itemIndex += 1) {
+      const item = table.items[itemIndex];
+      const quantities = Array.from({ length: count }, (_, personIndex) =>
+        Math.max(0, Number(form.get(`item-${itemIndex}-person-${personIndex}`) || 0)),
+      );
+      const assigned = quantities.reduce((sum, value) => sum + value, 0);
+      if (Math.abs(assigned - Number(item.qty || 0)) > 0.0009) {
+        throw new Error(`${item.name}: distribua exatamente ${qty(item.qty)} unidade(s).`);
+      }
+      quantities.forEach((quantity, personIndex) => {
+        if (quantity > 0) itemAllocations[personIndex].push({ ...item, qty: quantity });
+      });
+    }
+    personSubtotals = itemAllocations.map((items) => Number(items.reduce((sum, item) => sum + item.qty * item.price, 0).toFixed(2)));
+    if (personSubtotals.some((value) => value <= 0)) throw new Error("Cada pessoa precisa receber ao menos um produto.");
+    serviceShares = splitWeightedValue(serviceFee, personSubtotals, 2);
+    personTotals = personSubtotals.map((value, index) => Number((value + serviceShares[index]).toFixed(2)));
+  } else {
+    const weights = mode === "custom"
+      ? Array.from({ length: count }, (_, index) => Math.max(0, Number(form.get(`customAmount-${index}`) || 0)))
+      : Array.from({ length: count }, () => 1);
+    if (mode === "custom") {
+      if (weights.some((value) => value <= 0)) throw new Error("Informe um valor maior que zero para todas as pessoas.");
+      const informedTotal = weights.reduce((sum, value) => sum + value, 0);
+      if (Math.abs(informedTotal - total) > 0.009) {
+        throw new Error(`Os valores precisam somar ${money(total)}. Agora somam ${money(informedTotal)}.`);
+      }
+      personTotals = weights.map((value) => Number(value.toFixed(2)));
+    } else {
+      personTotals = splitWeightedValue(total, weights, 2);
+    }
+    personSubtotals = splitWeightedValue(subtotal, personTotals, 2);
+    serviceShares = personTotals.map((value, index) => Number((value - personSubtotals[index]).toFixed(2)));
+    itemAllocations = allocateItemsByWeights(table.items, personTotals);
+  }
+
+  const people = names.map((name, index) => ({
+    id: uuid(),
+    name,
+    status: "pending",
+    amount: personTotals[index],
+    subtotal: personSubtotals[index],
+    serviceFee: serviceShares[index],
+    items: itemAllocations[index],
+    paidAt: null,
+    saleId: null,
+    payment: null,
+  }));
+
+  return {
+    id: uuid(),
+    mode,
+    createdAt: new Date().toISOString(),
+    createdBy: session.id,
+    subtotal,
+    serviceFee,
+    total,
+    people,
+  };
+}
+
+async function saveTableSplitPlan(event) {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  const table = state.tables.find((entry) => entry.id === String(new FormData(formElement).get("tableId") || ""));
+  if (!table || !table.items?.length || !(await ensureTableSplitSchema())) return;
+  let splitBill;
+  try {
+    splitBill = buildTableSplitPlan(new FormData(formElement), table);
+  } catch (error) {
+    notify(error.message || "Revise a divisao da conta.");
+    return;
+  }
+
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient
+      .from("bar_tables")
+      .update({ status: "Fechamento", server_id: session.id, split_bill: splitBill })
+      .eq("id", table.id);
+    if (error) {
+      notify(`Erro ao salvar divisao online: ${error.message}`);
+      return;
+    }
+    await loadOnlineTableData();
+  } else {
+    state.tables = state.tables.map((entry) =>
+      entry.id === table.id ? { ...entry, status: "Fechamento", serverId: session.id, splitBill } : entry,
+    );
+    saveState();
+  }
+  selectedTableId = table.id;
+  currentModal = null;
+  logAudit("Conta dividida", `${table.name}: ${splitBill.people.length} pessoa(s), ${tableSplitModeLabel(splitBill.mode)}.`);
+  notify("Divisao salva. Escolha uma pessoa para receber no balcao.");
+  renderApp();
+}
+
+async function startTableSplitPayment(tableId, personId) {
+  let table = state.tables.find((entry) => entry.id === tableId);
+  let person = tableSplitPeople(table).find((entry) => entry.id === personId);
+  if (!table || !person || person.status === "paid") return;
+  if (person.status === "processing") {
+    notify("Esta parte ja esta sendo recebida em outro atendimento.");
+    return;
+  }
+  const claimId = uuid();
+  if (isOnlineSession()) {
+    const { data, error } = await supabaseClient.rpc("claim_table_split_payment", {
+      p_table_id: table.id,
+      p_split_bill_id: table.splitBill.id,
+      p_person_id: person.id,
+      p_claim_id: claimId,
+    });
+    if (error) {
+      notify(/claim_table_split_payment|schema cache|function/i.test(error.message || "")
+        ? "Execute SUPABASE_DIVISAO_CONTAS.sql no Supabase para ativar o pagamento dividido."
+        : `Nao foi possivel reservar esta parte: ${error.message}`);
+      return;
+    }
+    if (data?.split_bill) {
+      state.tables = state.tables.map((entry) => entry.id === table.id ? { ...entry, splitBill: data.split_bill } : entry);
+      table = state.tables.find((entry) => entry.id === tableId);
+      person = tableSplitPeople(table).find((entry) => entry.id === personId);
+    }
+  } else {
+    const claimedAt = new Date().toISOString();
+    state.tables = state.tables.map((entry) => entry.id === table.id
+      ? {
+          ...entry,
+          splitBill: {
+            ...entry.splitBill,
+            people: tableSplitPeople(entry).map((candidate) => candidate.id === person.id
+              ? { ...candidate, status: "processing", claimId, claimedAt }
+              : candidate),
+          },
+        }
+      : entry);
+    table = state.tables.find((entry) => entry.id === tableId);
+    person = tableSplitPeople(table).find((entry) => entry.id === personId);
+    saveState();
+  }
+  cart = structuredClone(person.items || []);
+  tableCheckout = {
+    id: table.id,
+    name: table.name,
+    customerName: table.customerName || "",
+    splitBillId: table.splitBill.id,
+    splitPersonId: person.id,
+    splitPersonName: person.name,
+    splitClaimId: claimId,
+    splitSubtotal: Number(person.subtotal || 0),
+    splitServiceFee: Number(person.serviceFee || 0),
+    splitTotal: Number(person.amount || 0),
+  };
+  currentModal = null;
+  currentView = "pos";
+  notify(`${person.name}: parte de ${money(person.amount)} carregada no balcao.`);
+  renderApp();
+}
+
+async function releaseTableSplitPaymentClaim(checkout = tableCheckout) {
+  if (!checkout?.splitPersonId || !checkout?.splitClaimId) return;
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient.rpc("release_table_split_payment", {
+      p_table_id: checkout.id,
+      p_split_bill_id: checkout.splitBillId,
+      p_person_id: checkout.splitPersonId,
+      p_claim_id: checkout.splitClaimId,
+    });
+    if (!error) await loadOnlineTableData();
+  } else {
+    state.tables = state.tables.map((entry) => entry.id === checkout.id
+      ? {
+          ...entry,
+          splitBill: {
+            ...entry.splitBill,
+            people: tableSplitPeople(entry).map((person) => person.id === checkout.splitPersonId && person.claimId === checkout.splitClaimId
+              ? { ...person, status: "pending", claimId: null, claimedAt: null }
+              : person),
+          },
+        }
+      : entry);
+    saveState();
+  }
+}
+
+async function cancelTableSplit(tableId) {
+  const table = state.tables.find((entry) => entry.id === tableId);
+  if (!table?.splitBill) return;
+  if (tableSplitPaidPeople(table).length) {
+    notify("A divisao nao pode ser cancelada porque ja existe pagamento concluido.");
+    return;
+  }
+  if (tableSplitPeople(table).some((person) => person.status === "processing")) {
+    notify("Cancele o atendimento em andamento no balcao antes de cancelar a divisao.");
+    return;
+  }
+  if (!confirm("Cancelar esta divisao e voltar a conta para uma comanda unica?")) return;
+  if (isOnlineSession()) {
+    const { error } = await supabaseClient.from("bar_tables").update({ status: "Aberta", split_bill: null }).eq("id", table.id);
+    if (error) {
+      notify(`Erro ao cancelar divisao: ${error.message}`);
+      return;
+    }
+    await loadOnlineTableData();
+  } else {
+    state.tables = state.tables.map((entry) => entry.id === table.id ? { ...entry, status: "Aberta", splitBill: null } : entry);
+    saveState();
+  }
+  logAudit("Divisao cancelada", table.name);
+  notify("Divisao cancelada. A comanda voltou a ser unica.");
+  renderApp();
+}
+
 async function createTables(count) {
   const amount = Math.trunc(Number(count));
   if (!Number.isInteger(amount) || amount < 1 || amount > 30) {
@@ -4994,6 +5462,7 @@ async function createTables(count) {
     serverId: null,
     clientId: null,
     items: [],
+    splitBill: null,
   }));
   state.tables = [...state.tables, ...newTables].sort((a, b) => tableSortValue(a) - tableSortValue(b));
   selectedTableId = newTables[0].id;
@@ -5006,6 +5475,11 @@ async function createTables(count) {
 }
 
 async function saveTableCustomerName(tableId, customerName) {
+  const table = state.tables.find((entry) => entry.id === tableId);
+  if (table?.splitBill) {
+    notify("Finalize a divisao antes de alterar o cliente da mesa.");
+    return;
+  }
   const nextName = customerName.trim();
 
   if (isOnlineSession()) {
@@ -5061,6 +5535,10 @@ async function addProductToTable(tableId, productId) {
   const table = state.tables.find((item) => item.id === tableId);
   const product = state.products.find((item) => item.id === productId);
   if (!table || !product) return;
+  if (table.splitBill) {
+    notify("Finalize a divisao antes de alterar os produtos desta mesa.");
+    return;
+  }
   selectedTableId = tableId;
 
   const item = {
@@ -5125,6 +5603,10 @@ async function addProductToTable(tableId, productId) {
 async function saveTableItems(tableId, nextItems, actionLabel) {
   const table = state.tables.find((entry) => entry.id === tableId);
   if (!table) return;
+  if (table.splitBill) {
+    notify("Finalize a divisao antes de editar esta comanda.");
+    return;
+  }
   const status = table.status === "Livre" ? "Aberta" : table.status;
   const openedAt = table.openedAt || new Date().toISOString();
   selectedTableId = tableId;
@@ -5203,6 +5685,14 @@ async function removeTableItem(tableId, productId) {
 async function closeTable(tableId) {
   const table = state.tables.find((entry) => entry.id === tableId);
   if (!table || !table.items.length) return;
+  if (table.splitBill) {
+    selectedTableId = tableId;
+    currentModal = null;
+    currentView = "tables";
+    notify("A conta ja esta dividida. Escolha uma pessoa para receber.");
+    renderApp();
+    return;
+  }
   selectedTableId = tableId;
 
   const subtotal = tableTotalValue(table);
@@ -5249,11 +5739,16 @@ async function closeTable(tableId) {
 }
 
 async function clearTable(tableId) {
+  const tableToClear = state.tables.find((entry) => entry.id === tableId);
+  if (tableToClear?.splitBill && tableSplitPaidPeople(tableToClear).length) {
+    notify("Esta mesa possui pagamentos da divisao. Conclua as partes restantes para libera-la.");
+    return;
+  }
   selectedTableId = tableId;
   if (isOnlineSession()) {
     const { error } = await supabaseClient
       .from("bar_tables")
-      .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, customer_name: "", items: [] })
+      .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, customer_name: "", items: [], split_bill: null })
       .eq("id", tableId);
 
     if (error) {
@@ -5269,7 +5764,7 @@ async function clearTable(tableId) {
   }
 
   state.tables = state.tables.map((table) =>
-    table.id === tableId ? { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] } : table,
+    table.id === tableId ? { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [], splitBill: null } : table,
   );
   currentModal = null;
   logAudit("Mesa liberada", tableId);
@@ -5282,6 +5777,10 @@ async function transferTable(tableId) {
   const source = state.tables.find((table) => table.id === tableId);
   const target = state.tables.find((table) => table.id === targetId);
   if (!source || !targetId || !source.items.length) return;
+  if (source.splitBill || target?.splitBill) {
+    notify("Nao e possivel transferir ou juntar mesas com uma divisao em andamento.");
+    return;
+  }
 
   if (isOnlineSession()) {
     const targetItems = combineItems(target?.items || [], source.items || []);
@@ -5298,7 +5797,7 @@ async function transferTable(tableId) {
         .eq("id", targetId),
       supabaseClient
         .from("bar_tables")
-        .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, customer_name: "", items: [] })
+        .update({ status: "Livre", opened_at: null, server_id: null, client_id: null, customer_name: "", items: [], split_bill: null })
         .eq("id", tableId),
     ]);
 
@@ -5328,7 +5827,7 @@ async function transferTable(tableId) {
       };
     }
     if (table.id === tableId) {
-      return { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [] };
+      return { ...table, status: "Livre", openedAt: null, serverId: null, clientId: null, customerName: "", items: [], splitBill: null };
     }
     return table;
   });
@@ -6047,6 +6546,10 @@ function saleItemsLabel(sale) {
 }
 
 function saleItemsDescription(sale) {
+  if (sale?.splitPersonName && sale.splitMode !== "items") {
+    const names = [...new Set((sale.items || []).map((item) => item.name).filter(Boolean))].join(", ");
+    return `${names || "Parte da conta"} (rateio de ${sale.splitPersonName})`;
+  }
   const itemsText = (sale.items || []).map((item) => `${qty(item.qty)}x ${item.name}`).join(", ");
   if (isManualChargeSale(sale)) return itemsText || sale.manualReference || "Cobranca avulsa";
   if (isExternalPaymentSale(sale) && itemsText) return `${itemsText} (pagamento externo)`;
@@ -8146,6 +8649,7 @@ function renderModal() {
     cancelSale: renderCancelSaleModal,
     lot: renderLotModal,
     table: renderTableModal,
+    tableSplit: renderTableSplitModal,
     addTables: renderAddTablesModal,
     user: renderUserModal,
     movement: renderMovementModal,
@@ -8163,6 +8667,8 @@ function renderModal() {
   };
   const modalClass = currentModal.type === "salePayment"
     ? "modal sale-payment-modal"
+    : currentModal.type === "tableSplit"
+      ? "modal table-split-modal"
     : currentModal.type === "inventoryIntelligence"
       ? "modal inventory-intelligence-modal"
       : currentModal.type === "priceSimulator"
@@ -8180,6 +8686,7 @@ function renderModal() {
 function renderSalePaymentModal() {
   const totals = saleTotalsForItems(cart);
   const { subtotal, serviceFee, total } = totals;
+  const splitPersonName = tableCheckout?.splitPersonName || "";
   return `
     <form id="sale-payment-form">
       <div class="modal-head">
@@ -8189,27 +8696,32 @@ function renderSalePaymentModal() {
       <div class="modal-body sale-payment-body">
         <div class="summary-list sale-payment-summary">
           ${tableCheckout ? `<div class="summary-row"><span>Mesa</span><strong>${tableCheckout.name}</strong></div>` : ""}
+          ${splitPersonName ? `<div class="summary-row"><span>Parte</span><strong>${escapeHtml(splitPersonName)}</strong></div>` : ""}
           ${tableCheckout?.customerName ? `<div class="summary-row"><span>Cliente</span><strong>${escapeHtml(tableCheckout.customerName)}</strong></div>` : ""}
-          <div class="summary-row"><span>Itens</span><strong>${cart.reduce((sum, item) => sum + item.qty, 0)}</strong></div>
+          <div class="summary-row"><span>${splitPersonName ? "Produtos rateados" : "Itens"}</span><strong>${splitPersonName ? cart.length : cart.reduce((sum, item) => sum + item.qty, 0)}</strong></div>
           ${tableCheckout ? `<div class="summary-row"><span>Subtotal</span><strong>${money(subtotal)}</strong></div>` : ""}
           ${tableCheckout ? `<div class="summary-row"><span>Servico</span><strong>${money(serviceFee)}</strong></div>` : ""}
           <div class="summary-row" data-discount-summary-row hidden><span>Desconto</span><strong data-sale-discount>${money(0)}</strong></div>
           <div class="summary-row total"><span>Total a pagar</span><strong data-sale-total>${money(total)}</strong></div>
         </div>
-        <div class="discount-panel">
-          <label class="field">
-            <span>Desconto</span>
-            <select name="discountType" data-discount-type>
-              <option value="none">Sem desconto</option>
-              <option value="amount">Valor em R$</option>
-              <option value="percent">Percentual %</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Valor do desconto</span>
-            <input name="discountValue" data-discount-value type="number" min="0" step="0.01" placeholder="0,00" />
-          </label>
-        </div>
+        ${
+          splitPersonName
+            ? '<div class="notice compact">O desconto deve ser aplicado antes de dividir a conta. Esta parte sera recebida pelo valor salvo.</div><input name="discountType" type="hidden" value="none" />'
+            : `<div class="discount-panel">
+                <label class="field">
+                  <span>Desconto</span>
+                  <select name="discountType" data-discount-type>
+                    <option value="none">Sem desconto</option>
+                    <option value="amount">Valor em R$</option>
+                    <option value="percent">Percentual %</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Valor do desconto</span>
+                  <input name="discountValue" data-discount-value type="number" min="0" step="0.01" placeholder="0,00" />
+                </label>
+              </div>`
+        }
         <div class="sale-payment-meta-grid">
           ${renderPaymentTerminalField({ inputId: "sale-payment-terminal-id", inputName: "terminalKey" })}
           <label class="field">
@@ -8366,11 +8878,16 @@ function renderPrintTicketsModal() {
         <div class="summary-row"><span>Pagamento</span><strong>${paymentDisplay(sale)}</strong></div>
         <div class="summary-row total"><span>Fichas</span><strong>${ticketCount}</strong></div>
       </div>
-      <p>As fichas saem pelo navegador, uma impressao por unidade vendida, no tamanho de bobina 58mm.</p>
+      <p>${
+        ticketCount
+          ? "As fichas saem pelo navegador, uma impressao por unidade vendida, no tamanho de bobina 58mm."
+          : "Este rateio nao possui uma ficha individual de produto. Use o recibo para entregar o comprovante desta pessoa."
+      }</p>
     </div>
     <div class="modal-actions">
       <button class="btn secondary" type="button" data-close-modal>Fechar</button>
-      <button class="btn primary" type="button" data-print-last-tickets="${sale.id}">${icon("print")} Imprimir fichas</button>
+      <button class="btn secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
+      <button class="btn primary" type="button" data-print-last-tickets="${sale.id}" ${ticketCount ? "" : "disabled"}>${icon("print")} Imprimir fichas</button>
     </div>
   `;
 }
@@ -9067,7 +9584,21 @@ function renderAddTablesModal() {
 
 function renderTableModal() {
   const table = state.tables.find((item) => item.id === currentModal.id);
+  if (!table) return '<div class="modal-body"><p>Mesa nao encontrada.</p></div>';
   const products = filteredProducts().filter((product) => product.active);
+  if (table.splitBill) {
+    return `
+      <div class="modal-head">
+        <h2>${escapeHtml(table.name)}</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="notice">Esta comanda esta dividida e fica bloqueada para edicao ate todos os pagamentos terminarem.</div>
+        ${renderTableSplitStatus(table)}
+      </div>
+      <div class="modal-actions"><button class="btn secondary" type="button" data-close-modal>Fechar</button></div>
+    `;
+  }
   return `
     <div>
       <div class="modal-head">
@@ -9122,9 +9653,112 @@ function renderTableModal() {
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-clear-table="${table.id}">Liberar</button>
+        <button class="btn secondary" type="button" data-open-modal="tableSplit" data-id="${table.id}" ${table.items.length ? "" : "disabled"}>Dividir conta</button>
         <button class="btn primary" type="button" data-close-table="${table.id}" ${table.items.length ? "" : "disabled"}>Enviar para balcao</button>
       </div>
     </div>
+  `;
+}
+
+function renderTableSplitModal() {
+  const table = state.tables.find((item) => item.id === currentModal.id);
+  if (!table?.items?.length) {
+    return `
+      <div class="modal-head">
+        <h2>Dividir conta</h2>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body"><p>Adicione produtos a mesa antes de dividir a conta.</p></div>
+      <div class="modal-actions"><button class="btn secondary" type="button" data-close-modal>Fechar</button></div>
+    `;
+  }
+  const subtotal = Number(tableTotalValue(table).toFixed(2));
+  const serviceFee = Number(tableServiceFee(subtotal).toFixed(2));
+  const total = Number((subtotal + serviceFee).toFixed(2));
+  return `
+    <form id="table-split-form">
+      <input name="tableId" type="hidden" value="${table.id}" />
+      <div class="modal-head">
+        <div><h2>Dividir ${escapeHtml(table.name)}</h2><p>${table.customerName ? escapeHtml(table.customerName) : "Conta da mesa"}</p></div>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body table-split-body">
+        <div class="summary-list compact table-split-total">
+          <div class="summary-row"><span>Subtotal</span><strong>${money(subtotal)}</strong></div>
+          <div class="summary-row"><span>Servico</span><strong>${money(serviceFee)}</strong></div>
+          <div class="summary-row total"><span>Total da conta</span><strong data-table-split-total data-value="${total}">${money(total)}</strong></div>
+        </div>
+        <div class="table-split-controls">
+          <label class="field">
+            <span>Quantidade de pessoas</span>
+            <select name="peopleCount" data-split-people-count>
+              ${Array.from({ length: MAX_TABLE_SPLIT_PEOPLE - 1 }, (_, index) => index + 2)
+                .map((count) => `<option value="${count}">${count} pessoas</option>`)
+                .join("")}
+            </select>
+          </label>
+          <fieldset class="field full">
+            <legend>Como deseja dividir?</legend>
+            <div class="split-mode-grid">
+              <label class="payment-choice"><input type="radio" name="splitMode" value="equal" checked /><span>Partes iguais</span></label>
+              <label class="payment-choice"><input type="radio" name="splitMode" value="items" /><span>Por produtos</span></label>
+              <label class="payment-choice"><input type="radio" name="splitMode" value="custom" /><span>Valores personalizados</span></label>
+            </div>
+          </fieldset>
+        </div>
+        <section class="split-person-section">
+          <h3>Identificacao das pessoas</h3>
+          <p>Os nomes sao opcionais. Sem nome, o app usa Pessoa 1, Pessoa 2 e assim por diante.</p>
+          <div class="split-person-grid">
+            ${Array.from({ length: MAX_TABLE_SPLIT_PEOPLE }, (_, index) => `
+              <label class="field split-person-field" data-split-person-field="${index}" ${index >= 2 ? "hidden" : ""}>
+                <span>Pessoa ${index + 1}</span>
+                <input name="personName-${index}" placeholder="Nome opcional" autocomplete="off" />
+              </label>
+            `).join("")}
+          </div>
+        </section>
+        <section class="split-custom-section" data-split-custom-panel hidden>
+          <h3>Valor de cada pessoa</h3>
+          <div class="split-person-grid">
+            ${Array.from({ length: MAX_TABLE_SPLIT_PEOPLE }, (_, index) => `
+              <label class="field split-custom-field" data-split-custom-field="${index}" ${index >= 2 ? "hidden" : ""}>
+                <span>Pessoa ${index + 1}</span>
+                <input name="customAmount-${index}" data-split-custom-amount="${index}" type="number" min="0" step="0.01" placeholder="0,00" />
+              </label>
+            `).join("")}
+          </div>
+          <div class="summary-row total"><span>Soma informada</span><strong data-split-custom-sum>${money(0)} de ${money(total)}</strong></div>
+        </section>
+        <section class="split-items-section" data-split-items-panel hidden>
+          <div class="table-split-section-head">
+            <div><h3>Produtos de cada pessoa</h3><p>Distribua toda a quantidade de cada item.</p></div>
+            <button class="btn compact secondary" type="button" data-auto-split-items>Distribuir automaticamente</button>
+          </div>
+          <div class="split-item-list">
+            ${table.items.map((item, itemIndex) => `
+              <article class="split-item-card" data-split-item-row data-item-qty="${Number(item.qty || 0)}">
+                <div class="split-item-title"><strong>${escapeHtml(item.name)}</strong><span>${qty(item.qty)} un. / ${money(item.qty * item.price)}</span></div>
+                <div class="split-item-allocation-grid">
+                  ${Array.from({ length: MAX_TABLE_SPLIT_PEOPLE }, (_, personIndex) => `
+                    <label data-split-item-person="${personIndex}" ${personIndex >= 2 ? "hidden" : ""}>
+                      <span>P${personIndex + 1}</span>
+                      <input name="item-${itemIndex}-person-${personIndex}" data-split-item-allocation type="number" min="0" max="${Number(item.qty || 0)}" step="${Number.isInteger(Number(item.qty || 0)) ? 1 : 0.001}" value="0" />
+                    </label>
+                  `).join("")}
+                </div>
+                <small data-split-item-balance>Falta distribuir: ${qty(item.qty)}</small>
+              </article>
+            `).join("")}
+          </div>
+        </section>
+        <div class="notice compact" data-table-split-preview>Em partes iguais: ${money(total / 2)} por pessoa, com ajuste automatico dos centavos.</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">Salvar divisao</button>
+      </div>
+    </form>
   `;
 }
 
@@ -9545,6 +10179,7 @@ async function saveNewTables(event) {
 
 function bindModalForms() {
   document.querySelector("#add-tables-form")?.addEventListener("submit", saveNewTables);
+  document.querySelector("#table-split-form")?.addEventListener("submit", saveTableSplitPlan);
   document.querySelector("#product-form")?.addEventListener("submit", saveProduct);
   document.querySelector("#stock-form")?.addEventListener("submit", saveStockAdjustment);
   document.querySelector("#ingredient-form")?.addEventListener("submit", saveIngredient);
@@ -9571,11 +10206,96 @@ function bindModalForms() {
     if (preview) preview.textContent = tableCreationPreview(tableCountInput.value);
   });
   bindSalePaymentChoice();
+  bindTableSplitBuilder();
   bindManualChargeControls();
   bindExternalPaymentTotal();
   bindUserPermissionControls();
   bindProductImagePreview();
   bindProductImageSearch();
+}
+
+function bindTableSplitBuilder() {
+  const form = document.querySelector("#table-split-form");
+  if (!form) return;
+  const countInput = form.querySelector("[data-split-people-count]");
+  const customPanel = form.querySelector("[data-split-custom-panel]");
+  const itemsPanel = form.querySelector("[data-split-items-panel]");
+  const customSum = form.querySelector("[data-split-custom-sum]");
+  const preview = form.querySelector("[data-table-split-preview]");
+  const total = Number(form.querySelector("[data-table-split-total]")?.dataset.value || 0);
+
+  const count = () => Math.min(MAX_TABLE_SPLIT_PEOPLE, Math.max(2, Number(countInput?.value || 2)));
+  const mode = () => form.querySelector('input[name="splitMode"]:checked')?.value || "equal";
+
+  const updateItemBalances = () => {
+    form.querySelectorAll("[data-split-item-row]").forEach((row) => {
+      const expected = Number(row.dataset.itemQty || 0);
+      const assigned = [...row.querySelectorAll("[data-split-item-allocation]")]
+        .slice(0, count())
+        .reduce((sum, input) => sum + Number(input.value || 0), 0);
+      const remaining = Number((expected - assigned).toFixed(3));
+      const output = row.querySelector("[data-split-item-balance]");
+      if (!output) return;
+      output.textContent = Math.abs(remaining) < 0.0009
+        ? "Quantidade totalmente distribuida"
+        : remaining > 0
+          ? `Falta distribuir: ${qty(remaining)}`
+          : `Excesso: ${qty(Math.abs(remaining))}`;
+      output.classList.toggle("ok", Math.abs(remaining) < 0.0009);
+      output.classList.toggle("error", remaining < -0.0009);
+    });
+  };
+
+  const update = () => {
+    const activeCount = count();
+    form.querySelectorAll("[data-split-person-field]").forEach((field) => {
+      field.hidden = Number(field.dataset.splitPersonField) >= activeCount;
+    });
+    form.querySelectorAll("[data-split-custom-field]").forEach((field) => {
+      field.hidden = Number(field.dataset.splitCustomField) >= activeCount;
+    });
+    form.querySelectorAll("[data-split-item-person]").forEach((field) => {
+      field.hidden = Number(field.dataset.splitItemPerson) >= activeCount;
+    });
+
+    const activeMode = mode();
+    customPanel.hidden = activeMode !== "custom";
+    itemsPanel.hidden = activeMode !== "items";
+    const informed = [...form.querySelectorAll("[data-split-custom-amount]")]
+      .slice(0, activeCount)
+      .reduce((sum, input) => sum + Number(input.value || 0), 0);
+    if (customSum) customSum.textContent = `${money(informed)} de ${money(total)}`;
+    if (preview) {
+      if (activeMode === "equal") {
+        const parts = splitWeightedValue(total, Array.from({ length: activeCount }, () => 1), 2);
+        preview.textContent = `Partes iguais: ${parts.map((value, index) => `P${index + 1} ${money(value)}`).join(" | ")}.`;
+      } else if (activeMode === "custom") {
+        preview.textContent = Math.abs(informed - total) < 0.009
+          ? "Os valores fecham o total da conta."
+          : `Ainda falta distribuir ${money(total - informed)}.`;
+      } else {
+        preview.textContent = "Cada produto deve ser totalmente distribuido entre as pessoas.";
+      }
+    }
+    updateItemBalances();
+  };
+
+  form.querySelectorAll('input[name="splitMode"]').forEach((input) => input.addEventListener("change", update));
+  countInput?.addEventListener("change", update);
+  form.querySelectorAll("[data-split-custom-amount], [data-split-item-allocation]").forEach((input) => input.addEventListener("input", update));
+  form.querySelector("[data-auto-split-items]")?.addEventListener("click", () => {
+    const activeCount = count();
+    form.querySelectorAll("[data-split-item-row]").forEach((row) => {
+      const quantity = Number(row.dataset.itemQty || 0);
+      const precision = Number.isInteger(quantity) ? 0 : 3;
+      const allocations = splitWeightedValue(quantity, Array.from({ length: activeCount }, () => 1), precision);
+      [...row.querySelectorAll("[data-split-item-allocation]")].forEach((input, index) => {
+        input.value = index < activeCount ? allocations[index] : 0;
+      });
+    });
+    update();
+  });
+  update();
 }
 
 function bindManualChargeControls() {
@@ -12103,12 +12823,17 @@ function printSale(saleId) {
     `Venda: ${sale.id}`,
     `Data: ${dateTime(sale.date)}`,
     `Operador: ${userName(sale.cashierId)}`,
+    sale.tableName ? `Mesa: ${sale.tableName}` : "",
+    sale.splitPersonName ? `Parte da conta: ${sale.splitPersonName}` : "",
+    sale.splitMode ? `Divisao: ${tableSplitModeLabel(sale.splitMode)}` : "",
     "",
     ...(isExternalPaymentSale(sale) && sale.items?.length
       ? ["Pagamento externo da maquininha", ...sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)]
       : isExternalPaymentSale(sale)
         ? ["Pagamento externo da maquininha"]
-        : sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)),
+        : sale.splitPersonName && sale.splitMode !== "items"
+          ? [...new Set(sale.items.map((item) => item.name))].map((name) => `${name} - item compartilhado no rateio`)
+          : sale.items.map((item) => `${item.qty}x ${item.name} - ${money(item.qty * item.price)}`)),
     "",
     `Pagamento: ${paymentDisplay(sale)}`,
     saleDiscountAmount(sale) ? `Desconto: ${money(saleDiscountAmount(sale))}` : "",

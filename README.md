@@ -44,6 +44,7 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Auditoria imutavel
 - Gerente diario com alertas de anomalias
 - Paletas da marca, classica e rubro-negra
+- Divisao de contas por partes iguais, produtos ou valores personalizados
 
 ## Como abrir
 
@@ -117,6 +118,15 @@ uma vez no SQL Editor:
 O app adia essas atualizacoes enquanto houver carrinho, formulario, mesa em
 fechamento ou pagamento aberto. Assim que a operacao termina, os dados pendentes
 sao aplicados automaticamente.
+
+Para dividir a conta de uma mesa entre duas ou mais pessoas, execute uma vez no
+SQL Editor:
+
+- `SUPABASE_DIVISAO_CONTAS.sql`
+
+A divisao aceita nomes opcionais, partes iguais, produtos ou valores
+personalizados. Cada parte pode usar uma forma de pagamento diferente, e a mesa
+so e liberada quando todos os pagamentos forem concluidos.
 
 Para publicar na internet, siga o arquivo:
 
