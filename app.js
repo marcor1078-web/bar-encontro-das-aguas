@@ -1015,7 +1015,7 @@ function setView(view) {
   }
 }
 
-function notify(message) {
+function notify(message, duration = 3200) {
   const old = document.querySelector(".toast");
   if (old) old.remove();
 
@@ -1023,7 +1023,7 @@ function notify(message) {
   toast.className = "toast";
   toast.textContent = message;
   document.body.appendChild(toast);
-  setTimeout(() => toast.remove(), 3200);
+  setTimeout(() => toast.remove(), duration);
 }
 
 function isStandaloneApp() {
@@ -11270,9 +11270,11 @@ async function saveStockAdjustment(event) {
         .eq("id", product.id)
         .eq("stock", nextStock);
       if (rollback.error) {
-        notify(`Falha ao registrar o historico e ao restaurar o saldo: ${insertAdjustment.error.message}`);
+        notify(`Falha ao registrar o historico e ao restaurar o saldo: ${insertAdjustment.error.message}`, 10000);
+      } else if (/row level security|permission denied|42501/i.test(`${insertAdjustment.error.code || ""} ${insertAdjustment.error.message || ""}`)) {
+        notify("O Supabase bloqueou o historico. Execute o arquivo SUPABASE_HISTORICO_ESTOQUE.sql no SQL Editor e tente novamente. O saldo foi preservado.", 10000);
       } else {
-        notify(`O ajuste foi cancelado porque o historico nao pode ser registrado: ${insertAdjustment.error.message}`);
+        notify(`O ajuste foi cancelado porque o historico nao pode ser registrado: ${insertAdjustment.error.message}`, 10000);
       }
       await loadOnlineStockData();
       renderApp();
