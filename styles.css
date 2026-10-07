@@ -299,6 +299,65 @@
   justify-self: end;
 }
 
+.product-name-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.product-name-suggestion {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  gap: 1px;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--line);
+}
+
+.product-name-suggestion > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px;
+  background: var(--panel-2);
+}
+
+.product-name-suggestion > div.suggested {
+  background: #eff6ff;
+}
+
+.product-name-suggestion span,
+.product-name-suggestion p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.product-name-suggestion strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.product-name-suggestion p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 11px;
+  background: var(--panel);
+}
+
+.product-name-suggestion > .btn {
+  grid-column: 3;
+  grid-row: 1;
+  margin: 10px;
+  align-self: center;
+}
+
+[data-theme="dark"] .product-name-suggestion > div.suggested {
+  background: #172554;
+}
+
 .price-simulator-modal {
   width: min(1040px, 100%);
   overflow: hidden;
@@ -357,6 +416,22 @@ body[data-theme="dark"] .price-simulator-section {
 }
 
 @media (max-width: 640px) {
+  .product-name-input-row,
+  .product-name-suggestion {
+    grid-template-columns: 1fr;
+  }
+
+  .product-name-input-row > .btn,
+  .product-name-suggestion > .btn {
+    width: 100%;
+  }
+
+  .product-name-suggestion > .btn,
+  .product-name-suggestion p {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
   .product-pricing-head {
     align-items: stretch;
     flex-direction: column;

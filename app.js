@@ -9366,6 +9366,120 @@ function bindProductFormPricingSimulator() {
   updateProductFormPricingSimulator();
 }
 
+function localProductNameSuggestion(value) {
+  const connectors = new Set(["a", "as", "com", "da", "das", "de", "do", "dos", "e", "em", "para", "sem"]);
+  return String(value || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .map((word, index) => {
+      if (/^\d+(?:[.,]\d+)?(?:ml|l|kg|g|un)$/i.test(word)) {
+        if (/ml$/i.test(word)) return word.replace(/ml$/i, "ml");
+        if (/kg$/i.test(word)) return word.replace(/kg$/i, "kg");
+        if (/un$/i.test(word)) return word.replace(/un$/i, "un");
+        if (/l$/i.test(word)) return word.replace(/l$/i, "L");
+        return word.replace(/g$/i, "g");
+      }
+      if (/^[A-Z]{2,5}$/.test(word)) return word;
+      const lower = word.toLocaleLowerCase("pt-BR");
+      if (index > 0 && connectors.has(lower)) return lower;
+      return lower.charAt(0).toLocaleUpperCase("pt-BR") + lower.slice(1);
+    })
+    .join(" ");
+}
+
+function showProductNameSuggestion(formElement, currentName, suggestedName, reason = "") {
+  const panel = formElement.querySelector("[data-product-name-suggestion]");
+  const current = formElement.querySelector("[data-product-name-current]");
+  const suggested = formElement.querySelector("[data-product-name-suggested]");
+  const explanation = formElement.querySelector("[data-product-name-reason]");
+  const applyButton = formElement.querySelector("[data-apply-product-name]");
+  if (!panel || !current || !suggested || !explanation || !applyButton) return;
+  panel.hidden = false;
+  current.textContent = currentName;
+  suggested.textContent = suggestedName;
+  explanation.textContent = reason;
+  applyButton.dataset.suggestedName = suggestedName;
+  applyButton.disabled = !suggestedName || suggestedName === currentName;
+  applyButton.textContent = suggestedName === currentName ? "Nome ja esta correto" : "Aplicar nome sugerido";
+}
+
+function startAutomaticProductImageSearch(formElement, query) {
+  const searchInput = formElement.querySelector("[data-product-image-search-input]");
+  const searchPanel = formElement.querySelector("[data-product-image-search-panel]");
+  const searchToggle = formElement.querySelector("[data-toggle-product-image-search]");
+  const searchButton = formElement.querySelector("[data-search-product-images]");
+  if (!searchInput || !searchPanel || !searchButton || String(query || "").trim().length < 2) return;
+  searchInput.value = String(query).trim();
+  searchPanel.hidden = false;
+  searchToggle?.classList.add("active");
+  searchButton.click();
+}
+
+function bindProductCatalogAssistant() {
+  const formElement = document.querySelector("#product-form");
+  const reviewButton = formElement?.querySelector("[data-review-product-catalog]");
+  const nameInput = formElement?.elements.namedItem("name");
+  if (!formElement || !reviewButton || !nameInput) return;
+
+  formElement.querySelector("[data-apply-product-name]")?.addEventListener("click", (event) => {
+    const suggestedName = String(event.currentTarget.dataset.suggestedName || "").trim();
+    if (!suggestedName) return;
+    nameInput.value = suggestedName;
+    const searchInput = formElement.querySelector("[data-product-image-search-input]");
+    if (searchInput) searchInput.value = suggestedName;
+    showProductNameSuggestion(formElement, suggestedName, suggestedName, "Nome aplicado. Salve o produto para confirmar a alteracao.");
+    notify("Nome sugerido aplicado ao cadastro.");
+  });
+
+  reviewButton.addEventListener("click", async () => {
+    const currentName = String(nameInput.value || "").replace(/\s+/g, " ").trim();
+    if (currentName.length < 2) {
+      notify("Informe o nome do produto antes de revisar.");
+      nameInput.focus();
+      return;
+    }
+    reviewButton.disabled = true;
+    reviewButton.textContent = "Revisando...";
+    let suggestedName = localProductNameSuggestion(currentName);
+    let reason = suggestedName === currentName ? "O nome ja esta padronizado." : "Espacos, maiusculas e unidades foram padronizados.";
+
+    if (isOnlineSession()) {
+      try {
+        const { data } = await supabaseClient.auth.getSession();
+        const accessToken = data?.session?.access_token;
+        if (accessToken) {
+          const response = await fetch("/api/ai/product-suggestion", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({
+              name: currentName,
+              category: String(formElement.elements.namedItem("category")?.value || "").trim(),
+              catalog: state.products
+                .filter((product) => product.id !== currentModal.id)
+                .slice(0, 300)
+                .map((product) => ({ name: product.name, category: product.category })),
+            }),
+          });
+          const result = await response.json().catch(() => ({}));
+          if (response.ok && result.suggestedName) {
+            suggestedName = String(result.suggestedName).trim();
+            reason = String(result.reason || reason);
+          }
+        }
+      } catch (error) {
+        reason = "A revisao online nao respondeu; foi usada a padronizacao local.";
+      }
+    }
+
+    showProductNameSuggestion(formElement, currentName, suggestedName, reason);
+    startAutomaticProductImageSearch(formElement, suggestedName || currentName);
+    reviewButton.disabled = false;
+    reviewButton.innerHTML = `${icon("sparkles")} Revisar nome e buscar fotos`;
+  });
+}
+
 function renderProductModal() {
   const product = state.products.find((item) => item.id === currentModal.id);
   const imageAttribution = productImageAttribution(product);
@@ -9378,10 +9492,19 @@ function renderProductModal() {
       </div>
       <div class="modal-body">
         <div class="form-grid">
-          <label class="field full">
+          <div class="field full product-name-field">
             <span>Nome</span>
-            <input name="name" required value="${product?.name || ""}" />
-          </label>
+            <div class="product-name-input-row">
+              <input name="name" required value="${product?.name || ""}" />
+              <button class="btn secondary" type="button" data-review-product-catalog>${icon("sparkles")} Revisar nome e buscar fotos</button>
+            </div>
+          </div>
+          <div class="product-name-suggestion full" data-product-name-suggestion hidden>
+            <div><span>Nome informado</span><strong data-product-name-current></strong></div>
+            <div class="suggested"><span>Sugestao</span><strong data-product-name-suggested></strong></div>
+            <p data-product-name-reason></p>
+            <button class="btn primary compact" type="button" data-apply-product-name>Aplicar nome sugerido</button>
+          </div>
           <div class="field full product-image-field">
             <span>Foto do produto (opcional)</span>
             <div class="product-image-picker">
@@ -10591,6 +10714,7 @@ function bindModalForms() {
   bindProductImagePreview();
   bindProductImageSearch();
   bindProductFormPricingSimulator();
+  bindProductCatalogAssistant();
 }
 
 function bindTableSplitBuilder() {
