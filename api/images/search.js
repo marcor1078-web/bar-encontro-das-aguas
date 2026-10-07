@@ -39,19 +39,15 @@ function selectionUrl(imageUrl, pageId, license, credit) {
   return url.href;
 }
 
-module.exports = async function handler(req, res) {
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    json(res, 405, { error: "method_not_allowed" });
-    return;
-  }
+function simplifiedProductSearch(value) {
+  return String(value || "")
+    .replace(/\b\d+(?:[.,]\d+)?\s*(?:ml|litros?|l|kg|g|unidades?|un)\b/gi, " ")
+    .replace(/\b(?:garrafas?|latas?|latao|lat\u00f5es|pet|long neck|caixas?|pacotes?)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  const search = queryValue(req, "q").trim().slice(0, 100);
-  if (search.length < 2) {
-    json(res, 400, { error: "invalid_search", message: "Digite pelo menos 2 caracteres para pesquisar." });
-    return;
-  }
-
+async function fetchCommonsPages(search) {
   const params = new URLSearchParams({
     action: "query",
     generator: "search",
@@ -66,21 +62,45 @@ module.exports = async function handler(req, res) {
     formatversion: "2",
     origin: "*",
   });
+  const response = await fetch(`${COMMONS_API_URL}?${params}`, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "DistribuidoraEncontroDasAguas/1.0 (busca de imagens para cadastro de produtos)",
+    },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error("A fonte de imagens nao respondeu.");
+  return data.query?.pages || [];
+}
+
+module.exports = async function handler(req, res) {
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    json(res, 405, { error: "method_not_allowed" });
+    return;
+  }
+
+  const search = queryValue(req, "q").trim().slice(0, 100);
+  if (search.length < 2) {
+    json(res, 400, { error: "invalid_search", message: "Digite pelo menos 2 caracteres para pesquisar." });
+    return;
+  }
 
   try {
-    const response = await fetch(`${COMMONS_API_URL}?${params}`, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "DistribuidoraEncontroDasAguas/1.0 (busca de imagens para cadastro de produtos)",
-      },
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      json(res, 502, { error: "image_provider_error", message: "A fonte de imagens nao respondeu." });
-      return;
+    const fallbackSearch = simplifiedProductSearch(search);
+    const attempts = [search];
+    if (fallbackSearch.length >= 2 && fallbackSearch.toLocaleLowerCase("pt-BR") !== search.toLocaleLowerCase("pt-BR")) {
+      attempts.push(fallbackSearch);
+    }
+    let pages = [];
+    let usedSearch = search;
+    for (const attempt of attempts) {
+      pages = await fetchCommonsPages(attempt);
+      usedSearch = attempt;
+      if (pages.some((page) => ALLOWED_IMAGE_TYPES.has(page.imageinfo?.[0]?.mime))) break;
     }
 
-    const results = (data.query?.pages || [])
+    const results = pages
       .map((page) => {
         const info = page.imageinfo?.[0];
         if (!info || !ALLOWED_IMAGE_TYPES.has(info.mime)) return null;
@@ -103,7 +123,7 @@ module.exports = async function handler(req, res) {
       .filter(Boolean)
       .slice(0, 12);
 
-    json(res, 200, { provider: "Wikimedia Commons", results });
+    json(res, 200, { provider: "Wikimedia Commons", search: usedSearch, results });
   } catch (error) {
     json(res, 502, {
       error: "image_search_failed",
