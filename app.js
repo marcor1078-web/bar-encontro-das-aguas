@@ -7,8 +7,10 @@ const PAYMENT_TERMINAL_KEY = "barcontrol:selected-payment-terminal";
 const DEVICE_KEY_STORAGE = "barcontrol:device-key";
 const MP_REQUEST_TIMEOUT_MS = 20 * 1000;
 const MP_STATUS_TIMEOUT_MS = 12 * 1000;
+const MP_STALE_STATUS_TIMEOUT_MS = 6 * 1000;
+const MP_STALE_ORDER_AGE_MS = 3 * 60 * 1000;
 const MP_PAYMENT_DEADLINE_MS = 2 * 60 * 1000;
-const MP_POLL_INTERVAL_MS = 2500;
+const MP_POLL_INTERVAL_MS = 2000;
 const APP_DISPLAY_NAME = "DISTRIBUIDORA ENCONTRO DAS ÁGUAS";
 const BRAND_LOGO_URL = "/icons/distribuidora-encontro-das-aguas.jpeg";
 const BRAND_ICON_URL = "/icons/icon-192.png";
@@ -1772,11 +1774,18 @@ function mercadoPagoStatusLabel(statusData) {
   return `${status}${detail}`;
 }
 
-async function fetchMercadoPagoOrderStatus(orderId, accountKey = "primary") {
+function updatePaymentProgress(message) {
+  const progress = document.querySelector("[data-payment-progress]");
+  if (!progress) return;
+  progress.hidden = false;
+  progress.textContent = message;
+}
+
+async function fetchMercadoPagoOrderStatus(orderId, accountKey = "primary", timeoutMs = MP_STATUS_TIMEOUT_MS) {
   const { response, data } = await fetchJsonWithTimeout(
     `/api/mercadopago/order-status?id=${encodeURIComponent(orderId)}&accountKey=${encodeURIComponent(accountKey)}`,
     {},
-    MP_STATUS_TIMEOUT_MS,
+    timeoutMs,
   );
   if (!response.ok) throw new Error(describeMercadoPagoError(data));
   updateMercadoPagoPendingOrderStatus(data);
@@ -1801,21 +1810,36 @@ async function releaseStaleMercadoPagoOrders(terminalId, accountKey = "primary")
   const matchingOrders = getMercadoPagoPendingOrders().filter(
     (entry) => entry.terminalId === terminalId && (entry.accountKey || "primary") === accountKey,
   );
-  for (const pending of matchingOrders) {
-    try {
-      const statusData = await fetchMercadoPagoOrderStatus(pending.id, accountKey);
-      if (["processed", "failed", "canceled", "expired", "refunded"].includes(statusData.status)) {
-        clearMercadoPagoPendingOrder(pending.id);
-        continue;
+  const terminalStatuses = new Set(["processed", "failed", "canceled", "expired", "refunded"]);
+  matchingOrders.filter((pending) => terminalStatuses.has(pending.status)).forEach((pending) => clearMercadoPagoPendingOrder(pending.id));
+
+  const now = Date.now();
+  const staleOrders = matchingOrders
+    .filter((pending) => {
+      if (terminalStatuses.has(pending.status)) return false;
+      const createdAt = Date.parse(pending.createdAt || "");
+      return !Number.isFinite(createdAt) || now - createdAt > MP_STALE_ORDER_AGE_MS;
+    })
+    .slice(0, 4);
+  if (!staleOrders.length) return;
+
+  updatePaymentProgress("Liberando cobranca antiga da maquininha...");
+  await Promise.allSettled(
+    staleOrders.map(async (pending) => {
+      try {
+        const statusData = await fetchMercadoPagoOrderStatus(pending.id, accountKey, MP_STALE_STATUS_TIMEOUT_MS);
+        if (terminalStatuses.has(statusData.status)) {
+          clearMercadoPagoPendingOrder(pending.id);
+          return;
+        }
+        if (["created", "at_terminal", "action_required"].includes(statusData.status)) {
+          await cancelMercadoPagoOrderById(pending.id, accountKey);
+        }
+      } catch (error) {
+        // A criacao da nova order dara a resposta definitiva caso a fila ainda esteja ocupada.
       }
-      const age = Date.now() - Date.parse(pending.createdAt || "");
-      if (Number.isFinite(age) && age > 3 * 60 * 1000 && ["created", "at_terminal", "action_required"].includes(statusData.status)) {
-        await cancelMercadoPagoOrderById(pending.id, accountKey);
-      }
-    } catch (error) {
-      // A criacao da nova order dara a resposta definitiva caso a fila ainda esteja ocupada.
-    }
-  }
+    }),
+  );
 }
 
 async function checkMercadoPagoPendingOrder(orderId = "") {
@@ -1914,7 +1938,9 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
   };
 
   notify("Enviando cobranca para a maquininha Mercado Pago...");
+  updatePaymentProgress("Preparando a cobranca na maquininha selecionada...");
   await releaseStaleMercadoPagoOrders(selectedTerminalId, accountKey);
+  updatePaymentProgress("Enviando cobranca para a maquininha...");
   let createResponse;
   let order;
   let createError;
@@ -1954,7 +1980,10 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
 
   saveMercadoPagoPendingOrder(order, { amount, payment, description, terminalId: selectedTerminalId, accountKey });
   notify("Cobranca enviada. Na Point, abra Inserir valor para concluir.");
+  updatePaymentProgress("Cobranca enviada. Conclua o pagamento na maquininha.");
   const deadline = Date.now() + MP_PAYMENT_DEADLINE_MS;
+  const pollingStartedAt = Date.now();
+  let lastProgressAt = 0;
   let lastStatus = order.status || "created";
   let consecutiveErrors = 0;
   while (Date.now() < deadline) {
@@ -1965,19 +1994,27 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
       consecutiveErrors = 0;
     } catch (error) {
       consecutiveErrors += 1;
+      updatePaymentProgress("A conexao oscilou. Confirmando o pagamento novamente...");
       if (consecutiveErrors < 3) continue;
       return {
         ok: false,
         message: `A cobranca foi enviada, mas a confirmacao online falhou: ${error.message}. Consulte a cobranca antes de tentar novamente.`,
       };
     }
-    if (statusData.status !== lastStatus) {
+    const statusChanged = statusData.status !== lastStatus;
+    if (statusChanged) {
       lastStatus = statusData.status;
       notify(`Point: ${mercadoPagoStatusLabel(statusData)}`);
+    }
+    if (statusChanged || Date.now() - lastProgressAt >= 8000) {
+      const elapsedSeconds = Math.max(1, Math.round((Date.now() - pollingStartedAt) / 1000));
+      updatePaymentProgress(`Aguardando aprovacao na maquininha (${elapsedSeconds}s). Status: ${statusData.status || "consultando"}.`);
+      lastProgressAt = Date.now();
     }
     if (statusData.status === "processed") {
       clearMercadoPagoPendingOrder(order.id);
       notify("Pagamento aprovado.");
+      updatePaymentProgress("Pagamento aprovado. Registrando a venda...");
       return { ok: true, order: statusData };
     }
     if (["failed", "canceled", "expired", "refunded"].includes(statusData.status)) {
@@ -2064,7 +2101,7 @@ async function processPointPaymentBeforeSale({ amount, payment, installments = 1
     };
   }
 
-  await loadMercadoPagoPointStatus(true);
+  await loadMercadoPagoPointStatus();
   if (!mercadoPagoPointStatus.enabled) {
     notify("Mercado Pago Point indisponivel. Abra pelo link online da Vercel e confira as variaveis MP_ACCESS_TOKEN e MP_TERMINAL_ID.");
     return { ok: false };
@@ -2483,10 +2520,12 @@ async function syncPendingOfflineSales({ manual = false, silent = false } = {}) 
   connectionState.syncing = false;
   if (synced) {
     connectionState.lastSyncAt = new Date().toISOString();
-    await loadOnlineStockData();
-    await loadOnlineClientsData();
-    await loadOnlineSalesData();
-    await loadOnlineTableData();
+    if (!silent) {
+      await loadOnlineStockData();
+      await loadOnlineClientsData();
+      await loadOnlineSalesData();
+      await loadOnlineTableData();
+    }
     logAudit("Contingencia sincronizada", `${synced} venda(s) offline enviada(s) ao Supabase.`);
     saveState();
     if (!silent) notify(`${synced} venda(s) offline sincronizada(s).`);
@@ -4845,9 +4884,6 @@ async function finalizeSale({
   cart = [];
   tableCheckout = null;
   saveState();
-  if (shouldQueueForCloud && cloudAvailable) {
-    await syncPendingOfflineSales({ silent: true });
-  }
   attachSalePrintDetails(sale.id, printDetails);
   lastSaleForTicketsId = sale.id;
   currentModal = { type: "printTickets", id: sale.id };
@@ -4872,6 +4908,15 @@ async function finalizeSale({
         : "Venda finalizada.",
   );
   renderApp();
+  if (shouldQueueForCloud && cloudAvailable) {
+    setTimeout(() => {
+      syncPendingOfflineSales({ silent: true }).catch((error) => {
+        connectionState.lastError = error.message || "Falha ao sincronizar a venda em segundo plano.";
+        setCloudReachable(false, connectionState.lastError);
+        updateConnectionIndicators();
+      });
+    }, 100);
+  }
   return true;
 }
 
