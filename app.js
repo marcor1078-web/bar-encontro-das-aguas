@@ -9399,6 +9399,7 @@ function renderStockModal() {
       </div>
       <div class="modal-body">
         <p><strong>${product.name}</strong></p>
+        <p class="hint">Saldo atual: <strong>${productStockText(product)}</strong>. Toda alteracao feita aqui sera registrada no historico do produto.</p>
         <div class="form-grid">
           <label class="field">
             <span>Tipo</span>
@@ -11205,37 +11206,89 @@ async function saveStockAdjustment(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const mode = form.get("mode");
-  const qty = Number(form.get("qty"));
+  const adjustmentQty = Number(form.get("qty"));
   const product = state.products.find((entry) => entry.id === currentModal.id);
   if (!product) return;
+  if (!Number.isFinite(adjustmentQty) || adjustmentQty < 0 || (mode !== "set" && adjustmentQty <= 0)) {
+    notify("Informe uma quantidade maior que zero para ajustar o estoque.");
+    return;
+  }
   const previousStock = Number(product.stock || 0);
   const nextStock =
-    mode === "add" ? previousStock + qty : mode === "remove" ? Math.max(0, previousStock - qty) : qty;
+    mode === "add"
+      ? previousStock + adjustmentQty
+      : mode === "remove"
+        ? Math.max(0, previousStock - adjustmentQty)
+        : adjustmentQty;
   const difference = nextStock - previousStock;
-  const reason = form.get("reason").trim();
+  const reason = String(form.get("reason") || "Reposicao manual").trim() || "Reposicao manual";
+  const movementLabel = difference > 0 ? "Entrada manual" : difference < 0 ? "Retirada manual" : "Ajuste manual";
 
-  if (isOnlineSession()) {
-    const { error } = await supabaseClient.from("products").update({ stock: nextStock }).eq("id", product.id);
-    if (error) {
-      notify(`Erro ao ajustar estoque online: ${error.message}`);
+  if (session?.online) {
+    if (!isSupabaseReady() || navigator.onLine === false) {
+      notify("Sem conexao com o Supabase. O ajuste online nao foi realizado para evitar perda do historico.");
       return;
     }
-    const insertAdjustment = await supabaseClient.from("inventory_counts").insert({
-      user_id: session.id,
-      item_type: "product",
-      item_id: product.id,
-      expected: previousStock,
-      counted: nextStock,
-      difference,
-      notes: `Ajuste manual: ${reason}`,
-    });
-    if (insertAdjustment.error) {
-      notify(`Estoque atualizado, mas falhou ao registrar historico: ${insertAdjustment.error.message}`);
+
+    const updateResult = await supabaseClient
+      .from("products")
+      .update({ stock: nextStock })
+      .eq("id", product.id)
+      .eq("stock", previousStock)
+      .select("id, stock")
+      .maybeSingle();
+    if (updateResult.error) {
+      notify(`Erro ao ajustar estoque online: ${updateResult.error.message}`);
+      return;
     }
+    if (!updateResult.data) {
+      await loadOnlineStockData();
+      notify("O saldo deste produto mudou em outro computador. Confira o novo saldo e tente novamente.");
+      renderApp();
+      return;
+    }
+
+    const adjustmentDate = new Date().toISOString();
+    const insertAdjustment = await supabaseClient
+      .from("inventory_counts")
+      .insert({
+        user_id: session.id,
+        item_type: "product",
+        item_id: product.id,
+        expected: previousStock,
+        counted: nextStock,
+        difference,
+        notes: `Ajuste manual: ${reason}`,
+        created_at: adjustmentDate,
+      })
+      .select("*")
+      .single();
+    if (insertAdjustment.error) {
+      const rollback = await supabaseClient
+        .from("products")
+        .update({ stock: previousStock })
+        .eq("id", product.id)
+        .eq("stock", nextStock);
+      if (rollback.error) {
+        notify(`Falha ao registrar o historico e ao restaurar o saldo: ${insertAdjustment.error.message}`);
+      } else {
+        notify(`O ajuste foi cancelado porque o historico nao pode ser registrado: ${insertAdjustment.error.message}`);
+      }
+      await loadOnlineStockData();
+      renderApp();
+      return;
+    }
+
+    state.products = state.products.map((entry) => (entry.id === product.id ? { ...entry, stock: nextStock } : entry));
+    state.inventoryCounts = [
+      mapInventoryFromDb(insertAdjustment.data),
+      ...state.inventoryCounts.filter((entry) => entry.id !== insertAdjustment.data.id),
+    ];
+    saveState();
     currentModal = null;
     await loadOnlineStockData();
-    logAudit("Estoque ajustado online", `${product.name}: ${nextStock}. Motivo: ${reason}.`);
-    notify("Estoque atualizado no Supabase.");
+    logAudit("Estoque ajustado online", `${product.name}: ${movementLabel} de ${qty(Math.abs(difference))}. Saldo ${previousStock} para ${nextStock}. Motivo: ${reason}.`);
+    notify(`${movementLabel} registrada. Novo saldo: ${qty(nextStock)}.`);
     renderApp();
     return;
   }
@@ -11258,9 +11311,9 @@ async function saveStockAdjustment(event) {
   });
 
   currentModal = null;
-  logAudit("Estoque ajustado", `${product.name}: ${nextStock}. Motivo: ${reason}.`);
+  logAudit("Estoque ajustado", `${product.name}: ${movementLabel} de ${qty(Math.abs(difference))}. Saldo ${previousStock} para ${nextStock}. Motivo: ${reason}.`);
   saveState();
-  notify("Estoque atualizado.");
+  notify(`${movementLabel} registrada. Novo saldo: ${qty(nextStock)}.`);
   renderApp();
 }
 
