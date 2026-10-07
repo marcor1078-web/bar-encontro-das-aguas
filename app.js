@@ -2501,6 +2501,7 @@ async function syncPendingOfflineSales({ manual = false, silent = false } = {}) 
 function mapProductFromDb(row, recipes = []) {
   return {
     id: row.id,
+    createdAt: row.created_at || "",
     name: row.name,
     productCode: row.product_code || "",
     barcodeCodes: Array.isArray(row.barcode_codes) ? row.barcode_codes.filter(Boolean) : [],
@@ -3488,6 +3489,7 @@ function bindViewEvents() {
       renderApp();
     });
   });
+  document.querySelector("[data-recover-stock-history]")?.addEventListener("click", recoverRecentStockHistory);
 
   document.querySelector("[data-payment-terminal]")?.addEventListener("change", (event) => {
     setSelectedPaymentTerminal(event.target.value);
@@ -7193,6 +7195,7 @@ function renderStock() {
         <button class="btn secondary" type="button" data-open-modal="priceSimulator">Simular preco</button>
         <button class="btn secondary" type="button" data-open-modal="inventoryIntelligence">Inteligencia de estoque</button>
         <button class="btn secondary" type="button" data-open-modal="stockExpiry">Vencimentos</button>
+        ${session?.role === "admin" ? '<button class="btn secondary" type="button" data-recover-stock-history>Recuperar historico recente</button>' : ""}
         <button class="btn secondary ${stockSortMode === "stock-asc" ? "active" : ""}" type="button" data-stock-sort="stock-asc">Menor saldo primeiro</button>
         <button class="btn secondary ${stockSortMode === "default" ? "active" : ""}" type="button" data-stock-sort="default">Ordem normal</button>
       </div>
@@ -7467,9 +7470,25 @@ function productStockHistory(productId) {
   state.inventoryCounts
     .filter((count) => count.itemType === "product" && count.itemId === productId)
     .forEach((count) => {
+      const notes = String(count.notes || "").toLowerCase();
+      const movementType = notes.includes("recuperacao automatica")
+        ? Number(count.difference || 0) > 0
+          ? "Entrada recuperada"
+          : Number(count.difference || 0) < 0
+            ? "Retirada recuperada"
+            : "Saldo recuperado"
+        : notes.includes("estoque inicial")
+          ? "Estoque inicial"
+          : notes.includes("ajuste")
+            ? Number(count.difference || 0) > 0
+              ? "Entrada manual"
+              : Number(count.difference || 0) < 0
+                ? "Retirada manual"
+                : "Ajuste manual"
+            : "Contagem";
       entries.push({
         date: count.date,
-        type: count.notes?.toLowerCase().includes("ajuste manual") ? "Ajuste manual" : "Contagem",
+        type: movementType,
         qty: Number(count.difference || 0),
         balance: Number(count.counted || 0),
         userId: count.userId,
@@ -8292,6 +8311,16 @@ async function executeAssistantAction() {
       if (nextStock < 0) throw new Error("A retirada deixaria o estoque negativo.");
       const result = await supabaseClient.from("products").update({ stock: nextStock }).eq("id", product.id);
       if (result.error) throw result.error;
+      const historyResult = await supabaseClient.from("inventory_counts").insert({
+        user_id: session.id,
+        item_type: "product",
+        item_id: product.id,
+        expected: Number(product.stock || 0),
+        counted: nextStock,
+        difference: nextStock - Number(product.stock || 0),
+        notes: `Ajuste pela IA: ${payload.mode}`,
+      });
+      if (historyResult.error) throw new Error(`Estoque atualizado, mas o historico falhou: ${historyResult.error.message}`);
       await loadOnlineStockData();
       logAudit("IA ajustou estoque", `${product.name}: ${product.stock} para ${nextStock}.`);
     } else if (action.type === "update_price") {
@@ -10752,12 +10781,29 @@ async function saveProduct(event) {
     }
   }
 
-  if (currentModal.id) {
+  const savedAt = new Date().toISOString();
+  const productId = currentProduct?.id || id("product");
+  const previousStock = Number(currentProduct?.stock || 0);
+  if (currentProduct) {
     state.products = state.products.map((product) =>
       product.id === currentModal.id ? { ...product, ...payload } : product,
     );
   } else {
-    state.products.push({ id: id("product"), ...payload });
+    state.products.push({ id: productId, createdAt: savedAt, ...payload });
+  }
+
+  if (payload.stock !== previousStock) {
+    state.inventoryCounts.unshift({
+      id: id("inventory"),
+      date: savedAt,
+      itemType: "product",
+      itemId: productId,
+      expected: previousStock,
+      counted: payload.stock,
+      difference: payload.stock - previousStock,
+      userId: session.id,
+      notes: currentProduct ? "Ajuste pela edicao do produto" : "Estoque inicial do produto",
+    });
   }
 
   currentModal = null;
@@ -10824,7 +10870,8 @@ async function deleteStoredProductImage(url) {
 }
 
 async function saveProductOnline(payload, imageFile = null, removeImage = false, internetImageUrl = "", options = {}) {
-  const previousImageUrl = state.products.find((product) => product.id === currentModal.id)?.imageUrl || "";
+  const previousProduct = state.products.find((product) => product.id === currentModal.id);
+  const previousImageUrl = previousProduct?.imageUrl || "";
   const dbPayload = {
     name: payload.name,
     product_code: payload.productCode || null,
@@ -10917,8 +10964,17 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     }
   }
 
-  if (options.stockAdjustment) {
-    const adjustment = options.stockAdjustment;
+  const previousStock = Number(previousProduct?.stock || 0);
+  const automaticStockAdjustment = payload.stock !== previousStock
+    ? {
+        previousStock,
+        nextStock: payload.stock,
+        notes: previousProduct ? "Ajuste pela edicao do produto" : "Estoque inicial do produto",
+      }
+    : null;
+  const stockAdjustment = options.stockAdjustment ?? automaticStockAdjustment;
+  if (stockAdjustment) {
+    const adjustment = stockAdjustment;
     const insertAdjustment = await supabaseClient.from("inventory_counts").insert({
       user_id: session.id,
       item_type: "product",
@@ -10926,7 +10982,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
       expected: adjustment.previousStock,
       counted: adjustment.nextStock,
       difference: adjustment.nextStock - adjustment.previousStock,
-      notes: `Ajuste pelo simulador: ${adjustment.reason}`,
+      notes: adjustment.notes || `Ajuste pelo simulador: ${adjustment.reason}`,
     });
     if (insertAdjustment.error) {
       notify(`Produto atualizado, mas falhou ao registrar a movimentacao: ${insertAdjustment.error.message}`);
@@ -10939,6 +10995,106 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
   notify(options.successMessage || "Produto salvo no Supabase.");
   renderApp();
   return result.data;
+}
+
+function activeProductSalesQuantitySince(productId, since) {
+  const sinceTime = new Date(since || 0).getTime();
+  return state.sales
+    .filter((sale) => sale?.status !== "Cancelada" && new Date(sale.date || 0).getTime() >= sinceTime)
+    .flatMap((sale) => sale.items || [])
+    .filter((item) => item.productId === productId)
+    .reduce((sum, item) => sum + Number(item.qty || 0), 0);
+}
+
+function recentStockHistoryRecoveryPlan() {
+  return state.products
+    .filter((product) => product.active !== false && !product.recipe?.length)
+    .map((product) => {
+      const currentStock = Number(product.stock || 0);
+      const counts = state.inventoryCounts
+        .filter((count) => count.itemType === "product" && count.itemId === product.id)
+        .slice()
+        .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+      const latest = counts[0];
+      if (latest) {
+        const salesAfterCount = activeProductSalesQuantitySince(product.id, latest.date);
+        const expectedCurrentStock = Number(latest.counted || 0) - salesAfterCount;
+        const difference = Number((currentStock - expectedCurrentStock).toFixed(3));
+        if (Math.abs(difference) < 0.001) return null;
+        return {
+          product,
+          date: new Date().toISOString(),
+          expected: Number(expectedCurrentStock.toFixed(3)),
+          counted: currentStock,
+          difference,
+          notes: `Recuperacao automatica do historico: ajuste liquido desde ${formatDateBr(String(latest.date || "").slice(0, 10))}`,
+        };
+      }
+
+      const createdAt = product.createdAt || new Date().toISOString();
+      const soldSinceCreation = activeProductSalesQuantitySince(product.id, createdAt);
+      const recoveredOpeningStock = Number((currentStock + soldSinceCreation).toFixed(3));
+      if (Math.abs(recoveredOpeningStock) < 0.001) return null;
+      return {
+        product,
+        date: createdAt,
+        expected: 0,
+        counted: recoveredOpeningStock,
+        difference: recoveredOpeningStock,
+        notes: "Recuperacao automatica do historico: estoque inicial e entradas liquidas reconstruidos pelo saldo atual e pelas vendas registradas",
+      };
+    })
+    .filter(Boolean);
+}
+
+async function recoverRecentStockHistory() {
+  if (session?.role !== "admin") {
+    notify("A recuperacao do historico exige acesso de administrador.");
+    return;
+  }
+  const plan = recentStockHistoryRecoveryPlan();
+  if (!plan.length) {
+    notify("O historico recente ja esta coerente com os saldos e as vendas registradas.");
+    return;
+  }
+  if (!confirm(`Recuperar o historico de ${plan.length} produto(s)? Os registros reconstruidos ficarao identificados e nao alterarao os saldos atuais.`)) return;
+
+  if (isOnlineSession()) {
+    const rows = plan.map((entry) => ({
+      user_id: session.id,
+      item_type: "product",
+      item_id: entry.product.id,
+      expected: entry.expected,
+      counted: entry.counted,
+      difference: entry.difference,
+      notes: entry.notes,
+      created_at: entry.date,
+    }));
+    const { error } = await supabaseClient.from("inventory_counts").insert(rows);
+    if (error) {
+      notify(`Erro ao recuperar historico online: ${error.message}`);
+      return;
+    }
+    await loadOnlineStockData();
+    logAudit("Historico de estoque recuperado online", `${plan.length} produto(s) reconstruido(s) a partir dos saldos e vendas existentes.`);
+  } else {
+    const recovered = plan.map((entry) => ({
+      id: id("inventory"),
+      date: entry.date,
+      itemType: "product",
+      itemId: entry.product.id,
+      expected: entry.expected,
+      counted: entry.counted,
+      difference: entry.difference,
+      userId: session.id,
+      notes: entry.notes,
+    }));
+    state.inventoryCounts = [...recovered, ...state.inventoryCounts];
+    logAudit("Historico de estoque recuperado", `${plan.length} produto(s) reconstruido(s) a partir dos saldos e vendas existentes.`);
+    saveState();
+  }
+  notify(`Historico recente recuperado para ${plan.length} produto(s). Os saldos atuais foram preservados.`);
+  renderApp();
 }
 
 async function removeProduct(productId) {

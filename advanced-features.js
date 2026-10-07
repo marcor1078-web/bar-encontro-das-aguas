@@ -588,7 +588,7 @@ async function submitPriceSimulator(event) {
     active: form.get("active") === "true",
     imageUrl: values.product?.imageUrl || "",
   };
-  const stockAdjustment = values.product && nextStock !== previousStock
+  const stockAdjustment = nextStock !== previousStock
     ? {
         previousStock,
         nextStock,
@@ -607,17 +607,19 @@ async function submitPriceSimulator(event) {
     return;
   }
 
+  let savedProductId = values.product?.id || "";
   if (values.product) {
     state.products = state.products.map((product) => product.id === values.product.id ? { ...product, ...payload } : product);
   } else {
-    state.products.push({ id: id("product"), ...payload });
+    savedProductId = id("product");
+    state.products.push({ id: savedProductId, createdAt: new Date().toISOString(), ...payload });
   }
   if (stockAdjustment) {
     state.inventoryCounts.unshift({
       id: id("inventory"),
       date: new Date().toISOString(),
       itemType: "product",
-      itemId: values.product.id,
+      itemId: savedProductId,
       expected: stockAdjustment.previousStock,
       counted: stockAdjustment.nextStock,
       difference: stockAdjustment.nextStock - stockAdjustment.previousStock,
