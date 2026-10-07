@@ -221,6 +221,84 @@
   margin: 0 0 6px;
 }
 
+.product-pricing-simulator {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #047857;
+  border-radius: 6px;
+  padding: 14px;
+  background: var(--panel-2);
+}
+
+.product-pricing-head {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.product-pricing-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.product-pricing-head strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.product-pricing-head small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.product-margin-field {
+  width: min(210px, 100%);
+  margin: 0;
+}
+
+.product-pricing-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--line);
+}
+
+.product-pricing-values > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px;
+  color: var(--muted);
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.product-pricing-values strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.product-pricing-values .suggested {
+  background: #ecfdf5;
+}
+
+.product-pricing-values .suggested strong {
+  color: #047857;
+}
+
+[data-theme="dark"] .product-pricing-values .suggested {
+  background: #052e2b;
+}
+
+.product-pricing-simulator > .btn {
+  justify-self: end;
+}
+
 .price-simulator-modal {
   width: min(1040px, 100%);
   overflow: hidden;
@@ -276,6 +354,25 @@
 
 body[data-theme="dark"] .price-simulator-section {
   border-color: #334155;
+}
+
+@media (max-width: 640px) {
+  .product-pricing-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .product-margin-field {
+    width: 100%;
+  }
+
+  .product-pricing-values {
+    grid-template-columns: 1fr;
+  }
+
+  .product-pricing-simulator > .btn {
+    width: 100%;
+  }
 }
 
 .closing-reconciliation {

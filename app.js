@@ -9307,9 +9307,69 @@ function renderOrderModal() {
   `;
 }
 
+function productFormPricingValues(formElement) {
+  const defaults = state.settings.pricingDefaults || {};
+  const currentPrice = Math.max(0, Number(formElement?.elements.namedItem("price")?.value || 0));
+  const cost = Math.max(0, Number(formElement?.elements.namedItem("cost")?.value || 0));
+  const cardFee = Math.max(0, Number(defaults.cardFee ?? 3.5));
+  const tax = Math.max(0, Number(defaults.tax ?? 0));
+  const targetMargin = Math.max(0, Number(formElement?.elements.namedItem("targetMargin")?.value || defaults.targetMargin || 30));
+  const deductions = (cardFee + tax + targetMargin) / 100;
+  const suggestedPrice = cost > 0 && deductions < 0.95 ? cost / (1 - deductions) : 0;
+  const currentMargin = currentPrice > 0
+    ? ((currentPrice - cost - currentPrice * ((cardFee + tax) / 100)) / currentPrice) * 100
+    : 0;
+  return { currentPrice, cost, cardFee, tax, targetMargin, deductions, suggestedPrice, currentMargin };
+}
+
+function updateProductFormPricingSimulator() {
+  const formElement = document.querySelector("#product-form");
+  if (!formElement) return;
+  const values = productFormPricingValues(formElement);
+  const currentPrice = formElement.querySelector("[data-product-current-price]");
+  const currentMargin = formElement.querySelector("[data-product-current-margin]");
+  const suggestedPrice = formElement.querySelector("[data-product-suggested-price]");
+  const note = formElement.querySelector("[data-product-pricing-note]");
+  const applyButton = formElement.querySelector("[data-apply-product-suggested-price]");
+  const validSuggestion = Number.isFinite(values.suggestedPrice) && values.suggestedPrice > 0;
+
+  if (currentPrice) currentPrice.textContent = money(values.currentPrice);
+  if (currentMargin) currentMargin.textContent = `${values.currentMargin.toFixed(1)}%`;
+  if (suggestedPrice) suggestedPrice.textContent = validSuggestion ? money(values.suggestedPrice) : "--";
+  if (applyButton) applyButton.disabled = !validSuggestion;
+  if (note) {
+    note.textContent = values.deductions >= 0.95
+      ? "A soma da margem e das taxas precisa ficar abaixo de 95%."
+      : values.cost <= 0
+        ? "Informe o custo para calcular o preco sugerido."
+        : `Calculo com taxa de cartao de ${values.cardFee.toFixed(2)}% e impostos de ${values.tax.toFixed(2)}%.`;
+  }
+}
+
+function bindProductFormPricingSimulator() {
+  const formElement = document.querySelector("#product-form");
+  if (!formElement) return;
+  ["price", "cost", "targetMargin"].forEach((name) => {
+    formElement.elements.namedItem(name)?.addEventListener("input", updateProductFormPricingSimulator);
+  });
+  formElement.querySelector("[data-apply-product-suggested-price]")?.addEventListener("click", () => {
+    const values = productFormPricingValues(formElement);
+    if (!Number.isFinite(values.suggestedPrice) || values.suggestedPrice <= 0) {
+      notify("Informe um custo e uma margem validos para calcular o preco sugerido.");
+      return;
+    }
+    const priceInput = formElement.elements.namedItem("price");
+    priceInput.value = values.suggestedPrice.toFixed(2);
+    updateProductFormPricingSimulator();
+    notify(`Preco sugerido de ${money(values.suggestedPrice)} aplicado ao produto.`);
+  });
+  updateProductFormPricingSimulator();
+}
+
 function renderProductModal() {
   const product = state.products.find((item) => item.id === currentModal.id);
   const imageAttribution = productImageAttribution(product);
+  const pricingDefaults = state.settings.pricingDefaults || {};
   return `
     <form id="product-form">
       <div class="modal-head">
@@ -9403,6 +9463,24 @@ function renderProductModal() {
             <span>Custo</span>
             <input name="cost" type="number" min="0" step="0.01" required value="${product?.cost || ""}" />
           </label>
+          <section class="product-pricing-simulator full">
+            <div class="product-pricing-head">
+              <div>
+                <strong>Formacao do preco</strong>
+                <small data-product-pricing-note></small>
+              </div>
+              <label class="field product-margin-field">
+                <span>Margem desejada (%)</span>
+                <input name="targetMargin" type="number" min="0" max="90" step="0.1" value="${pricingDefaults.targetMargin ?? 30}" />
+              </label>
+            </div>
+            <div class="product-pricing-values">
+              <span>Preco atual<strong data-product-current-price>${money(product?.price || 0)}</strong></span>
+              <span>Margem atual<strong data-product-current-margin>0,0%</strong></span>
+              <span class="suggested">Preco sugerido<strong data-product-suggested-price>--</strong></span>
+            </div>
+            <button class="btn primary" type="button" data-apply-product-suggested-price>Aplicar preco sugerido</button>
+          </section>
           <label class="field">
             <span>Estoque atual</span>
             <input name="stock" type="number" min="0" step="1" required value="${product?.stock ?? 0}" />
@@ -10512,6 +10590,7 @@ function bindModalForms() {
   bindUserPermissionControls();
   bindProductImagePreview();
   bindProductImageSearch();
+  bindProductFormPricingSimulator();
 }
 
 function bindTableSplitBuilder() {
