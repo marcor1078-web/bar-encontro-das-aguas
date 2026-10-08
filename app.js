@@ -3134,7 +3134,8 @@ async function refreshPaymentRecovery(dateKey = paymentRecoveryState.date || loc
     const accessToken = await onlineAccessToken();
     if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
     const params = new URLSearchParams(range);
-    const response = await fetch(`/api/mercadopago/recover-sales?${params}`, {
+    params.set("action", "recover-sales");
+    const response = await fetch(`/api/mercadopago/config?${params}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     const result = await response.json().catch(() => ({}));
@@ -3188,7 +3189,7 @@ async function recoverMissingPayment(orderId, accountKey) {
   try {
     const accessToken = await onlineAccessToken();
     if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
-    const response = await fetch("/api/mercadopago/recover-sales", {
+    const response = await fetch("/api/mercadopago/config?action=recover-sales", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
       body: JSON.stringify({ orderId, accountKey }),
