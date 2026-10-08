@@ -610,6 +610,16 @@ let assistantBusy = false;
 let onlineSalesRefreshInProgress = false;
 let automaticCashOpeningInProgress = false;
 let automaticCashLastCloudRefreshAt = 0;
+let storageWarningShown = false;
+let paymentRecoveryState = {
+  loading: false,
+  date: "",
+  salesCount: 0,
+  processedCount: 0,
+  missing: [],
+  accountErrors: [],
+  error: "",
+};
 let connectionState = {
   browserOnline: navigator.onLine !== false,
   cloudReachable: navigator.onLine !== false,
@@ -798,11 +808,72 @@ function migrateState(nextState) {
   return nextState;
 }
 
+function uniqueRecentEntries(entries = [], limit = 500, requiredIds = new Set()) {
+  const recent = (Array.isArray(entries) ? entries : []).slice(-limit);
+  const required = (Array.isArray(entries) ? entries : []).filter((entry) => requiredIds.has(entry?.id));
+  return [...new Map([...required, ...recent].map((entry) => [entry?.id || uuid(), entry])).values()];
+}
+
+function uniqueLeadingEntries(entries = [], limit = 500, requiredIds = new Set()) {
+  const recent = (Array.isArray(entries) ? entries : []).slice(0, limit);
+  const required = (Array.isArray(entries) ? entries : []).filter((entry) => requiredIds.has(entry?.id));
+  return [...new Map([...required, ...recent].map((entry) => [entry?.id || uuid(), entry])).values()];
+}
+
+function persistedStateSnapshot({ emergency = false } = {}) {
+  const pendingIds = new Set(pendingOfflineOperations().map((operation) => operation.id));
+  const pendingKitchenIds = new Set(
+    pendingOfflineSalePayloads().flatMap((payload) => (payload.kitchenOrders || []).map((order) => order.id)),
+  );
+  const snapshot = {
+    ...state,
+    products: (state.products || []).map((product) => ({
+      ...product,
+      imageUrl:
+        (session?.online || emergency) && String(product.imageUrl || "").startsWith("data:")
+          ? ""
+          : product.imageUrl || "",
+    })),
+    sales: uniqueRecentEntries(state.sales, emergency ? 120 : 600, pendingIds),
+    kitchenOrders: uniqueLeadingEntries(state.kitchenOrders, emergency ? 80 : 300, pendingKitchenIds),
+    inventoryCounts: (state.inventoryCounts || []).slice(0, emergency ? 100 : 1000),
+    purchases: (state.purchases || []).slice(0, emergency ? 100 : 1000),
+    cancellations: (state.cancellations || []).slice(0, emergency ? 100 : 1000),
+    auditLog: (state.auditLog || []).slice(0, emergency ? 100 : 600),
+    reconciliationReviews: (state.reconciliationReviews || []).slice(0, emergency ? 50 : 300),
+    dailySalesTotals: (state.dailySalesTotals || []).slice(0, 730),
+    onlineDevices: (state.onlineDevices || []).slice(0, 100),
+    stockLots: (state.stockLots || []).slice(0, emergency ? 200 : 1500),
+    clients: (state.clients || []).map((client) => ({
+      ...client,
+      transactions: (client.transactions || []).slice(0, emergency ? 50 : 300),
+    })),
+    offlineQueue: state.offlineQueue || [],
+  };
+  return snapshot;
+}
+
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedStateSnapshot()));
+    storageWarningShown = false;
+  } catch (error) {
+    console.warn("Falha ao salvar o cache completo; usando copia de emergencia.", error);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedStateSnapshot({ emergency: true })));
+    } catch (emergencyError) {
+      console.error("Falha ao proteger os dados locais.", emergencyError);
+      if (!storageWarningShown) {
+        storageWarningShown = true;
+        setTimeout(() => notify("O armazenamento deste navegador esta cheio. As vendas pendentes continuam na fila, mas remova dados de outros sites quando puder."), 0);
+      }
+      return false;
+    }
+  }
   if (!suppressBroadcast) {
     syncChannel?.postMessage({ type: "state-updated", at: Date.now() });
   }
+  return true;
 }
 
 function activePalette() {
@@ -1188,7 +1259,7 @@ async function flushRealtimeUpdates() {
     if (areas.has("tables")) await loadOnlineTableData();
     if (areas.has("stock")) await loadOnlineStockData();
     if (areas.has("clients")) await loadOnlineClientsData();
-    if (areas.has("sales")) await loadOnlineSalesData();
+    if (areas.has("sales")) await loadOnlineSalesData({ recent: true });
     else if (areas.has("kitchen")) await loadOnlineKitchenData();
     if (areas.has("cash")) await loadOnlineCashData();
     if (areas.has("suppliers")) await loadOnlineSupplierData();
@@ -1708,7 +1779,16 @@ function saveMercadoPagoPendingOrder(order, context = {}) {
     accountKey: context.accountKey || previous?.accountKey || "primary",
     amount: context.amount || 0,
     payment: context.payment || "",
+    installments: Number(context.installments || previous?.installments || 1),
     description: context.description || "",
+    externalReference: order.external_reference || context.externalReference || previous?.externalReference || "",
+    items: (context.items || previous?.items || []).map((item) => ({
+      productId: item.productId || null,
+      name: String(item.name || "Produto"),
+      qty: Number(item.qty || 0),
+      price: Number(item.price || 0),
+      cost: Number(item.cost || 0),
+    })),
     createdAt: previous?.createdAt || new Date().toISOString(),
     status: order.status || previous?.status || "created",
     statusDetail: order.status_detail || previous?.statusDetail || "",
@@ -1743,6 +1823,12 @@ function clearMercadoPagoPendingOrder(orderId = "") {
   const remaining = getMercadoPagoPendingOrders().filter((entry) => entry.id !== orderId);
   if (remaining.length) localStorage.setItem(MP_PENDING_ORDER_KEY, JSON.stringify(remaining));
   else localStorage.removeItem(MP_PENDING_ORDER_KEY);
+}
+
+function clearSaleProviderPendingOrders(references = []) {
+  normalizeProviderReferences(references)
+    .filter((reference) => reference.provider === "mercado_pago" && reference.orderId)
+    .forEach((reference) => clearMercadoPagoPendingOrder(reference.orderId));
 }
 
 function updateMercadoPagoPendingOrderStatus(statusData) {
@@ -1978,7 +2064,16 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
     return { ok: false, message: `Mercado Pago: ${message}` };
   }
 
-  saveMercadoPagoPendingOrder(order, { amount, payment, description, terminalId: selectedTerminalId, accountKey });
+  saveMercadoPagoPendingOrder(order, {
+    amount,
+    payment,
+    installments,
+    description,
+    terminalId: selectedTerminalId,
+    accountKey,
+    items,
+    externalReference: requestBody.externalReference,
+  });
   notify("Cobranca enviada. Na Point, abra Inserir valor para concluir.");
   updatePaymentProgress("Cobranca enviada. Conclua o pagamento na maquininha.");
   const deadline = Date.now() + MP_PAYMENT_DEADLINE_MS;
@@ -2012,7 +2107,7 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
       lastProgressAt = Date.now();
     }
     if (statusData.status === "processed") {
-      clearMercadoPagoPendingOrder(order.id);
+      updateMercadoPagoPendingOrderStatus(statusData);
       notify("Pagamento aprovado.");
       updatePaymentProgress("Pagamento aprovado. Registrando a venda...");
       return { ok: true, order: statusData };
@@ -2026,7 +2121,7 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
         "A Point pediu conferencia manual e esse status nao sera atualizado pelo Mercado Pago.\n\nO comprovante ou a tela da maquininha mostra PAGAMENTO APROVADO?\n\nClique em OK somente se estiver aprovado. Clique em Cancelar se nao estiver.",
       );
       if (approved) {
-        clearMercadoPagoPendingOrder(order.id);
+        updateMercadoPagoPendingOrderStatus({ ...statusData, status: "operator_confirmed" });
         return {
           ok: true,
           order: { ...statusData, status: "operator_confirmed", status_detail: statusData.status_detail || "check_on_terminal" },
@@ -2044,7 +2139,7 @@ async function processMercadoPagoPointPayment({ amount, payment, installments = 
   try {
     const finalStatus = await fetchMercadoPagoOrderStatus(order.id, accountKey);
     if (finalStatus.status === "processed") {
-      clearMercadoPagoPendingOrder(order.id);
+      updateMercadoPagoPendingOrderStatus(finalStatus);
       return { ok: true, order: finalStatus };
     }
     if (["created", "at_terminal"].includes(finalStatus.status)) {
@@ -2280,14 +2375,16 @@ async function loginWithSupabase(username, password) {
     session = onlineUser;
     cacheOfflineSession(session);
     await loadOnlineSettings();
-    await loadOnlineStockData();
-    await loadOnlineClientsData();
-    await loadOnlineSalesData();
-    await loadOnlineCashData();
+    await Promise.all([
+      loadOnlineStockData(),
+      loadOnlineClientsData(),
+      loadOnlineSalesData({ recent: true }),
+      loadOnlineCashData(),
+      loadOnlineSupplierData(),
+      loadOnlineTableData(),
+      loadOnlineProfilesData(),
+    ]);
     await ensureDailyCashOpen({ notifyUser: true });
-    await loadOnlineSupplierData();
-    await loadOnlineTableData();
-    await loadOnlineProfilesData();
     const preferredView = state.settings.shiftStartView?.[session.role];
     currentView = preferredView && getUserPermissions(session).includes(preferredView) ? preferredView : getUserPermissions(session)[0] || "pos";
     logAudit("Login online", `${session.name} acessou pelo Supabase.`);
@@ -2523,7 +2620,7 @@ async function syncPendingOfflineSales({ manual = false, silent = false } = {}) 
     if (!silent) {
       await loadOnlineStockData();
       await loadOnlineClientsData();
-      await loadOnlineSalesData();
+      await loadOnlineSalesData({ recent: true });
       await loadOnlineTableData();
     }
     logAudit("Contingencia sincronizada", `${synced} venda(s) offline enviada(s) ao Supabase.`);
@@ -2575,14 +2672,16 @@ async function restoreOnlineSession() {
     upsertSessionUser(session);
     cacheOfflineSession(session);
     await loadOnlineSettings();
-    await loadOnlineStockData();
-    await loadOnlineClientsData();
-    await loadOnlineSalesData();
-    await loadOnlineCashData();
+    await Promise.all([
+      loadOnlineStockData(),
+      loadOnlineClientsData(),
+      loadOnlineSalesData({ recent: true }),
+      loadOnlineCashData(),
+      loadOnlineSupplierData(),
+      loadOnlineTableData(),
+      loadOnlineProfilesData(),
+    ]);
     await ensureDailyCashOpen({ notifyUser: true });
-    await loadOnlineSupplierData();
-    await loadOnlineTableData();
-    await loadOnlineProfilesData();
     const preferredView = state.settings.shiftStartView?.[session.role];
     currentView = CURRENT_SERVICE_NUMBER > 1 && hasPermission("pos")
       ? "pos"
@@ -2885,9 +2984,10 @@ function mapKitchenOrderFromDb(row) {
   };
 }
 
-async function loadOnlineKitchenData() {
+async function loadOnlineKitchenData({ recent = true } = {}) {
   if (!isOnlineSession()) return false;
-  const result = await supabaseClient.from("kitchen_orders").select("*").order("created_at", { ascending: false });
+  const query = supabaseClient.from("kitchen_orders").select("*").order("created_at", { ascending: false });
+  const result = recent ? await query.limit(500) : await query;
   if (result.error) {
     console.warn("Falha ao atualizar cozinha em tempo real", result.error.message);
     return false;
@@ -2916,15 +3016,38 @@ async function loadAllOnlineRows(table, orderColumn = "id") {
   }
 }
 
-async function loadOnlineSalesData() {
+async function loadSaleItemsForSaleIds(saleIds = []) {
+  if (!saleIds.length) return { data: [], error: null };
+  const rows = [];
+  for (let offset = 0; offset < saleIds.length; offset += 100) {
+    const ids = saleIds.slice(offset, offset + 100);
+    const result = await supabaseClient.from("sale_items").select("*").in("sale_id", ids);
+    if (result.error) return result;
+    rows.push(...(result.data || []));
+  }
+  return { data: rows, error: null };
+}
+
+async function loadRecentOnlineSalesRows(days = 21) {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const result = await supabaseClient
+    .from("sales")
+    .select("*")
+    .gte("created_at", since)
+    .order("created_at", { ascending: true })
+    .limit(1500);
+  return { ...result, since };
+}
+
+async function loadOnlineSalesData({ recent = false } = {}) {
   if (!isOnlineSession()) return false;
   const pendingLocalSales = state.sales.filter((sale) => sale.syncStatus === "pending");
-
-  const [salesResult, saleItemsResult, kitchenResult] = await Promise.all([
-    loadAllOnlineRows("sales", "created_at"),
-    loadAllOnlineRows("sale_items"),
-    supabaseClient.from("kitchen_orders").select("*").order("created_at", { ascending: false }),
-  ]);
+  const salesResult = recent ? await loadRecentOnlineSalesRows() : await loadAllOnlineRows("sales", "created_at");
+  const saleItemsResult = salesResult.error
+    ? { data: [], error: salesResult.error }
+    : await loadSaleItemsForSaleIds((salesResult.data || []).map((sale) => sale.id));
+  const kitchenQuery = supabaseClient.from("kitchen_orders").select("*").order("created_at", { ascending: false });
+  const kitchenResult = recent ? await kitchenQuery.limit(500) : await kitchenQuery;
 
   const error = salesResult.error || saleItemsResult.error || kitchenResult.error;
   if (error) {
@@ -2939,14 +3062,18 @@ async function loadOnlineSalesData() {
   });
   const onlineSales = (salesResult.data || []).map((row) => mapSaleFromDb(row, itemsBySale.get(row.id) || []));
   const onlineSaleIds = new Set(onlineSales.map((sale) => sale.id));
-  state.sales = [...onlineSales, ...pendingLocalSales.filter((sale) => !onlineSaleIds.has(sale.id))];
+  const preservedSales = recent
+    ? state.sales.filter((sale) => sale.syncStatus !== "pending" && Date.parse(sale.date || 0) < Date.parse(salesResult.since))
+    : [];
+  state.sales = [...preservedSales, ...onlineSales, ...pendingLocalSales.filter((sale) => !onlineSaleIds.has(sale.id))]
+    .sort((a, b) => Date.parse(a.date || 0) - Date.parse(b.date || 0));
   const onlineKitchenOrders = (kitchenResult.data || []).map(mapKitchenOrderFromDb);
   const onlineKitchenIds = new Set(onlineKitchenOrders.map((order) => order.id));
   const pendingKitchenOrders = pendingOfflineSalePayloads()
     .flatMap((payload) => payload.kitchenOrders || [])
     .filter((order) => !onlineKitchenIds.has(order.id));
   state.kitchenOrders = [...onlineKitchenOrders, ...pendingKitchenOrders];
-  rebuildDailySalesTotalsFromSales("sincronizacao Supabase");
+  if (!recent) rebuildDailySalesTotalsFromSales("sincronizacao Supabase");
   saveState();
   return true;
 }
@@ -2970,6 +3097,109 @@ async function refreshSalesFromCloud({ silent = false } = {}) {
     return true;
   } finally {
     onlineSalesRefreshInProgress = false;
+  }
+}
+
+function localDayIsoRange(dateKey) {
+  const [year, month, day] = String(dateKey || "").split("-").map(Number);
+  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const end = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
+  if (!year || !month || !day || Number.isNaN(start.getTime())) return null;
+  return { begin: start.toISOString(), end: end.toISOString() };
+}
+
+async function onlineAccessToken() {
+  const { data } = await supabaseClient.auth.getSession();
+  return data?.session?.access_token || "";
+}
+
+async function refreshPaymentRecovery(dateKey = paymentRecoveryState.date || localDateKey()) {
+  const range = localDayIsoRange(dateKey);
+  if (!range) {
+    notify("Escolha uma data valida para conferir.");
+    return;
+  }
+  paymentRecoveryState = {
+    loading: true,
+    date: dateKey,
+    salesCount: 0,
+    processedCount: 0,
+    missing: [],
+    accountErrors: [],
+    error: "",
+  };
+  if (currentModal?.type === "paymentRecovery") renderApp();
+
+  try {
+    const accessToken = await onlineAccessToken();
+    if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
+    const params = new URLSearchParams(range);
+    const response = await fetch(`/api/mercadopago/recover-sales?${params}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "Nao foi possivel conferir os pagamentos.");
+    paymentRecoveryState = {
+      loading: false,
+      date: dateKey,
+      salesCount: Number(result.salesCount || 0),
+      processedCount: Number(result.processedCount || 0),
+      missing: Array.isArray(result.missing) ? result.missing : [],
+      accountErrors: Array.isArray(result.accountErrors) ? result.accountErrors : [],
+      error: "",
+    };
+  } catch (error) {
+    paymentRecoveryState = {
+      ...paymentRecoveryState,
+      loading: false,
+      error: error.message || "Falha ao conferir pagamentos.",
+    };
+  }
+  if (currentModal?.type === "paymentRecovery") renderApp();
+}
+
+async function openPaymentRecovery() {
+  if (session?.role !== "admin") {
+    notify("Somente o administrador pode conferir pagamentos nao registrados.");
+    return;
+  }
+  if (!isOnlineSession()) {
+    notify("Entre com a conta online do administrador para fazer a conferencia.");
+    return;
+  }
+  currentModal = { type: "paymentRecovery" };
+  renderApp();
+  await refreshPaymentRecovery(localDateKey());
+}
+
+async function recoverMissingPayment(orderId, accountKey) {
+  const candidate = paymentRecoveryState.missing.find(
+    (entry) => entry.orderId === orderId && entry.accountKey === accountKey,
+  );
+  if (!candidate) return;
+  if (
+    !confirm(
+      `Recuperar ${money(candidate.amount)} de ${dateTime(candidate.createdAt)}?\n\nO valor e a forma de pagamento voltarao para Vendas. Como a maquininha nao informa os produtos, esta recuperacao nao baixa estoque automaticamente.`,
+    )
+  ) {
+    return;
+  }
+
+  try {
+    const accessToken = await onlineAccessToken();
+    if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
+    const response = await fetch("/api/mercadopago/recover-sales", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ orderId, accountKey }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "Nao foi possivel recuperar a venda.");
+    await loadOnlineSalesData({ recent: true });
+    notify("Venda recuperada no historico. Confira os produtos e ajuste o estoque, se necessario.");
+    await refreshPaymentRecovery(paymentRecoveryState.date);
+  } catch (error) {
+    notify(`Falha ao recuperar: ${error.message}`);
   }
 }
 
@@ -3585,6 +3815,17 @@ function bindViewEvents() {
   document.querySelector("[data-cancel-point-order]")?.addEventListener("click", () => cancelMercadoPagoPendingOrder());
   document.querySelector("[data-export-sales]")?.addEventListener("click", exportSalesCsv);
   document.querySelector("[data-refresh-sales]")?.addEventListener("click", () => refreshSalesFromCloud());
+  document.querySelector("[data-open-payment-recovery]")?.addEventListener("click", openPaymentRecovery);
+  document.querySelector("#payment-recovery-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    void refreshPaymentRecovery(String(form.get("recoveryDate") || localDateKey()));
+  });
+  document.querySelectorAll("[data-recover-payment]").forEach((button) => {
+    button.addEventListener("click", () => {
+      void recoverMissingPayment(button.dataset.recoverPayment, button.dataset.accountKey || "primary");
+    });
+  });
   document.querySelector("[data-print-report]")?.addEventListener("click", () => printReport("complete"));
   document.querySelectorAll("[data-print-daily-sales-report]").forEach((button) => {
     button.addEventListener("click", downloadDailySalesReportPdf);
@@ -4883,7 +5124,8 @@ async function finalizeSale({
 
   cart = [];
   tableCheckout = null;
-  saveState();
+  const locallySaved = saveState();
+  if (locallySaved) clearSaleProviderPendingOrders(sale.providerReferences);
   attachSalePrintDetails(sale.id, printDetails);
   lastSaleForTicketsId = sale.id;
   currentModal = { type: "printTickets", id: sale.id };
@@ -5011,7 +5253,7 @@ async function updateKitchenOrder(orderId, status) {
       notify(`Erro ao atualizar cozinha online: ${error.message}`);
       return;
     }
-    await loadOnlineSalesData();
+    await loadOnlineKitchenData();
     logAudit("Pedido atualizado online", `Pedido ${orderId} marcado como ${status}.`);
     renderApp();
     return;
@@ -5102,7 +5344,7 @@ async function finalizeSaleOnline({
 
   if (itemsResult.error) {
     notify(`Venda criada, mas falhou ao salvar itens: ${itemsResult.error.message}`);
-    await loadOnlineSalesData();
+    await loadOnlineSalesData({ recent: true });
     return;
   }
 
@@ -5133,7 +5375,7 @@ async function finalizeSaleOnline({
   if (clearCart) cart = [];
   await loadOnlineStockData();
   await loadOnlineClientsData();
-  await loadOnlineSalesData();
+  await loadOnlineSalesData({ recent: true });
   notify("Venda salva no Supabase.");
   if (renderAfter) renderApp();
   return saleId;
@@ -5211,7 +5453,7 @@ async function removeKitchenOrder(orderId) {
       notify(`Erro ao remover pedido online: ${error.message}`);
       return;
     }
-    await loadOnlineSalesData();
+    await loadOnlineKitchenData();
     logAudit("Pedido removido online", order.items.map((item) => item.name).join(", "));
     notify("Pedido removido da cozinha.");
     renderApp();
@@ -6107,6 +6349,7 @@ function combineItems(baseItems, extraItems) {
 
 function renderSales() {
   const sales = state.sales.slice().reverse();
+  const displayedSales = sales.slice(0, 300);
   const openCash = getOpenCash();
   const cashDaySales = salesForOpenCashDay();
   const cashDayReceivedSales = cashDaySales.filter(isReceivedSale);
@@ -6138,6 +6381,7 @@ function renderSales() {
       </div>
       <div class="toolbar">
         <button class="btn secondary" type="button" data-refresh-sales ${isOnlineSession() ? "" : "disabled"}>${icon("download")} Atualizar vendas</button>
+        ${session?.role === "admin" ? `<button class="btn secondary" type="button" data-open-payment-recovery ${isOnlineSession() ? "" : "disabled"}>Conferir pagamentos</button>` : ""}
         <button class="btn secondary" type="button" data-print-sales-period-report="daily">${icon("print")} Diario</button>
         <button class="btn secondary" type="button" data-print-sales-period-report="weekly">${icon("print")} Semanal</button>
         <button class="btn secondary" type="button" data-print-sales-period-report="monthly">${icon("print")} Mensal</button>
@@ -6254,7 +6498,8 @@ function renderSales() {
           <button class="btn compact danger" type="button" data-zero-today-sales ${todayReceivedSales.length ? "" : "disabled"}>Zerar vendas do dia</button>
         </div>
       </div>
-      ${salesTable(sales)}
+      ${sales.length > displayedSales.length ? `<p class="table-limit-note">Mostrando as 300 vendas mais recentes. Os relatorios continuam usando o historico carregado.</p>` : ""}
+      ${salesTable(displayedSales)}
     </section>
   `;
 }
@@ -7040,6 +7285,12 @@ async function downloadSalesPeriodReportPdf(period = "daily") {
   if (!jsPDF) {
     notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
     return;
+  }
+
+  if (isOnlineSession() && ["monthly", "semester", "annual"].includes(period)) {
+    notify("Carregando o historico completo para o relatorio...");
+    const loaded = await loadOnlineSalesData();
+    if (!loaded) return;
   }
 
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
@@ -8945,6 +9196,7 @@ function renderModal() {
     stockExpiry: renderStockExpiryModal,
     priceSimulator: renderPriceSimulatorModal,
     reconciliationReview: renderReconciliationReviewModal,
+    paymentRecovery: renderPaymentRecoveryModal,
     mfaSetup: renderMfaSetupModal,
     inventoryIntelligence: renderInventoryIntelligenceModal,
   };
@@ -8956,12 +9208,82 @@ function renderModal() {
       ? "modal inventory-intelligence-modal"
       : currentModal.type === "priceSimulator"
         ? "modal price-simulator-modal"
+      : currentModal.type === "paymentRecovery"
+        ? "modal payment-recovery-modal"
       : "modal";
   return `
     <div class="modal-backdrop">
       <section class="${modalClass}">
         ${renderers[currentModal.type]()}
       </section>
+    </div>
+  `;
+}
+
+function renderPaymentRecoveryModal() {
+  const recovery = paymentRecoveryState;
+  const missingRows = recovery.missing
+    .map(
+      (candidate) => `
+        <article class="payment-recovery-row">
+          <div>
+            <strong>${money(candidate.amount)} em ${escapeHtml(candidate.method || "Cartao")}</strong>
+            <span>${dateTime(candidate.createdAt)} | ${candidate.accountKey === "secondary" ? "Conta Mercado Pago 2" : "Conta Mercado Pago 1"}</span>
+            <small>${escapeHtml(candidate.description || "Venda Mercado Pago")} | Ordem ${escapeHtml(candidate.orderId)}</small>
+          </div>
+          <button
+            class="btn primary compact"
+            type="button"
+            data-recover-payment="${escapeHtml(candidate.orderId)}"
+            data-account-key="${candidate.accountKey === "secondary" ? "secondary" : "primary"}"
+          >Recuperar venda</button>
+        </article>`,
+    )
+    .join("");
+  const accountErrors = recovery.accountErrors
+    .map(
+      (entry) => `<div class="notice warning"><strong>${entry.accountKey === "secondary" ? "Conta 2" : "Conta 1"}:</strong> ${escapeHtml(entry.message)}</div>`,
+    )
+    .join("");
+
+  return `
+    <div class="modal-head">
+      <div>
+        <h2>Conferir pagamentos</h2>
+        <p>Compara as cobrancas aprovadas nas Point com as vendas salvas no Supabase.</p>
+      </div>
+      <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+    </div>
+    <div class="modal-body">
+      <form id="payment-recovery-form" class="payment-recovery-filter">
+        <label class="field">
+          <span>Dia da conferencia</span>
+          <input name="recoveryDate" type="date" value="${escapeHtml(recovery.date || localDateKey())}" max="${localDateKey()}" required />
+        </label>
+        <button class="btn secondary" type="submit" ${recovery.loading ? "disabled" : ""}>${recovery.loading ? "Conferindo..." : "Conferir novamente"}</button>
+      </form>
+      <div class="notice warning">
+        <strong>Importante:</strong> primeiro sincronize as vendas pendentes nos computadores usados no dia. A recuperacao restaura valor, data e pagamento, mas nao baixa estoque porque a maquininha nao informa os produtos vendidos.
+      </div>
+      ${
+        recovery.loading
+          ? '<div class="empty">Consultando as contas do Mercado Pago e o historico online...</div>'
+          : recovery.error
+            ? `<div class="notice danger">${escapeHtml(recovery.error)}</div>`
+            : `
+              <div class="payment-recovery-summary">
+                <div><span>Vendas no app</span><strong>${recovery.salesCount}</strong></div>
+                <div><span>Pagamentos Point</span><strong>${recovery.processedCount}</strong></div>
+                <div><span>Possiveis ausentes</span><strong>${recovery.missing.length}</strong></div>
+              </div>
+              ${accountErrors}
+              <div class="payment-recovery-list">
+                ${missingRows || '<div class="empty">Nenhuma cobranca Point ausente foi encontrada neste dia.</div>'}
+              </div>`
+      }
+    </div>
+    <div class="modal-actions">
+      <button class="btn secondary" type="button" data-close-modal>Fechar</button>
     </div>
   `;
 }
@@ -11425,7 +11747,7 @@ async function saveOrder(event) {
       return;
     }
     currentModal = null;
-    await loadOnlineSalesData();
+    await loadOnlineKitchenData();
     logAudit("Pedido editado online", "Itens/status da cozinha atualizados.");
     notify("Pedido atualizado no Supabase.");
     renderApp();
@@ -13030,7 +13352,7 @@ async function recordManualCharge({ description, amount, payment, installments, 
     cost: 0,
   });
 
-  await loadOnlineSalesData();
+  await loadOnlineSalesData({ recent: true });
   attachSalePrintDetails(sale.id, { terminalLabel });
   storeDailySalesTotal(localDateKey(sale.date), "automatico");
   saveState();
@@ -13106,6 +13428,7 @@ async function saveManualCharge(event) {
       providerReferences: pointPayment.paymentReference ? [pointPayment.paymentReference] : [],
     });
     if (!result.ok) return;
+    clearSaleProviderPendingOrders(pointPayment.paymentReference ? [pointPayment.paymentReference] : []);
 
     currentModal = null;
     logAudit(
@@ -13217,7 +13540,7 @@ async function saveExternalPayment(event) {
 
       if (itemsResult.error) {
         notify(`Pagamento registrado, mas falhou ao salvar produtos: ${itemsResult.error.message}`);
-        await loadOnlineSalesData();
+        await loadOnlineSalesData({ recent: true });
         await loadOnlineStockData();
         renderApp();
         return;
@@ -13228,7 +13551,7 @@ async function saveExternalPayment(event) {
       const stockResult = await applyCartStockOnline(saleItems);
       if (!stockResult.ok) {
         notify(`Pagamento registrado, mas falhou ao baixar estoque: ${stockResult.message}`);
-        await loadOnlineSalesData();
+        await loadOnlineSalesData({ recent: true });
         await loadOnlineStockData();
         renderApp();
         return;
@@ -13237,7 +13560,7 @@ async function saveExternalPayment(event) {
 
     currentModal = null;
     await loadOnlineStockData();
-    await loadOnlineSalesData();
+    await loadOnlineSalesData({ recent: true });
     attachSalePrintDetails(saleResult.data.id, { terminalLabel });
     storeDailySalesTotal(localDateKey(date), "automatico");
     saveState();

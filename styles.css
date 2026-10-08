@@ -4060,6 +4060,89 @@ body[data-theme="dark"] #manual-charge-form .modal-actions {
   }
 }
 
+.payment-recovery-modal {
+  width: min(860px, calc(100vw - 32px));
+}
+
+.payment-recovery-filter {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.payment-recovery-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.payment-recovery-summary > div {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.payment-recovery-summary span,
+.payment-recovery-row span,
+.payment-recovery-row small,
+.table-limit-note {
+  color: var(--muted);
+}
+
+.payment-recovery-summary strong {
+  font-size: 1.3rem;
+}
+
+.payment-recovery-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.payment-recovery-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
+.payment-recovery-row > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.payment-recovery-row small {
+  overflow-wrap: anywhere;
+}
+
+.table-limit-note {
+  margin: 0 0 10px;
+  font-size: 0.86rem;
+}
+
+@media (max-width: 640px) {
+  .payment-recovery-filter,
+  .payment-recovery-summary,
+  .payment-recovery-row {
+    grid-template-columns: 1fr;
+  }
+
+  .payment-recovery-row .btn {
+    width: 100%;
+  }
+}
+
 /* Paleta opcional inspirada na identidade azul e vermelha da nova logo. */
 body[data-palette="brand"] {
   --ink: #0b1528;
