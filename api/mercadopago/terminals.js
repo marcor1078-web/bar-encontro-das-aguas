@@ -1,8 +1,22 @@
 const { json, methodAllowed, mercadoPagoEnv, mercadoPagoFetch } = require("./_helpers");
 
+function requestedAccountKey(req) {
+  const directValue = req.query?.accountKey;
+  if (directValue === "primary" || directValue === "secondary") return directValue;
+  try {
+    const value = new URL(req.url || "/", "https://app.local").searchParams.get("accountKey");
+    return value === "primary" || value === "secondary" ? value : "";
+  } catch {
+    return "";
+  }
+}
+
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["GET"])) return;
-  const accounts = ["primary", "secondary"].filter((accountKey) => mercadoPagoEnv(accountKey).accessToken);
+  const requestedAccount = requestedAccountKey(req);
+  const accounts = (requestedAccount ? [requestedAccount] : ["primary", "secondary"]).filter(
+    (accountKey) => mercadoPagoEnv(accountKey).accessToken,
+  );
   if (!accounts.length) {
     json(res, 501, { error: "mercado_pago_token_not_configured", message: "Configure o Access Token do Mercado Pago." });
     return;

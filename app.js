@@ -11,6 +11,9 @@ const MP_STALE_STATUS_TIMEOUT_MS = 6 * 1000;
 const MP_STALE_ORDER_AGE_MS = 3 * 60 * 1000;
 const MP_PAYMENT_DEADLINE_MS = 2 * 60 * 1000;
 const MP_POLL_INTERVAL_MS = 2000;
+const MP_KEEPALIVE_INTERVAL_MS = 60 * 1000;
+const MP_KEEPALIVE_IDLE_MS = 45 * 1000;
+const MP_KEEPALIVE_TIMEOUT_MS = 8 * 1000;
 const APP_DISPLAY_NAME = "DISTRIBUIDORA ENCONTRO DAS ÁGUAS";
 const BRAND_LOGO_URL = "/icons/distribuidora-encontro-das-aguas.jpeg";
 const BRAND_ICON_URL = "/icons/icon-192.png";
@@ -666,6 +669,9 @@ let realtimeRefreshRunning = false;
 let realtimeSubscriptionStatus = "disconnected";
 let realtimeLastUpdateAt = null;
 const realtimePendingAreas = new Set();
+let mercadoPagoKeepAliveInProgress = false;
+let mercadoPagoKeepAliveLastAt = 0;
+let lastUserActivityAt = Date.now();
 
 const app = document.querySelector("#app");
 const syncChannel = "BroadcastChannel" in window ? new BroadcastChannel("barcontrol-sync") : null;
@@ -1766,6 +1772,48 @@ async function loadMercadoPagoPointStatus(force = false) {
   }
 
   return mercadoPagoPointStatus;
+}
+
+async function warmMercadoPagoPaymentChannel({ force = false } = {}) {
+  const now = Date.now();
+  const selectedTerminal = getSelectedPaymentTerminal();
+  if (
+    !session ||
+    !mercadoPagoPointStatus.checked ||
+    !mercadoPagoPointStatus.enabled ||
+    selectedTerminal?.provider !== "mercado_pago" ||
+    navigator.onLine === false ||
+    !connectionState.cloudReachable ||
+    mercadoPagoKeepAliveInProgress ||
+    getMercadoPagoPendingOrders().length ||
+    (!force && now - lastUserActivityAt < MP_KEEPALIVE_IDLE_MS) ||
+    (!force && now - mercadoPagoKeepAliveLastAt < MP_KEEPALIVE_INTERVAL_MS - 5000)
+  ) {
+    return false;
+  }
+
+  mercadoPagoKeepAliveInProgress = true;
+  try {
+    const accountKey = selectedTerminal.accountKey || "primary";
+    const { response, data } = await fetchJsonWithTimeout(
+      `/api/mercadopago/terminals?keepalive=${now}&accountKey=${encodeURIComponent(accountKey)}`,
+      { cache: "no-store" },
+      MP_KEEPALIVE_TIMEOUT_MS,
+    );
+    if (!response.ok) return false;
+
+    const terminals = data?.data?.terminals || [];
+    if (terminals.length) {
+      mercadoPagoPointStatus.terminals = terminals;
+      state.cachedPaymentTerminals = terminals;
+    }
+    mercadoPagoKeepAliveLastAt = Date.now();
+    return true;
+  } catch (error) {
+    return false;
+  } finally {
+    mercadoPagoKeepAliveInProgress = false;
+  }
 }
 
 function saveMercadoPagoPendingOrder(order, context = {}) {
@@ -15043,7 +15091,21 @@ setInterval(async () => {
   } else if (navigator.onLine !== false && !connectionState.cloudReachable) {
     await checkCloudConnection(3000);
   }
+  await warmMercadoPagoPaymentChannel();
 }, 60 * 1000);
+
+function registerUserActivity() {
+  lastUserActivityAt = Date.now();
+}
+
+document.addEventListener("pointerdown", registerUserActivity, { passive: true });
+document.addEventListener("keydown", registerUserActivity);
+document.addEventListener("touchstart", registerUserActivity, { passive: true });
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  lastUserActivityAt = 0;
+  void warmMercadoPagoPaymentChannel({ force: true });
+});
 
 syncChannel?.addEventListener("message", (event) => {
   if (event.data?.type !== "state-updated") return;
