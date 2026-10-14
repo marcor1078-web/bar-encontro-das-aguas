@@ -299,6 +299,70 @@
   justify-self: end;
 }
 
+.product-package-editor {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #2563eb;
+  border-radius: 6px;
+  padding: 14px;
+  background: var(--panel-2);
+}
+
+.product-package-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.product-package-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.product-package-head strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.product-package-head small,
+.product-package-editor > .hint {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.product-package-unit-cost {
+  color: #1d4ed8 !important;
+  white-space: nowrap;
+}
+
+.product-package-fields {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(150px, 1fr) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.product-package-action {
+  padding-bottom: 1px;
+}
+
+.product-package-action .btn {
+  min-height: 42px;
+}
+
+.stock-package-cost {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+[data-theme="dark"] .product-package-unit-cost {
+  color: #93c5fd !important;
+}
+
 .product-name-input-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -446,6 +510,18 @@ body[data-theme="dark"] .price-simulator-section {
   }
 
   .product-pricing-simulator > .btn {
+    width: 100%;
+  }
+
+  .product-package-head {
+    flex-direction: column;
+  }
+
+  .product-package-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .product-package-action .btn {
     width: 100%;
   }
 }

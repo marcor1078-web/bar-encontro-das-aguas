@@ -730,6 +730,9 @@ function migrateState(nextState) {
       productCode: "",
       barcodeCodes: [],
       imageUrl: "",
+      packageName: "",
+      unitsPerPackage: 0,
+      packageCost: 0,
       station: "Bar",
       recipe: [],
       criticalStock: Math.max(1, Math.floor(Number(product.minStock || base.minStock || 1) / 2)),
@@ -2695,6 +2698,9 @@ function mapProductFromDb(row, recipes = []) {
     price: Number(row.price || 0),
     cost: Number(row.cost || 0),
     stock: Number(row.stock || 0),
+    packageName: row.package_name || "",
+    unitsPerPackage: Number(row.units_per_package || 0),
+    packageCost: Number(row.package_cost || 0),
     minStock: Number(row.min_stock || 0),
     criticalStock: Number(row.critical_stock || 0),
     expiresAt: row.expires_at || "",
@@ -2838,9 +2844,35 @@ function productAvailableStock(product) {
   return Math.max(0, Math.min(...availableByIngredient));
 }
 
+function productPackageConfig(product) {
+  const unitsPerPackage = Math.max(0, Math.trunc(Number(product?.unitsPerPackage || 0)));
+  if (!product || product.recipe?.length || unitsPerPackage <= 0) return null;
+  return {
+    name: String(product.packageName || "Fardo").trim() || "Fardo",
+    unitsPerPackage,
+    cost: Math.max(0, Number(product.packageCost || 0)),
+  };
+}
+
+function productPackageBalance(product, stock = productAvailableStock(product)) {
+  const config = productPackageConfig(product);
+  if (!config) return null;
+  const normalizedStock = Math.max(0, Number(stock || 0));
+  const fullPackages = Math.floor((normalizedStock + 0.000001) / config.unitsPerPackage);
+  const looseUnits = Math.max(0, Number((normalizedStock - fullPackages * config.unitsPerPackage).toFixed(3)));
+  return { ...config, fullPackages, looseUnits, stock: normalizedStock };
+}
+
+function productPackageBalanceText(product, stock = productAvailableStock(product)) {
+  const balance = productPackageBalance(product, stock);
+  if (!balance) return "";
+  return `${qty(balance.fullPackages)} x ${balance.name}${balance.looseUnits > 0 ? ` + ${qty(balance.looseUnits)} un.` : ""}`;
+}
+
 function productStockText(product) {
   const available = productAvailableStock(product);
-  return `${qty(available)} un.${product?.recipe?.length ? " por ficha" : ""}`;
+  const packageText = productPackageBalanceText(product, available);
+  return `${qty(available)} un.${product?.recipe?.length ? " por ficha" : packageText ? ` (${packageText})` : ""}`;
 }
 
 function productExpiryStatus(product) {
@@ -5211,21 +5243,53 @@ async function finalizeSale({
   return true;
 }
 
-function canFulfillCart(items) {
+function cartStockRequirements(items) {
+  const products = new Map();
+  const ingredients = new Map();
+
   for (const item of items) {
     const product = state.products.find((entry) => entry.id === item.productId);
     if (!product) return { ok: false, message: `Produto nao encontrado: ${item.name}.` };
+    const itemQty = Number(item.qty || 0);
 
-    if (!product.recipe?.length && product.stock < item.qty) {
-      return { ok: false, message: `Estoque insuficiente para ${item.name}.` };
+    if (product.recipe?.length) {
+      for (const recipeItem of product.recipe) {
+        const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
+        if (!ingredient) {
+          return { ok: false, message: `Insumo nao encontrado para ${item.name}.` };
+        }
+        const current = ingredients.get(ingredient.id) || { ingredient, qty: 0, products: new Set() };
+        current.qty += Number(recipeItem.qty || 0) * itemQty;
+        current.products.add(item.name || product.name);
+        ingredients.set(ingredient.id, current);
+      }
+      continue;
     }
 
-    for (const recipeItem of product.recipe || []) {
-      const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
-      const required = recipeItem.qty * item.qty;
-      if (!ingredient || ingredient.stock < required) {
-        return { ok: false, message: `Insumo insuficiente para ${item.name}: ${ingredient?.name || "item"}.` };
-      }
+    const current = products.get(product.id) || { product, qty: 0 };
+    current.qty += itemQty;
+    products.set(product.id, current);
+  }
+
+  return { ok: true, products, ingredients };
+}
+
+function canFulfillCart(items) {
+  const requirements = cartStockRequirements(items);
+  if (!requirements.ok) return requirements;
+
+  for (const { product, qty: required } of requirements.products.values()) {
+    if (Number(product.stock || 0) < required) {
+      return { ok: false, message: `Estoque insuficiente para ${product.name}.` };
+    }
+  }
+
+  for (const { ingredient, qty: required, products } of requirements.ingredients.values()) {
+    if (Number(ingredient.stock || 0) < required) {
+      return {
+        ok: false,
+        message: `Insumo insuficiente (${ingredient.name}) para: ${[...products].join(", ")}.`,
+      };
     }
   }
 
@@ -5233,41 +5297,31 @@ function canFulfillCart(items) {
 }
 
 function applyCartStock(items) {
-  for (const item of items) {
-    const product = state.products.find((entry) => entry.id === item.productId);
-    if (!product) continue;
+  const requirements = cartStockRequirements(items);
+  if (!requirements.ok) return;
 
-    if (product.recipe?.length) {
-      state.ingredients = state.ingredients.map((ingredient) => {
-        const recipeItem = product.recipe.find((entry) => entry.ingredientId === ingredient.id);
-        if (!recipeItem) return ingredient;
-        return { ...ingredient, stock: Math.max(0, ingredient.stock - recipeItem.qty * item.qty) };
-      });
-    } else {
-      state.products = state.products.map((entry) =>
-        entry.id === product.id ? { ...entry, stock: Math.max(0, entry.stock - item.qty) } : entry,
-      );
-    }
-  }
+  state.products = state.products.map((product) => {
+    const required = requirements.products.get(product.id)?.qty;
+    return required ? { ...product, stock: Math.max(0, Number(product.stock || 0) - required) } : product;
+  });
+  state.ingredients = state.ingredients.map((ingredient) => {
+    const required = requirements.ingredients.get(ingredient.id)?.qty;
+    return required ? { ...ingredient, stock: Math.max(0, Number(ingredient.stock || 0) - required) } : ingredient;
+  });
 }
 
 function restoreSaleStock(items) {
-  for (const item of items) {
-    const product = state.products.find((entry) => entry.id === item.productId);
-    if (!product) continue;
+  const requirements = cartStockRequirements(items);
+  if (!requirements.ok) return;
 
-    if (product.recipe?.length) {
-      state.ingredients = state.ingredients.map((ingredient) => {
-        const recipeItem = product.recipe.find((entry) => entry.ingredientId === ingredient.id);
-        if (!recipeItem) return ingredient;
-        return { ...ingredient, stock: ingredient.stock + recipeItem.qty * item.qty };
-      });
-    } else {
-      state.products = state.products.map((entry) =>
-        entry.id === product.id ? { ...entry, stock: entry.stock + item.qty } : entry,
-      );
-    }
-  }
+  state.products = state.products.map((product) => {
+    const required = requirements.products.get(product.id)?.qty;
+    return required ? { ...product, stock: Number(product.stock || 0) + required } : product;
+  });
+  state.ingredients = state.ingredients.map((ingredient) => {
+    const required = requirements.ingredients.get(ingredient.id)?.qty;
+    return required ? { ...ingredient, stock: Number(ingredient.stock || 0) + required } : ingredient;
+  });
 }
 
 function createKitchenOrders(sale) {
@@ -5446,22 +5500,38 @@ async function releaseTableAfterCheckout(tableId) {
 }
 
 async function applyCartStockOnline(items) {
-  for (const item of items) {
-    const product = state.products.find((entry) => entry.id === item.productId);
-    if (!product) return { ok: false, message: `Produto nao encontrado: ${item.name}.` };
+  const requirements = cartStockRequirements(items);
+  if (!requirements.ok) return requirements;
 
-    if (product.recipe?.length) {
-      for (const recipeItem of product.recipe) {
-        const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
-        if (!ingredient) return { ok: false, message: `Insumo nao encontrado para ${item.name}.` };
-        const nextStock = Math.max(0, Number(ingredient.stock || 0) - recipeItem.qty * item.qty);
-        const result = await supabaseClient.from("ingredients").update({ stock: nextStock }).eq("id", ingredient.id);
-        if (result.error) return { ok: false, message: `Erro ao baixar insumo: ${result.error.message}` };
-      }
-    } else {
-      const nextStock = Math.max(0, Number(product.stock || 0) - item.qty);
-      const result = await supabaseClient.from("products").update({ stock: nextStock }).eq("id", product.id);
-      if (result.error) return { ok: false, message: `Erro ao baixar estoque: ${result.error.message}` };
+  for (const { ingredient, qty: required } of requirements.ingredients.values()) {
+    const previousStock = Number(ingredient.stock || 0);
+    const nextStock = Math.max(0, previousStock - required);
+    const result = await supabaseClient
+      .from("ingredients")
+      .update({ stock: nextStock })
+      .eq("id", ingredient.id)
+      .eq("stock", previousStock)
+      .select("id")
+      .maybeSingle();
+    if (result.error) return { ok: false, message: `Erro ao baixar insumo: ${result.error.message}` };
+    if (!result.data) {
+      return { ok: false, message: `O saldo de ${ingredient.name} mudou em outro computador. Atualize e tente novamente.` };
+    }
+  }
+
+  for (const { product, qty: required } of requirements.products.values()) {
+    const previousStock = Number(product.stock || 0);
+    const nextStock = Math.max(0, previousStock - required);
+    const result = await supabaseClient
+      .from("products")
+      .update({ stock: nextStock })
+      .eq("id", product.id)
+      .eq("stock", previousStock)
+      .select("id")
+      .maybeSingle();
+    if (result.error) return { ok: false, message: `Erro ao baixar estoque: ${result.error.message}` };
+    if (!result.data) {
+      return { ok: false, message: `O saldo de ${product.name} mudou em outro computador. Atualize e tente novamente.` };
     }
   }
 
@@ -7586,7 +7656,10 @@ function renderStock() {
                     </td>
                     <td data-label="Categoria">${product.category}</td>
                     <td data-label="Preco">${money(product.price)}</td>
-                    <td data-label="Custo">${money(product.cost)}</td>
+                    <td data-label="Custo">
+                      ${money(product.cost)}
+                      ${productPackageConfig(product) ? `<small class="stock-package-cost">${escapeHtml(productPackageConfig(product).name)}: ${money(productPackageConfig(product).cost)}</small>` : ""}
+                    </td>
                     <td data-label="Praca">${product.station || "Bar"}</td>
                     <td data-label="Minimo">${product.minStock}</td>
                     <td data-label="Critico">${product.criticalStock}</td>
@@ -9737,6 +9810,57 @@ function bindProductFormPricingSimulator() {
   updateProductFormPricingSimulator();
 }
 
+function productPackageFormValues(formElement) {
+  const name = String(formElement?.elements.namedItem("packageName")?.value || "Fardo").trim() || "Fardo";
+  const unitsPerPackage = Math.max(0, Math.trunc(Number(formElement?.elements.namedItem("unitsPerPackage")?.value || 0)));
+  const packageCost = Math.max(0, Number(formElement?.elements.namedItem("packageCost")?.value || 0));
+  const stock = Math.max(0, Number(formElement?.elements.namedItem("stock")?.value || 0));
+  const unitCost = unitsPerPackage > 0 && packageCost > 0 ? packageCost / unitsPerPackage : 0;
+  return { name, unitsPerPackage, packageCost, stock, unitCost };
+}
+
+function updateProductPackageEditor() {
+  const formElement = document.querySelector("#product-form");
+  if (!formElement) return;
+  const values = productPackageFormValues(formElement);
+  const output = formElement.querySelector("[data-product-package-unit-cost]");
+  const preview = formElement.querySelector("[data-product-package-stock-preview]");
+  const applyButton = formElement.querySelector("[data-apply-package-unit-cost]");
+  const valid = values.unitsPerPackage > 0 && values.packageCost > 0;
+
+  if (output) output.textContent = valid ? `${money(values.unitCost)} por unidade` : "-- por unidade";
+  if (applyButton) applyButton.disabled = !valid;
+  if (preview) {
+    if (!values.unitsPerPackage) {
+      preview.textContent = "Preencha a quantidade e o valor do fardo para calcular o custo unitario.";
+    } else {
+      const fullPackages = Math.floor((values.stock + 0.000001) / values.unitsPerPackage);
+      const looseUnits = Math.max(0, Number((values.stock - fullPackages * values.unitsPerPackage).toFixed(3)));
+      preview.textContent = `Saldo informado: ${qty(values.stock)} un. = ${qty(fullPackages)} x ${values.name}${looseUnits > 0 ? ` + ${qty(looseUnits)} un.` : ""}.`;
+    }
+  }
+}
+
+function bindProductPackageEditor() {
+  const formElement = document.querySelector("#product-form");
+  if (!formElement) return;
+  ["packageName", "unitsPerPackage", "packageCost", "stock"].forEach((name) => {
+    formElement.elements.namedItem(name)?.addEventListener("input", updateProductPackageEditor);
+  });
+  formElement.querySelector("[data-apply-package-unit-cost]")?.addEventListener("click", () => {
+    const values = productPackageFormValues(formElement);
+    if (!values.unitCost) {
+      notify("Informe a quantidade de unidades e o valor de compra da embalagem.");
+      return;
+    }
+    const costInput = formElement.elements.namedItem("cost");
+    costInput.value = values.unitCost.toFixed(2);
+    updateProductFormPricingSimulator();
+    notify(`Custo de ${money(values.unitCost)} por unidade aplicado.`);
+  });
+  updateProductPackageEditor();
+}
+
 function localProductNameSuggestion(value) {
   const connectors = new Set(["a", "as", "com", "da", "das", "de", "do", "dos", "e", "em", "para", "sem"]);
   return String(value || "")
@@ -9957,6 +10081,37 @@ function renderProductModal() {
             <span>Custo</span>
             <input name="cost" type="number" min="0" step="0.01" required value="${product?.cost || ""}" />
           </label>
+          <section class="product-package-editor full">
+            <div class="product-package-head">
+              <div>
+                <strong>Controle por fardo ou caixa</strong>
+                <small>Opcional. O saldo continua em unidades e o app converte automaticamente.</small>
+              </div>
+              <strong class="product-package-unit-cost" data-product-package-unit-cost>-- por unidade</strong>
+            </div>
+            <div class="product-package-fields">
+              <label class="field">
+                <span>Nome da embalagem</span>
+                <input name="packageName" value="${escapeHtml(product?.packageName || "Fardo")}" placeholder="Fardo, caixa, pacote" />
+              </label>
+              <label class="field">
+                <span>Unidades por embalagem</span>
+                <input name="unitsPerPackage" type="number" min="0" step="1" value="${product?.unitsPerPackage || ""}" placeholder="Ex.: 12" />
+              </label>
+              <label class="field">
+                <span>Valor de compra da embalagem</span>
+                <input name="packageCost" type="number" min="0" step="0.01" value="${product?.packageCost || ""}" placeholder="Ex.: 48,00" />
+              </label>
+              <div class="product-package-action">
+                <button class="btn secondary" type="button" data-apply-package-unit-cost>Aplicar custo por unidade</button>
+              </div>
+            </div>
+            <p class="hint" data-product-package-stock-preview>${
+              productPackageConfig(product)
+                ? `Saldo atual: ${productStockText(product)}.`
+                : "Preencha a quantidade e o valor do fardo para calcular o custo unitario."
+            }</p>
+          </section>
           <section class="product-pricing-simulator full">
             <div class="product-pricing-head">
               <div>
@@ -10008,6 +10163,7 @@ function renderProductModal() {
 
 function renderStockModal() {
   const product = state.products.find((item) => item.id === currentModal.id);
+  const packageConfig = productPackageConfig(product);
   return `
     <form id="stock-form">
       <div class="modal-head">
@@ -10024,12 +10180,23 @@ function renderStockModal() {
               <option value="add">Adicionar</option>
               <option value="remove">Remover</option>
               <option value="set">Definir saldo</option>
+              ${
+                packageConfig
+                  ? `<option value="add-package">Adicionar ${escapeHtml(packageConfig.name)}(s)</option>
+                     <option value="remove-package">Remover ${escapeHtml(packageConfig.name)}(s)</option>`
+                  : ""
+              }
             </select>
           </label>
           <label class="field">
             <span>Quantidade</span>
             <input name="qty" type="number" min="0" step="1" required />
           </label>
+          ${
+            packageConfig
+              ? `<p class="hint full">Cada ${escapeHtml(packageConfig.name)} adiciona ou retira ${qty(packageConfig.unitsPerPackage)} unidades. Saldo atual: ${escapeHtml(productPackageBalanceText(product))}.</p>`
+              : ""
+          }
           <label class="field full">
             <span>Motivo</span>
             <input name="reason" value="Reposicao manual" />
@@ -11085,6 +11252,7 @@ function bindModalForms() {
   bindProductImagePreview();
   bindProductImageSearch();
   bindProductFormPricingSimulator();
+  bindProductPackageEditor();
   bindProductCatalogAssistant();
 }
 
@@ -11377,6 +11545,9 @@ async function saveProduct(event) {
     price: Number(form.get("price")),
     cost: Number(form.get("cost")),
     stock: Number(form.get("stock")),
+    packageName: String(form.get("packageName") || "").trim(),
+    unitsPerPackage: Math.max(0, Math.trunc(Number(form.get("unitsPerPackage") || 0))),
+    packageCost: Math.max(0, Number(form.get("packageCost") || 0)),
     minStock: Number(form.get("minStock")),
     criticalStock: Number(form.get("criticalStock")),
     expiresAt: form.get("expiresAt") || "",
@@ -11386,6 +11557,21 @@ async function saveProduct(event) {
     active: form.get("active") === "true",
     imageUrl: removeImage ? "" : internetImageUrl || currentProduct?.imageUrl || "",
   };
+
+  if ((payload.unitsPerPackage > 0 && payload.packageCost <= 0) || (payload.packageCost > 0 && payload.unitsPerPackage <= 0)) {
+    notify("Para controlar por fardo, informe a quantidade por embalagem e o valor de compra.");
+    return;
+  }
+  if (payload.recipe.length && payload.unitsPerPackage > 0) {
+    notify("Use controle por fardo somente em produtos baixados por unidade. Produtos com ficha tecnica baixam os insumos.");
+    return;
+  }
+  if (!payload.unitsPerPackage) {
+    payload.packageName = "";
+    payload.packageCost = 0;
+  } else if (!payload.packageName) {
+    payload.packageName = "Fardo";
+  }
 
   if (isOnlineSession()) {
     await saveProductOnline(payload, imageFile?.size ? imageFile : null, removeImage, internetImageUrl);
@@ -11501,6 +11687,9 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     price: payload.price,
     cost: payload.cost,
     stock: payload.stock,
+    package_name: payload.packageName || null,
+    units_per_package: payload.unitsPerPackage,
+    package_cost: payload.packageCost,
     min_stock: payload.minStock,
     critical_stock: payload.criticalStock,
     expires_at: payload.expiresAt || null,
@@ -11514,7 +11703,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
 
   const fallbackPayload = { ...dbPayload };
   const removedOptionalColumns = [];
-  for (const column of ["product_code", "barcode_codes", "expires_at"]) {
+  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost"]) {
     if (!result.error || !String(result.error.message || "").includes(column)) continue;
     delete fallbackPayload[column];
     removedOptionalColumns.push(column);
@@ -11524,11 +11713,12 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
   }
 
   if (!result.error && removedOptionalColumns.length) {
-    const labels = removedOptionalColumns.map((column) => {
+    const labels = [...new Set(removedOptionalColumns.map((column) => {
       if (column === "product_code") return "codigo";
       if (column === "barcode_codes") return "codigos de barras";
+      if (["package_name", "units_per_package", "package_cost"].includes(column)) return "controle por fardo";
       return "validade";
-    });
+    }))];
     notify(`Produto salvo. Para gravar ${labels.join(" e ")} online, rode a migracao no Supabase.`);
   }
 
@@ -11828,20 +12018,41 @@ async function saveStockAdjustment(event) {
   const adjustmentQty = Number(form.get("qty"));
   const product = state.products.find((entry) => entry.id === currentModal.id);
   if (!product) return;
+  const packageConfig = productPackageConfig(product);
+  const packageMode = mode === "add-package" || mode === "remove-package";
   if (!Number.isFinite(adjustmentQty) || adjustmentQty < 0 || (mode !== "set" && adjustmentQty <= 0)) {
     notify("Informe uma quantidade maior que zero para ajustar o estoque.");
     return;
   }
+  if (packageMode && (!packageConfig || !Number.isInteger(adjustmentQty))) {
+    notify("Informe uma quantidade inteira de fardos ou caixas.");
+    return;
+  }
+  const adjustmentUnits = packageMode ? adjustmentQty * packageConfig.unitsPerPackage : adjustmentQty;
   const previousStock = Number(product.stock || 0);
+  if (packageMode && mode === "remove-package" && adjustmentUnits > previousStock) {
+    notify(`Nao ha ${qty(adjustmentQty)} ${packageConfig.name}(s) completos no saldo atual.`);
+    return;
+  }
   const nextStock =
-    mode === "add"
-      ? previousStock + adjustmentQty
-      : mode === "remove"
-        ? Math.max(0, previousStock - adjustmentQty)
+    mode === "add" || mode === "add-package"
+      ? previousStock + adjustmentUnits
+      : mode === "remove" || mode === "remove-package"
+        ? Math.max(0, previousStock - adjustmentUnits)
         : adjustmentQty;
   const difference = nextStock - previousStock;
   const reason = String(form.get("reason") || "Reposicao manual").trim() || "Reposicao manual";
-  const movementLabel = difference > 0 ? "Entrada manual" : difference < 0 ? "Retirada manual" : "Ajuste manual";
+  const packageDescription = packageMode ? `${qty(adjustmentQty)} x ${packageConfig.name} (${qty(adjustmentUnits)} un.)` : "";
+  const movementLabel = packageMode
+    ? mode === "add-package"
+      ? `Entrada de ${packageConfig.name}`
+      : `Retirada de ${packageConfig.name}`
+    : difference > 0
+      ? "Entrada manual"
+      : difference < 0
+        ? "Retirada manual"
+        : "Ajuste manual";
+  const historyReason = `${packageDescription ? `${packageDescription}. ` : ""}${reason}`;
 
   if (session?.online) {
     if (!isSupabaseReady() || navigator.onLine === false) {
@@ -11877,7 +12088,7 @@ async function saveStockAdjustment(event) {
         expected: previousStock,
         counted: nextStock,
         difference,
-        notes: `Ajuste manual: ${reason}`,
+        notes: `${movementLabel}: ${historyReason}`,
         created_at: adjustmentDate,
       })
       .select("*")
@@ -11908,8 +12119,8 @@ async function saveStockAdjustment(event) {
     saveState();
     currentModal = null;
     await loadOnlineStockData();
-    logAudit("Estoque ajustado online", `${product.name}: ${movementLabel} de ${qty(Math.abs(difference))}. Saldo ${previousStock} para ${nextStock}. Motivo: ${reason}.`);
-    notify(`${movementLabel} registrada. Novo saldo: ${qty(nextStock)}.`);
+    logAudit("Estoque ajustado online", `${product.name}: ${movementLabel} de ${qty(Math.abs(difference))} un. Saldo ${previousStock} para ${nextStock}. Motivo: ${historyReason}.`);
+    notify(`${movementLabel} registrada. Novo saldo: ${productStockText({ ...product, stock: nextStock })}.`);
     renderApp();
     return;
   }
@@ -11928,13 +12139,13 @@ async function saveStockAdjustment(event) {
     counted: nextStock,
     difference,
     userId: session.id,
-    notes: `Ajuste manual: ${reason}`,
+    notes: `${movementLabel}: ${historyReason}`,
   });
 
   currentModal = null;
-  logAudit("Estoque ajustado", `${product.name}: ${movementLabel} de ${qty(Math.abs(difference))}. Saldo ${previousStock} para ${nextStock}. Motivo: ${reason}.`);
+  logAudit("Estoque ajustado", `${product.name}: ${movementLabel} de ${qty(Math.abs(difference))} un. Saldo ${previousStock} para ${nextStock}. Motivo: ${historyReason}.`);
   saveState();
-  notify(`${movementLabel} registrada. Novo saldo: ${qty(nextStock)}.`);
+  notify(`${movementLabel} registrada. Novo saldo: ${productStockText({ ...product, stock: nextStock })}.`);
   renderApp();
 }
 
