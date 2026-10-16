@@ -373,6 +373,11 @@
   background: color-mix(in srgb, var(--panel) 88%, #2563eb 12%);
 }
 
+.selection-option:has(input:disabled) {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
 .selection-option input {
   margin: 0;
   accent-color: #2563eb;

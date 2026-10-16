@@ -733,6 +733,8 @@ function migrateState(nextState) {
       packageName: "",
       unitsPerPackage: 0,
       packageCost: 0,
+      saleBrands: [],
+      saleCombinations: [],
       saleVariants: [],
       saleFlavors: [],
       station: "Bar",
@@ -2716,6 +2718,8 @@ function mapProductFromDb(row, recipes = []) {
     packageName: row.package_name || "",
     unitsPerPackage: Number(row.units_per_package || 0),
     packageCost: Number(row.package_cost || 0),
+    saleBrands: Array.isArray(row.sale_brands) ? row.sale_brands : [],
+    saleCombinations: Array.isArray(row.sale_combinations) ? row.sale_combinations : [],
     saleVariants: Array.isArray(row.sale_variants) ? row.sale_variants : [],
     saleFlavors: Array.isArray(row.sale_flavors) ? row.sale_flavors : [],
     minStock: Number(row.min_stock || 0),
@@ -2879,17 +2883,38 @@ function productSaleVariants(product) {
   return normalizeProductSaleOptions(product?.saleVariants, "variant");
 }
 
+function productSaleBrands(product) {
+  return normalizeProductSaleOptions(product?.saleBrands, "brand");
+}
+
 function productSaleFlavors(product) {
   return normalizeProductSaleOptions(product?.saleFlavors, "flavor");
 }
 
+function normalizeProductSaleCombinations(combinations = []) {
+  return (Array.isArray(combinations) ? combinations : [])
+    .map((combination, index) => ({
+      id: String(combination?.id || `combination-${index + 1}`),
+      brandId: String(combination?.brandId || ""),
+      variantId: String(combination?.variantId || ""),
+      price: Math.max(0, Number(combination?.price || 0)),
+      recipe: normalizeStockRecipe(combination?.recipe),
+    }))
+    .filter((combination) => combination.brandId && combination.variantId);
+}
+
+function productSaleCombinations(product) {
+  return normalizeProductSaleCombinations(product?.saleCombinations);
+}
+
 function productHasSaleOptions(product) {
-  return productSaleVariants(product).length > 0 || productSaleFlavors(product).length > 0;
+  return productSaleBrands(product).length > 0 || productSaleVariants(product).length > 0 || productSaleFlavors(product).length > 0;
 }
 
 function productUsesIngredientStock(product) {
   return Boolean(
     product?.recipe?.length ||
+      productSaleCombinations(product).some((combination) => combination.recipe.length) ||
       productSaleVariants(product).some((option) => option.recipe.length) ||
       productSaleFlavors(product).some((option) => option.recipe.length),
   );
@@ -2908,12 +2933,31 @@ function recipeAvailableStock(recipe) {
 }
 
 function productOptionCombinations(product) {
+  const brands = productSaleBrands(product);
   const variants = productSaleVariants(product);
   const flavors = productSaleFlavors(product);
-  const variantChoices = variants.length ? variants : [null];
   const flavorChoices = flavors.length ? flavors : [null];
+
+  const configuredCombinations = productSaleCombinations(product);
+  if (configuredCombinations.length) {
+    return configuredCombinations.flatMap((combination) => {
+      const brand = brands.find((option) => option.id === combination.brandId);
+      const variant = variants.find((option) => option.id === combination.variantId);
+      if (!brand || !variant) return [];
+      return flavorChoices.map((flavor) => ({
+        brand,
+        variant,
+        flavor,
+        saleCombination: combination,
+        recipe: mergeStockRecipes(product?.recipe, combination.recipe, flavor?.recipe),
+      }));
+    });
+  }
+
+  const variantChoices = variants.length ? variants : [null];
   return variantChoices.flatMap((variant) =>
     flavorChoices.map((flavor) => ({
+      brand: null,
       variant,
       flavor,
       recipe: mergeStockRecipes(product?.recipe, variant?.recipe, flavor?.recipe),
@@ -3001,26 +3045,44 @@ function recipeCost(recipe) {
   }, 0);
 }
 
-function buildConfiguredSaleItem(product, { variantId = "", flavorId = "" } = {}) {
+function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavorId = "" } = {}) {
   if (!product) return null;
+  const brands = productSaleBrands(product);
   const variants = productSaleVariants(product);
   const flavors = productSaleFlavors(product);
+  const combinations = productSaleCombinations(product);
+  const brand = brands.length ? brands.find((option) => option.id === brandId) : null;
   const variant = variants.length ? variants.find((option) => option.id === variantId) : null;
   const flavor = flavors.length ? flavors.find((option) => option.id === flavorId) : null;
-  if ((variants.length && !variant) || (flavors.length && !flavor)) return null;
+  if ((brands.length && !brand) || (variants.length && !variant) || (flavors.length && !flavor)) return null;
 
-  const stockRecipe = mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe);
-  const labels = [variant?.label, flavor?.label].filter(Boolean);
-  const price = variant && variant.price > 0 ? variant.price : Number(product.price || 0);
+  const saleCombination = combinations.length
+    ? combinations.find((entry) => entry.brandId === brand?.id && entry.variantId === variant?.id)
+    : null;
+  if (combinations.length && !saleCombination) return null;
+
+  const stockRecipe = combinations.length
+    ? mergeStockRecipes(product.recipe, saleCombination?.recipe, flavor?.recipe)
+    : mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe);
+  const labels = [brand?.label, variant?.label, flavor?.label].filter(Boolean);
+  const price = saleCombination && saleCombination.price > 0
+    ? saleCombination.price
+    : variant && variant.price > 0
+      ? variant.price
+      : Number(product.price || 0);
   return {
     productId: product.id,
-    cartKey: [product.id, variant?.id || "base", flavor?.id || "base"].join("::"),
+    cartKey: brands.length
+      ? [product.id, brand?.id || "base", variant?.id || "base", flavor?.id || "base"].join("::")
+      : [product.id, variant?.id || "base", flavor?.id || "base"].join("::"),
     name: [product.name, ...labels].join(" - "),
     qty: 1,
     price,
     cost: stockRecipe.length ? Number(recipeCost(stockRecipe).toFixed(3)) : Number(product.cost || 0),
     stockRecipe,
     selection: {
+      brandId: brand?.id || "",
+      brandLabel: brand?.label || "",
       variantId: variant?.id || "",
       variantLabel: variant?.label || "",
       flavorId: flavor?.id || "",
@@ -10217,8 +10279,14 @@ function bindProductCatalogAssistant() {
 function renderProductSelectionModal() {
   const product = state.products.find((entry) => entry.id === currentModal.id);
   if (!product) return '<div class="modal-body"><p>Produto nao encontrado.</p></div>';
+  const brands = productSaleBrands(product);
   const variants = productSaleVariants(product);
   const flavors = productSaleFlavors(product);
+  const combinations = productSaleCombinations(product);
+  const initialBrandId = brands[0]?.id || "";
+  const initialVariant = combinations.length
+    ? variants.find((variant) => combinations.some((combination) => combination.brandId === initialBrandId && combination.variantId === variant.id))
+    : variants[0];
   const destinationLabel = currentModal.destination === "table" ? "Adicionar a mesa" : "Adicionar a comanda";
   return `
     <form id="product-selection-form">
@@ -10229,16 +10297,48 @@ function renderProductSelectionModal() {
       </div>
       <div class="modal-body product-selection-body">
         ${
+          brands.length
+            ? `<fieldset class="selection-group">
+                <legend>Marca</legend>
+                <div class="selection-option-grid">
+                  ${brands.map((option, index) => `
+                    <label class="selection-option">
+                      <input type="radio" name="brandId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
+                      <span><strong>${escapeHtml(option.label)}</strong><small>Escolha a marca</small></span>
+                    </label>
+                  `).join("")}
+                </div>
+              </fieldset>`
+            : ""
+        }
+        ${
           variants.length
             ? `<fieldset class="selection-group">
                 <legend>Tamanho ou variacao</legend>
                 <div class="selection-option-grid">
-                  ${variants.map((option, index) => `
-                    <label class="selection-option">
-                      <input type="radio" name="variantId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
-                      <span><strong>${escapeHtml(option.label)}</strong><small>${money(option.price > 0 ? option.price : product.price)}</small></span>
-                    </label>
-                  `).join("")}
+                  ${variants.map((option) => {
+                    const optionCombinations = combinations.filter((combination) => combination.variantId === option.id);
+                    const availableBrandIds = optionCombinations.map((combination) => combination.brandId);
+                    const pricesByBrand = Object.fromEntries(optionCombinations.map((combination) => [combination.brandId, combination.price]));
+                    const initialCombination = optionCombinations.find((combination) => combination.brandId === initialBrandId);
+                    const disabled = combinations.length > 0 && !initialCombination;
+                    const displayedPrice = initialCombination?.price || (option.price > 0 ? option.price : product.price);
+                    return `
+                      <label class="selection-option">
+                        <input
+                          type="radio"
+                          name="variantId"
+                          value="${escapeHtml(option.id)}"
+                          data-brand-ids="${escapeHtml(availableBrandIds.join(","))}"
+                          data-brand-prices="${escapeHtml(encodeURIComponent(JSON.stringify(pricesByBrand)))}"
+                          ${option.id === initialVariant?.id ? "checked" : ""}
+                          ${disabled ? "disabled" : ""}
+                          required
+                        />
+                        <span><strong>${escapeHtml(option.label)}</strong><small data-variant-price>${money(displayedPrice)}</small></span>
+                      </label>
+                    `;
+                  }).join("")}
                 </div>
               </fieldset>`
             : ""
@@ -10258,7 +10358,7 @@ function renderProductSelectionModal() {
               </fieldset>`
             : ""
         }
-        <div class="notice compact">O carrinho exibira o tamanho e o sabor escolhidos. Cada combinacao sera controlada separadamente.</div>
+        <div class="notice compact">O carrinho exibira a marca, o tamanho e o sabor escolhidos. Cada combinacao tera seu proprio preco e sua baixa de estoque.</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
@@ -10447,15 +10547,20 @@ function renderProductModal() {
           <section class="product-sale-options-editor full">
             <div class="product-package-head">
               <div>
-                <strong>Tamanhos e sabores na venda</strong>
+                <strong>Marcas, tamanhos e sabores na venda</strong>
                 <small>Opcional. Ao vender, o operador precisara escolher as opcoes configuradas.</small>
               </div>
               <span class="status blue">Baixa por escolha</span>
             </div>
             <label class="field full">
-              <span>Tamanhos ou variacoes</span>
-              <textarea name="saleVariantsText" rows="4" placeholder="500 ml | 15,00 | Copo 500 ml:1; Whisky:80; Energetico:200\n700 ml | 20,00 | Copo 700 ml:1; Whisky:100; Energetico:250">${escapeHtml(saleOptionLines(product?.saleVariants, "variant"))}</textarea>
-              <small class="hint">Uma opcao por linha: nome | preco opcional | ficha adicional. Deixe o preco vazio para usar o preco principal.</small>
+              <span>Marcas + tamanhos com preco proprio</span>
+              <textarea name="saleCombinationsText" rows="9" placeholder="Ballantines | 500 ml | 10,00 | Copo 500 ml:1; Whisky Ballantines:80; Energetico:200\nBallantines | 700 ml | 15,00 | Copo 700 ml:1; Whisky Ballantines:100; Energetico:250\nRed Label | 500 ml | 15,00 | Copo 500 ml:1; Whisky Red Label:80; Energetico:200">${escapeHtml(saleCombinationLines(product))}</textarea>
+              <small class="hint">Uma combinacao por linha: marca | tamanho | preco | ficha adicional. Use os nomes exatos dos insumos. O preco e a dose podem mudar em cada linha.</small>
+            </label>
+            <label class="field full">
+              <span>Variacoes sem marca</span>
+              <textarea name="saleVariantsText" rows="4" placeholder="500 ml | 15,00 | Copo 500 ml:1; Whisky:80; Energetico:200\n700 ml | 20,00 | Copo 700 ml:1; Whisky:100; Energetico:250">${escapeHtml(productSaleCombinations(product).length ? "" : saleOptionLines(product?.saleVariants, "variant"))}</textarea>
+              <small class="hint">Use este campo somente em produtos sem escolha de marca. Uma opcao por linha: nome | preco opcional | ficha adicional.</small>
             </label>
             <label class="field full">
               <span>Sabores ou complementos obrigatorios</span>
@@ -11611,6 +11716,7 @@ function bindModalForms() {
     if (preview) preview.textContent = tableCreationPreview(tableCountInput.value);
   });
   bindSalePaymentChoice();
+  bindProductSelectionOptions();
   bindTableSplitBuilder();
   bindManualChargeControls();
   bindExternalPaymentTotal();
@@ -11621,6 +11727,39 @@ function bindModalForms() {
   bindProductPackageEditor();
   bindIngredientPackageEditor();
   bindProductCatalogAssistant();
+}
+
+function bindProductSelectionOptions() {
+  const form = document.querySelector("#product-selection-form");
+  if (!form) return;
+  const brandInputs = [...form.querySelectorAll('input[name="brandId"]')];
+  const variantInputs = [...form.querySelectorAll('input[name="variantId"]')];
+  if (!brandInputs.length || !variantInputs.length) return;
+
+  const updateVariants = () => {
+    const brandId = brandInputs.find((input) => input.checked)?.value || "";
+    variantInputs.forEach((input) => {
+      const supportedBrands = String(input.dataset.brandIds || "").split(",").filter(Boolean);
+      input.disabled = !supportedBrands.includes(brandId);
+      let prices = {};
+      try {
+        prices = JSON.parse(decodeURIComponent(input.dataset.brandPrices || "%7B%7D"));
+      } catch {
+        prices = {};
+      }
+      const priceLabel = input.closest(".selection-option")?.querySelector("[data-variant-price]");
+      if (priceLabel && prices[brandId] !== undefined) priceLabel.textContent = money(Number(prices[brandId] || 0));
+    });
+
+    const checkedVariant = variantInputs.find((input) => input.checked && !input.disabled);
+    if (!checkedVariant) {
+      const firstAvailable = variantInputs.find((input) => !input.disabled);
+      if (firstAvailable) firstAvailable.checked = true;
+    }
+  };
+
+  brandInputs.forEach((input) => input.addEventListener("change", updateVariants));
+  updateVariants();
 }
 
 function bindTableSplitBuilder() {
@@ -11901,11 +12040,12 @@ async function saveProductSelection(event) {
   const destination = currentModal.destination || "cart";
   const tableId = currentModal.tableId || "";
   const item = buildConfiguredSaleItem(product, {
+    brandId: String(form.get("brandId") || ""),
     variantId: String(form.get("variantId") || ""),
     flavorId: String(form.get("flavorId") || ""),
   });
   if (!item) {
-    notify("Escolha o tamanho e o sabor antes de continuar.");
+    notify("Escolha a marca, o tamanho e o sabor antes de continuar.");
     return;
   }
   if (destination === "table") await addConfiguredItemToTable(tableId, item);
@@ -11920,10 +12060,16 @@ async function saveProduct(event) {
   const internetImageUrl = productImageUrl({ imageUrl: form.get("internetImageUrl") });
   const currentProduct = state.products.find((product) => product.id === currentModal.id);
   const parsedBaseRecipe = parseRecipeTextDetailed(form.get("recipeText"));
+  const parsedCombinations = parseSaleCombinationLines(form.get("saleCombinationsText"));
   const parsedVariants = parseSaleOptionLines(form.get("saleVariantsText"), "variant");
   const parsedFlavors = parseSaleOptionLines(form.get("saleFlavorsText"), "flavor");
+  if (parsedCombinations.combinations.length && String(form.get("saleVariantsText") || "").trim()) {
+    notify("Use marcas + tamanhos ou variacoes sem marca. Nao preencha os dois campos no mesmo produto.", 10000);
+    return;
+  }
   const invalidConfiguration = [
     ...parsedBaseRecipe.invalid.map((entry) => `ficha: ${entry}`),
+    ...parsedCombinations.invalid.map((entry) => `marca + tamanho: ${entry}`),
     ...parsedVariants.invalid.map((entry) => `tamanho: ${entry}`),
     ...parsedFlavors.invalid.map((entry) => `sabor: ${entry}`),
   ];
@@ -11950,7 +12096,9 @@ async function saveProduct(event) {
     expiresAt: form.get("expiresAt") || "",
     station: form.get("station"),
     recipe: parsedBaseRecipe.recipe,
-    saleVariants: parsedVariants.options,
+    saleBrands: parsedCombinations.brands,
+    saleCombinations: parsedCombinations.combinations,
+    saleVariants: parsedCombinations.combinations.length ? parsedCombinations.variants : parsedVariants.options,
     saleFlavors: parsedFlavors.options,
     favorite: form.get("favorite") === "true",
     active: form.get("active") === "true",
@@ -11961,7 +12109,7 @@ async function saveProduct(event) {
     notify("Para controlar por fardo, informe a quantidade por embalagem e o valor de compra.");
     return;
   }
-  if ((payload.recipe.length || payload.saleVariants.length || payload.saleFlavors.length) && payload.unitsPerPackage > 0) {
+  if ((payload.recipe.length || payload.saleBrands.length || payload.saleVariants.length || payload.saleFlavors.length) && payload.unitsPerPackage > 0) {
     notify("Use controle por fardo somente em produtos baixados diretamente. Produtos com ficha ou opcoes baixam os insumos.");
     return;
   }
@@ -12089,6 +12237,8 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     package_name: payload.packageName || null,
     units_per_package: payload.unitsPerPackage,
     package_cost: payload.packageCost,
+    sale_brands: payload.saleBrands,
+    sale_combinations: payload.saleCombinations,
     sale_variants: payload.saleVariants,
     sale_flavors: payload.saleFlavors,
     min_stock: payload.minStock,
@@ -12104,7 +12254,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
 
   const fallbackPayload = { ...dbPayload };
   const removedOptionalColumns = [];
-  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "sale_variants", "sale_flavors"]) {
+  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "sale_brands", "sale_combinations", "sale_variants", "sale_flavors"]) {
     if (!result.error || !String(result.error.message || "").includes(column)) continue;
     delete fallbackPayload[column];
     removedOptionalColumns.push(column);
@@ -12118,7 +12268,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
       if (column === "product_code") return "codigo";
       if (column === "barcode_codes") return "codigos de barras";
       if (["package_name", "units_per_package", "package_cost"].includes(column)) return "controle por fardo";
-      if (["sale_variants", "sale_flavors"].includes(column)) return "tamanhos e sabores";
+      if (["sale_brands", "sale_combinations", "sale_variants", "sale_flavors"].includes(column)) return "marcas, tamanhos e sabores";
       return "validade";
     }))];
     notify(`Produto salvo. Para gravar ${labels.join(" e ")} online, rode a migracao no Supabase.`);
@@ -14651,6 +14801,103 @@ function saleOptionLines(options, type = "variant") {
         : `${option.label} | ${recipe}`;
     })
     .join("\n");
+}
+
+function saleChoiceId(type, label) {
+  const slug = String(label || "opcao")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "opcao";
+  return `${type}-${slug}`;
+}
+
+function saleCombinationLines(product) {
+  const brands = productSaleBrands(product);
+  const variants = productSaleVariants(product);
+  return productSaleCombinations(product)
+    .map((combination) => {
+      const brand = brands.find((option) => option.id === combination.brandId);
+      const variant = variants.find((option) => option.id === combination.variantId);
+      if (!brand || !variant) return "";
+      const recipe = combination.recipe.map((item) => `${ingredientName(item.ingredientId)}:${qty(item.qty)}`).join("; ");
+      return `${brand.label} | ${variant.label} | ${combination.price.toFixed(2).replace(".", ",")} | ${recipe}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function parseSaleCombinationLines(text) {
+  const brandsByName = new Map();
+  const variantsByName = new Map();
+  const combinations = [];
+  const combinationKeys = new Set();
+  const invalid = [];
+
+  String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      const parts = line.split("|").map((part) => part.trim());
+      const brandLabel = parts[0] || "";
+      const variantLabel = parts[1] || "";
+      const rawPrice = parts[2] || "";
+      const recipeText = parts.slice(3).join("|");
+      const price = Number(rawPrice.replace(",", "."));
+      const parsedRecipe = parseRecipeTextDetailed(recipeText, /[;]+/);
+      const brandKey = brandLabel.toLocaleLowerCase("pt-BR");
+      const variantKey = variantLabel.toLocaleLowerCase("pt-BR");
+      const combinationKey = `${brandKey}::${variantKey}`;
+
+      if (
+        !brandLabel ||
+        !variantLabel ||
+        !Number.isFinite(price) ||
+        price <= 0 ||
+        parsedRecipe.invalid.length ||
+        combinationKeys.has(combinationKey)
+      ) {
+        invalid.push(line);
+        return;
+      }
+
+      if (!brandsByName.has(brandKey)) {
+        brandsByName.set(brandKey, {
+          id: saleChoiceId("brand", brandLabel),
+          label: brandLabel,
+          price: 0,
+          recipe: [],
+        });
+      }
+      if (!variantsByName.has(variantKey)) {
+        variantsByName.set(variantKey, {
+          id: saleChoiceId("variant", variantLabel),
+          label: variantLabel,
+          price: 0,
+          recipe: [],
+        });
+      }
+
+      const brand = brandsByName.get(brandKey);
+      const variant = variantsByName.get(variantKey);
+      combinationKeys.add(combinationKey);
+      combinations.push({
+        id: `combination-${brand.id}-${variant.id}`,
+        brandId: brand.id,
+        variantId: variant.id,
+        price,
+        recipe: parsedRecipe.recipe,
+      });
+    });
+
+  return {
+    brands: [...brandsByName.values()],
+    variants: [...variantsByName.values()],
+    combinations,
+    invalid,
+  };
 }
 
 function saleOptionId(type, label, index) {

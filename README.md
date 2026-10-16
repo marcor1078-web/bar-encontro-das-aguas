@@ -12,7 +12,7 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Vendas
 - Auditoria de acoes
 - Estoque com ficha tecnica por insumo
-- Venda por tamanho e sabor com baixa separada de cada insumo
+- Venda por marca, tamanho e sabor, com preco e baixa de insumos por combinacao
 - Conversao de estoque entre pacote, embalagem intermediaria e unidade
 - Fornecedores e compras
 - Produtos favoritos no balcao
@@ -138,6 +138,14 @@ fracionados em pacote, maco e unidade, execute uma vez no SQL Editor:
 O saldo dos insumos continua armazenado na menor unidade. Exemplo: um pacote com
 10 macos de 20 cigarros representa 200 unidades. As vendas de pacote, maco ou
 cigarro avulso retiram 200, 20 ou 1 unidade do mesmo saldo.
+
+Para definir preco e ficha tecnica diferentes para cada combinacao de marca e
+tamanho de copao, execute uma vez no SQL Editor:
+
+- `SUPABASE_MARCAS_COPAO.sql`
+
+Depois, edite o produto e preencha `Marcas + tamanhos com preco proprio`. Cada
+linha segue o formato `marca | tamanho | preco | ficha adicional`.
 
 Para publicar na internet, siga o arquivo:
 

@@ -24,6 +24,8 @@ create table if not exists products (
   package_name text,
   units_per_package numeric(12,3) not null default 0,
   package_cost numeric(12,2) not null default 0,
+  sale_brands jsonb not null default '[]'::jsonb,
+  sale_combinations jsonb not null default '[]'::jsonb,
   sale_variants jsonb not null default '[]'::jsonb,
   sale_flavors jsonb not null default '[]'::jsonb,
   min_stock numeric(12,3) not null default 0,

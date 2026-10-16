@@ -8,6 +8,12 @@ add column if not exists sale_variants jsonb not null default '[]'::jsonb;
 alter table public.products
 add column if not exists sale_flavors jsonb not null default '[]'::jsonb;
 
+alter table public.products
+add column if not exists sale_brands jsonb not null default '[]'::jsonb;
+
+alter table public.products
+add column if not exists sale_combinations jsonb not null default '[]'::jsonb;
+
 alter table public.ingredients
 add column if not exists package_name text;
 
