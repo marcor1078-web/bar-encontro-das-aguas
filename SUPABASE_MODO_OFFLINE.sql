@@ -149,6 +149,10 @@ declare
   item_uuid uuid;
   product_uuid uuid;
   item_quantity numeric(12,3);
+  stock_recipe jsonb;
+  recipe_item jsonb;
+  ingredient_uuid uuid;
+  recipe_quantity numeric(12,3);
   kitchen_order jsonb;
   transaction_data jsonb;
   fiado_amount numeric(12,2);
@@ -273,7 +277,9 @@ begin
       product_uuid := null;
     end if;
 
-    insert into public.sale_items (id, sale_id, product_id, name, qty, price, cost)
+    stock_recipe := coalesce(item->'stockRecipe', '[]'::jsonb);
+
+    insert into public.sale_items (id, sale_id, product_id, name, qty, price, cost, cart_key, stock_recipe, selection)
     values (
       item_uuid,
       sale_uuid,
@@ -281,12 +287,26 @@ begin
       coalesce(nullif(item->>'name', ''), 'Produto'),
       item_quantity,
       coalesce((item->>'price')::numeric, 0),
-      coalesce((item->>'cost')::numeric, 0)
+      coalesce((item->>'cost')::numeric, 0),
+      nullif(item->>'cartKey', ''),
+      stock_recipe,
+      coalesce(item->'selection', '{}'::jsonb)
     )
     on conflict (id) do nothing;
 
     if product_uuid is not null then
-      if exists (select 1 from public.product_recipes where product_id = product_uuid) then
+      if jsonb_typeof(stock_recipe) = 'array' and jsonb_array_length(stock_recipe) > 0 then
+        for recipe_item in select value from jsonb_array_elements(stock_recipe)
+        loop
+          ingredient_uuid := nullif(recipe_item->>'ingredientId', '')::uuid;
+          recipe_quantity := greatest(0, coalesce((recipe_item->>'qty')::numeric, 0));
+          if ingredient_uuid is not null and recipe_quantity > 0 then
+            update public.ingredients
+            set stock = greatest(0, stock - recipe_quantity * item_quantity)
+            where id = ingredient_uuid;
+          end if;
+        end loop;
+      elsif exists (select 1 from public.product_recipes where product_id = product_uuid) then
         update public.ingredients as ingredient
         set stock = greatest(0, ingredient.stock - recipe.qty * item_quantity)
         from public.product_recipes as recipe

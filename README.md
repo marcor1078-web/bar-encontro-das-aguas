@@ -12,6 +12,8 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Vendas
 - Auditoria de acoes
 - Estoque com ficha tecnica por insumo
+- Venda por tamanho e sabor com baixa separada de cada insumo
+- Conversao de estoque entre pacote, embalagem intermediaria e unidade
 - Fornecedores e compras
 - Produtos favoritos no balcao
 - Configuracoes da distribuidora
@@ -127,6 +129,15 @@ SQL Editor:
 A divisao aceita nomes opcionais, partes iguais, produtos ou valores
 personalizados. Cada parte pode usar uma forma de pagamento diferente, e a mesa
 so e liberada quando todos os pagamentos forem concluidos.
+
+Para cadastrar copos de tamanhos diferentes, sabores separados e produtos
+fracionados em pacote, maco e unidade, execute uma vez no SQL Editor:
+
+- `SUPABASE_VARIACOES_EMBALAGENS.sql`
+
+O saldo dos insumos continua armazenado na menor unidade. Exemplo: um pacote com
+10 macos de 20 cigarros representa 200 unidades. As vendas de pacote, maco ou
+cigarro avulso retiram 200, 20 ou 1 unidade do mesmo saldo.
 
 Para publicar na internet, siga o arquivo:
 

@@ -24,6 +24,8 @@ create table if not exists products (
   package_name text,
   units_per_package numeric(12,3) not null default 0,
   package_cost numeric(12,2) not null default 0,
+  sale_variants jsonb not null default '[]'::jsonb,
+  sale_flavors jsonb not null default '[]'::jsonb,
   min_stock numeric(12,3) not null default 0,
   critical_stock numeric(12,3) not null default 0,
   expires_at date,
@@ -38,7 +40,12 @@ create table if not exists ingredients (
   unit text not null,
   stock numeric(12,3) not null default 0,
   min_stock numeric(12,3) not null default 0,
-  cost_per_unit numeric(12,4) not null default 0
+  cost_per_unit numeric(12,4) not null default 0,
+  package_name text,
+  units_per_package numeric(12,3) not null default 0,
+  inner_package_name text,
+  units_per_inner_package numeric(12,3) not null default 0,
+  package_cost numeric(12,2) not null default 0
 );
 
 create table if not exists product_recipes (
@@ -102,7 +109,10 @@ create table if not exists sale_items (
   name text not null,
   qty numeric(12,3) not null,
   price numeric(12,2) not null,
-  cost numeric(12,2) not null
+  cost numeric(12,2) not null,
+  cart_key text,
+  stock_recipe jsonb not null default '[]'::jsonb,
+  selection jsonb not null default '{}'::jsonb
 );
 
 create table if not exists cash_sessions (

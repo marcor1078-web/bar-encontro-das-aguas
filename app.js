@@ -733,6 +733,8 @@ function migrateState(nextState) {
       packageName: "",
       unitsPerPackage: 0,
       packageCost: 0,
+      saleVariants: [],
+      saleFlavors: [],
       station: "Bar",
       recipe: [],
       criticalStock: Math.max(1, Math.floor(Number(product.minStock || base.minStock || 1) / 2)),
@@ -749,7 +751,14 @@ function migrateState(nextState) {
   }));
   nextState.offlineQueue = Array.isArray(nextState.offlineQueue) ? nextState.offlineQueue : [];
   nextState.cachedPaymentTerminals = Array.isArray(nextState.cachedPaymentTerminals) ? nextState.cachedPaymentTerminals : [];
-  nextState.ingredients = nextState.ingredients || structuredClone(defaultState.ingredients);
+  nextState.ingredients = (nextState.ingredients || structuredClone(defaultState.ingredients)).map((ingredient) => ({
+    packageName: "",
+    unitsPerPackage: 0,
+    innerPackageName: "",
+    unitsPerInnerPackage: 0,
+    packageCost: 0,
+    ...ingredient,
+  }));
   nextState.suppliers = (nextState.suppliers || structuredClone(defaultState.suppliers)).map((supplier) => ({
     ...supplier,
     phone2: supplier.phone2 || "",
@@ -1839,6 +1848,9 @@ function saveMercadoPagoPendingOrder(order, context = {}) {
       qty: Number(item.qty || 0),
       price: Number(item.price || 0),
       cost: Number(item.cost || 0),
+      cartKey: cartItemKey(item),
+      stockRecipe: itemStockRecipe(item, state.products.find((product) => product.id === item.productId)),
+      selection: item.selection || {},
     })),
     createdAt: previous?.createdAt || new Date().toISOString(),
     status: order.status || previous?.status || "created",
@@ -2589,6 +2601,9 @@ function queueOfflineSale(sale, fiadoAmount = 0, { releaseTable = true, splitBil
       qty: Number(item.qty || 0),
       price: Number(item.price || 0),
       cost: Number(item.cost || 0),
+      cartKey: cartItemKey(item),
+      stockRecipe: itemStockRecipe(item, state.products.find((product) => product.id === item.productId)),
+      selection: item.selection || {},
     })),
     kitchenOrders,
     clientTransaction,
@@ -2701,6 +2716,8 @@ function mapProductFromDb(row, recipes = []) {
     packageName: row.package_name || "",
     unitsPerPackage: Number(row.units_per_package || 0),
     packageCost: Number(row.package_cost || 0),
+    saleVariants: Array.isArray(row.sale_variants) ? row.sale_variants : [],
+    saleFlavors: Array.isArray(row.sale_flavors) ? row.sale_flavors : [],
     minStock: Number(row.min_stock || 0),
     criticalStock: Number(row.critical_stock || 0),
     expiresAt: row.expires_at || "",
@@ -2833,9 +2850,55 @@ function findProductBySearchValue(value) {
   );
 }
 
-function productAvailableStock(product) {
-  if (!product?.recipe?.length) return Number(product?.stock || 0);
-  const availableByIngredient = product.recipe.map((recipeItem) => {
+function normalizeStockRecipe(recipe = []) {
+  return (Array.isArray(recipe) ? recipe : [])
+    .map((item) => ({ ingredientId: String(item?.ingredientId || ""), qty: Math.max(0, Number(item?.qty || 0)) }))
+    .filter((item) => item.ingredientId && item.qty > 0);
+}
+
+function mergeStockRecipes(...recipes) {
+  const merged = new Map();
+  recipes.flatMap((recipe) => normalizeStockRecipe(recipe)).forEach((item) => {
+    merged.set(item.ingredientId, Number(merged.get(item.ingredientId) || 0) + item.qty);
+  });
+  return [...merged.entries()].map(([ingredientId, qtyValue]) => ({ ingredientId, qty: Number(qtyValue.toFixed(3)) }));
+}
+
+function normalizeProductSaleOptions(options = [], type = "variant") {
+  return (Array.isArray(options) ? options : [])
+    .map((option, index) => ({
+      id: String(option?.id || `${type}-${index + 1}`),
+      label: String(option?.label || option?.name || "").trim(),
+      price: type === "variant" ? Math.max(0, Number(option?.price || 0)) : 0,
+      recipe: normalizeStockRecipe(option?.recipe),
+    }))
+    .filter((option) => option.label);
+}
+
+function productSaleVariants(product) {
+  return normalizeProductSaleOptions(product?.saleVariants, "variant");
+}
+
+function productSaleFlavors(product) {
+  return normalizeProductSaleOptions(product?.saleFlavors, "flavor");
+}
+
+function productHasSaleOptions(product) {
+  return productSaleVariants(product).length > 0 || productSaleFlavors(product).length > 0;
+}
+
+function productUsesIngredientStock(product) {
+  return Boolean(
+    product?.recipe?.length ||
+      productSaleVariants(product).some((option) => option.recipe.length) ||
+      productSaleFlavors(product).some((option) => option.recipe.length),
+  );
+}
+
+function recipeAvailableStock(recipe) {
+  const normalized = normalizeStockRecipe(recipe);
+  if (!normalized.length) return 0;
+  const availableByIngredient = normalized.map((recipeItem) => {
     const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
     const required = Number(recipeItem.qty || 0);
     if (!ingredient || required <= 0) return 0;
@@ -2844,9 +2907,29 @@ function productAvailableStock(product) {
   return Math.max(0, Math.min(...availableByIngredient));
 }
 
+function productOptionCombinations(product) {
+  const variants = productSaleVariants(product);
+  const flavors = productSaleFlavors(product);
+  const variantChoices = variants.length ? variants : [null];
+  const flavorChoices = flavors.length ? flavors : [null];
+  return variantChoices.flatMap((variant) =>
+    flavorChoices.map((flavor) => ({
+      variant,
+      flavor,
+      recipe: mergeStockRecipes(product?.recipe, variant?.recipe, flavor?.recipe),
+    })),
+  );
+}
+
+function productAvailableStock(product) {
+  if (!productUsesIngredientStock(product)) return Number(product?.stock || 0);
+  const combinations = productOptionCombinations(product);
+  return combinations.length ? Math.max(...combinations.map((combination) => recipeAvailableStock(combination.recipe))) : 0;
+}
+
 function productPackageConfig(product) {
   const unitsPerPackage = Math.max(0, Math.trunc(Number(product?.unitsPerPackage || 0)));
-  if (!product || product.recipe?.length || unitsPerPackage <= 0) return null;
+  if (!product || productUsesIngredientStock(product) || unitsPerPackage <= 0) return null;
   return {
     name: String(product.packageName || "Fardo").trim() || "Fardo",
     unitsPerPackage,
@@ -2872,7 +2955,78 @@ function productPackageBalanceText(product, stock = productAvailableStock(produc
 function productStockText(product) {
   const available = productAvailableStock(product);
   const packageText = productPackageBalanceText(product, available);
-  return `${qty(available)} un.${product?.recipe?.length ? " por ficha" : packageText ? ` (${packageText})` : ""}`;
+  return `${qty(available)} un.${productUsesIngredientStock(product) ? productHasSaleOptions(product) ? " por opcoes" : " por ficha" : packageText ? ` (${packageText})` : ""}`;
+}
+
+function ingredientPackageConfig(ingredient) {
+  const unitsPerPackage = Math.max(0, Number(ingredient?.unitsPerPackage || 0));
+  if (!ingredient || unitsPerPackage <= 0) return null;
+  const unitsPerInnerPackage = Math.max(0, Number(ingredient.unitsPerInnerPackage || 0));
+  return {
+    name: String(ingredient.packageName || "Embalagem").trim() || "Embalagem",
+    unitsPerPackage,
+    innerName: unitsPerInnerPackage > 0 ? String(ingredient.innerPackageName || "Subembalagem").trim() || "Subembalagem" : "",
+    unitsPerInnerPackage: unitsPerInnerPackage > 0 && unitsPerInnerPackage < unitsPerPackage ? unitsPerInnerPackage : 0,
+    cost: Math.max(0, Number(ingredient.packageCost || 0)),
+  };
+}
+
+function ingredientPackageBalanceText(ingredient, stock = ingredient?.stock) {
+  const config = ingredientPackageConfig(ingredient);
+  if (!config) return "";
+  const normalizedStock = Math.max(0, Number(stock || 0));
+  const packages = Math.floor((normalizedStock + 0.000001) / config.unitsPerPackage);
+  let remainder = Math.max(0, Number((normalizedStock - packages * config.unitsPerPackage).toFixed(3)));
+  const innerPackages = config.unitsPerInnerPackage ? Math.floor((remainder + 0.000001) / config.unitsPerInnerPackage) : 0;
+  remainder = Math.max(0, Number((remainder - innerPackages * config.unitsPerInnerPackage).toFixed(3)));
+  return [
+    `${qty(packages)} x ${config.name}`,
+    innerPackages ? `${qty(innerPackages)} x ${config.innerName}` : "",
+    remainder ? `${qty(remainder)} ${ingredient.unit || "un"}` : "",
+  ].filter(Boolean).join(" + ");
+}
+
+function cartItemKey(item) {
+  return String(item?.cartKey || item?.productId || "");
+}
+
+function itemStockRecipe(item, product) {
+  return Array.isArray(item?.stockRecipe) ? normalizeStockRecipe(item.stockRecipe) : normalizeStockRecipe(product?.recipe);
+}
+
+function recipeCost(recipe) {
+  return normalizeStockRecipe(recipe).reduce((sum, recipeItem) => {
+    const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
+    return sum + Number(ingredient?.costPerUnit || 0) * recipeItem.qty;
+  }, 0);
+}
+
+function buildConfiguredSaleItem(product, { variantId = "", flavorId = "" } = {}) {
+  if (!product) return null;
+  const variants = productSaleVariants(product);
+  const flavors = productSaleFlavors(product);
+  const variant = variants.length ? variants.find((option) => option.id === variantId) : null;
+  const flavor = flavors.length ? flavors.find((option) => option.id === flavorId) : null;
+  if ((variants.length && !variant) || (flavors.length && !flavor)) return null;
+
+  const stockRecipe = mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe);
+  const labels = [variant?.label, flavor?.label].filter(Boolean);
+  const price = variant && variant.price > 0 ? variant.price : Number(product.price || 0);
+  return {
+    productId: product.id,
+    cartKey: [product.id, variant?.id || "base", flavor?.id || "base"].join("::"),
+    name: [product.name, ...labels].join(" - "),
+    qty: 1,
+    price,
+    cost: stockRecipe.length ? Number(recipeCost(stockRecipe).toFixed(3)) : Number(product.cost || 0),
+    stockRecipe,
+    selection: {
+      variantId: variant?.id || "",
+      variantLabel: variant?.label || "",
+      flavorId: flavor?.id || "",
+      flavorLabel: flavor?.label || "",
+    },
+  };
 }
 
 function productExpiryStatus(product) {
@@ -2900,6 +3054,11 @@ function mapIngredientFromDb(row) {
     stock: Number(row.stock || 0),
     minStock: Number(row.min_stock || 0),
     costPerUnit: Number(row.cost_per_unit || 0),
+    packageName: row.package_name || "",
+    unitsPerPackage: Number(row.units_per_package || 0),
+    innerPackageName: row.inner_package_name || "",
+    unitsPerInnerPackage: Number(row.units_per_inner_package || 0),
+    packageCost: Number(row.package_cost || 0),
   };
 }
 
@@ -3020,6 +3179,9 @@ function mapSaleFromDb(row, items = []) {
       qty: Number(item.qty || 0),
       price: Number(item.price || 0),
       cost: Number(item.cost || 0),
+      cartKey: item.cart_key || item.product_id || "",
+      stockRecipe: normalizeStockRecipe(item.stock_recipe),
+      selection: item.selection && typeof item.selection === "object" ? item.selection : {},
     }));
 
   return {
@@ -4250,16 +4412,16 @@ function renderPos() {
                     (item) => `
                       <div class="cart-item">
                         <div>
-                          <strong>${item.name}</strong>
+                          <strong>${escapeHtml(item.name)}</strong>
                           <span>${tableCheckout?.splitPersonId ? "Incluido proporcionalmente nesta parte" : `${money(item.price)} cada`}</span>
                         </div>
                         ${
                           tableCheckout?.splitPersonId
                             ? '<span class="status blue">Rateado</span>'
                             : `<div class="qty-stepper">
-                                <button type="button" data-cart-minus="${item.productId}">-</button>
+                                <button type="button" data-cart-minus="${escapeHtml(cartItemKey(item))}">-</button>
                                 <output>${item.qty}</output>
-                                <button type="button" data-cart-plus="${item.productId}">+</button>
+                                <button type="button" data-cart-plus="${escapeHtml(cartItemKey(item))}">+</button>
                               </div>`
                         }
                       </div>
@@ -4336,11 +4498,11 @@ function renderTableItems(table) {
                   ? '<span class="status amber">Em divisao</span>'
                   : `<div class="table-item-actions">
                       <div class="qty-stepper">
-                        <button type="button" data-table-id="${table.id}" data-table-item-minus="${item.productId}">-</button>
+                        <button type="button" data-table-id="${table.id}" data-table-item-minus="${escapeHtml(cartItemKey(item))}">-</button>
                         <output>${qty(item.qty)}</output>
-                        <button type="button" data-table-id="${table.id}" data-table-item-plus="${item.productId}">+</button>
+                        <button type="button" data-table-id="${table.id}" data-table-item-plus="${escapeHtml(cartItemKey(item))}">+</button>
                       </div>
-                      <button class="btn compact danger" type="button" data-table-id="${table.id}" data-remove-table-item="${item.productId}">Remover</button>
+                      <button class="btn compact danger" type="button" data-table-id="${table.id}" data-remove-table-item="${escapeHtml(cartItemKey(item))}">Remover</button>
                     </div>`
               }
             </div>
@@ -4541,11 +4703,11 @@ function renderWaiter() {
                   .map(
                     (item) => `
                       <div class="cart-item">
-                        <div><strong>${item.name}</strong><span>${item.qty} x ${money(item.price)}</span></div>
+                        <div><strong>${escapeHtml(item.name)}</strong><span>${item.qty} x ${money(item.price)}</span></div>
                         <div class="qty-stepper">
-                          <button type="button" data-cart-minus="${item.productId}">-</button>
+                          <button type="button" data-cart-minus="${escapeHtml(cartItemKey(item))}">-</button>
                           <output>${item.qty}</output>
-                          <button type="button" data-cart-plus="${item.productId}">+</button>
+                          <button type="button" data-cart-plus="${escapeHtml(cartItemKey(item))}">+</button>
                         </div>
                       </div>
                     `,
@@ -4620,7 +4782,24 @@ function renderKitchen() {
   `;
 }
 
+function requestProductSelection(productId, destination = "cart", tableId = "") {
+  const product = state.products.find((item) => item.id === productId);
+  if (!product) return;
+  if (productHasSaleOptions(product)) {
+    currentModal = { type: "productSelection", id: productId, destination, tableId };
+    renderApp();
+    return;
+  }
+  const item = buildConfiguredSaleItem(product);
+  if (destination === "table") addConfiguredItemToTable(tableId, item);
+  else addConfiguredItemToCart(item);
+}
+
 function addToCart(productId) {
+  requestProductSelection(productId, "cart");
+}
+
+function addConfiguredItemToCart(item) {
   if (tableCheckout?.splitPersonId) {
     notify("Finalize ou cancele esta parte da conta antes de alterar os produtos.");
     return;
@@ -4629,55 +4808,43 @@ function addToCart(productId) {
     notify("Conclua ou cancele a divisao deste atendimento antes de incluir outros produtos.");
     return;
   }
-  const product = state.products.find((item) => item.id === productId);
-  const availableStock = productAvailableStock(product);
-  if (!product || availableStock <= 0) {
-    notify("Produto sem estoque disponivel.");
+  const product = state.products.find((productEntry) => productEntry.id === item?.productId);
+  if (!product || !item) return;
+  const nextCart = structuredClone(cart);
+  const existing = nextCart.find((cartEntry) => cartItemKey(cartEntry) === cartItemKey(item));
+  if (existing) existing.qty += 1;
+  else nextCart.push({ ...item });
+  const stockCheck = canFulfillCart(nextCart);
+  if (!stockCheck.ok) {
+    notify(stockCheck.message || "Produto sem estoque disponivel.");
     return;
   }
-
-  const existing = cart.find((item) => item.productId === productId);
-  const currentQty = existing ? existing.qty : 0;
-
-  if (currentQty + 1 > availableStock) {
-    notify("Quantidade maior que o estoque disponivel.");
-    return;
-  }
-
-  if (existing) {
-    existing.qty += 1;
-  } else {
-    cart.push({
-      productId: product.id,
-      name: product.name,
-      qty: 1,
-      price: product.price,
-      cost: product.cost,
-    });
-  }
-
+  cart = nextCart;
+  currentModal = null;
   renderApp();
 }
 
-function changeCartQty(productId, change) {
+function changeCartQty(itemKey, change) {
   if (tableCheckout?.splitPersonId) {
     notify("Os itens desta parte estao travados para evitar baixa duplicada no estoque.");
     return;
   }
-  const item = cart.find((entry) => entry.productId === productId);
-  const product = state.products.find((entry) => entry.id === productId);
-  if (!item || !product) return;
-
-  const availableStock = productAvailableStock(product);
-  const next = item.qty + change;
+  const nextCart = structuredClone(cart);
+  const item = nextCart.find((entry) => cartItemKey(entry) === itemKey);
+  if (!item) return;
+  const next = Number(item.qty || 0) + change;
   if (next <= 0) {
-    cart = cart.filter((entry) => entry.productId !== productId);
-  } else if (next <= availableStock) {
-    item.qty = next;
-  } else {
-    notify("Quantidade maior que o estoque disponivel.");
+    cart = nextCart.filter((entry) => cartItemKey(entry) !== itemKey);
+    renderApp();
+    return;
   }
-
+  item.qty = next;
+  const stockCheck = canFulfillCart(nextCart);
+  if (!stockCheck.ok) {
+    notify(stockCheck.message || "Quantidade maior que o estoque disponivel.");
+    return;
+  }
+  cart = nextCart;
   renderApp();
 }
 
@@ -5252,8 +5419,9 @@ function cartStockRequirements(items) {
     if (!product) return { ok: false, message: `Produto nao encontrado: ${item.name}.` };
     const itemQty = Number(item.qty || 0);
 
-    if (product.recipe?.length) {
-      for (const recipeItem of product.recipe) {
+    const stockRecipe = itemStockRecipe(item, product);
+    if (stockRecipe.length) {
+      for (const recipeItem of stockRecipe) {
         const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
         if (!ingredient) {
           return { ok: false, message: `Insumo nao encontrado para ${item.name}.` };
@@ -5373,6 +5541,37 @@ async function updateKitchenOrder(orderId, status) {
   renderApp();
 }
 
+function saleItemsDbRows(saleId, saleItems, includeSelection = true) {
+  return saleItems.map((item) => {
+    const row = {
+      sale_id: saleId,
+      product_id: item.productId,
+      name: item.name,
+      qty: item.qty,
+      price: item.price,
+      cost: item.cost,
+    };
+    if (!includeSelection) return row;
+    return {
+      ...row,
+      cart_key: cartItemKey(item),
+      stock_recipe: itemStockRecipe(item, state.products.find((product) => product.id === item.productId)),
+      selection: item.selection || {},
+    };
+  });
+}
+
+async function insertSaleItemsOnline(saleId, saleItems) {
+  let result = await supabaseClient.from("sale_items").insert(saleItemsDbRows(saleId, saleItems));
+  if (result.error && /cart_key|stock_recipe|selection|schema cache/i.test(String(result.error.message || ""))) {
+    result = await supabaseClient.from("sale_items").insert(saleItemsDbRows(saleId, saleItems, false));
+    if (!result.error) {
+      notify("Venda salva em modo compativel. Execute a migracao de tamanhos e embalagens no Supabase.", 10000);
+    }
+  }
+  return result;
+}
+
 async function finalizeSaleOnline({
   payment,
   clientId,
@@ -5434,16 +5633,7 @@ async function finalizeSaleOnline({
   }
 
   const saleId = saleResult.data.id;
-  const itemsResult = await supabaseClient.from("sale_items").insert(
-    saleItems.map((item) => ({
-      sale_id: saleId,
-      product_id: item.productId,
-      name: item.name,
-      qty: item.qty,
-      price: item.price,
-      cost: item.cost,
-    })),
-  );
+  const itemsResult = await insertSaleItemsOnline(saleId, saleItems);
 
   if (itemsResult.error) {
     notify(`Venda criada, mas falhou ao salvar itens: ${itemsResult.error.message}`);
@@ -6143,24 +6333,21 @@ async function openTable(tableId) {
 }
 
 async function addProductToTable(tableId, productId) {
+  requestProductSelection(productId, "table", tableId);
+}
+
+async function addConfiguredItemToTable(tableId, item) {
   const table = state.tables.find((item) => item.id === tableId);
-  const product = state.products.find((item) => item.id === productId);
-  if (!table || !product) return;
+  const product = state.products.find((productEntry) => productEntry.id === item?.productId);
+  if (!table || !product || !item) return;
   if (table.splitBill) {
     notify("Finalize a divisao antes de alterar os produtos desta mesa.");
     return;
   }
   selectedTableId = tableId;
 
-  const item = {
-    productId: product.id,
-    name: product.name,
-    qty: 1,
-    price: product.price,
-    cost: product.cost,
-  };
   const nextItems = structuredClone(table.items || []);
-  const existingNextItem = nextItems.find((cartItem) => cartItem.productId === productId);
+  const existingNextItem = nextItems.find((cartItem) => cartItemKey(cartItem) === cartItemKey(item));
   if (existingNextItem) existingNextItem.qty += 1;
   else nextItems.push(item);
 
@@ -6187,7 +6374,8 @@ async function addProductToTable(tableId, productId) {
     }
 
     await loadOnlineTableData();
-    logAudit("Item em mesa online", `${product.name} em ${table.name}.`);
+    currentModal = { type: "table", id: tableId };
+    logAudit("Item em mesa online", `${item.name} em ${table.name}.`);
     renderApp();
     return;
   }
@@ -6195,7 +6383,7 @@ async function addProductToTable(tableId, productId) {
   state.tables = state.tables.map((entry) => {
     if (entry.id !== tableId) return entry;
     const items = [...entry.items];
-    const existing = items.find((cartItem) => cartItem.productId === productId);
+    const existing = items.find((cartItem) => cartItemKey(cartItem) === cartItemKey(item));
     if (existing) existing.qty += 1;
     else items.push(item);
     return {
@@ -6206,7 +6394,8 @@ async function addProductToTable(tableId, productId) {
       items,
     };
   });
-  logAudit("Item em mesa", `${product.name} em ${table.name}.`);
+  currentModal = { type: "table", id: tableId };
+  logAudit("Item em mesa", `${item.name} em ${table.name}.`);
   saveState();
   renderApp();
 }
@@ -6262,16 +6451,16 @@ async function saveTableItems(tableId, nextItems, actionLabel) {
   renderApp();
 }
 
-async function changeTableItemQty(tableId, productId, change) {
+async function changeTableItemQty(tableId, itemKey, change) {
   const table = state.tables.find((entry) => entry.id === tableId);
   if (!table) return;
   const nextItems = structuredClone(table.items || []);
-  const item = nextItems.find((entry) => entry.productId === productId);
+  const item = nextItems.find((entry) => cartItemKey(entry) === itemKey);
   if (!item) return;
 
   const nextQty = Number(item.qty || 0) + change;
   if (nextQty <= 0) {
-    await removeTableItem(tableId, productId);
+    await removeTableItem(tableId, itemKey);
     return;
   }
 
@@ -6285,11 +6474,11 @@ async function changeTableItemQty(tableId, productId, change) {
   await saveTableItems(tableId, nextItems, `${item.name} ajustado para ${qty(nextQty)}.`);
 }
 
-async function removeTableItem(tableId, productId) {
+async function removeTableItem(tableId, itemKey) {
   const table = state.tables.find((entry) => entry.id === tableId);
   if (!table) return;
-  const removed = (table.items || []).find((entry) => entry.productId === productId);
-  const nextItems = (table.items || []).filter((entry) => entry.productId !== productId);
+  const removed = (table.items || []).find((entry) => cartItemKey(entry) === itemKey);
+  const nextItems = (table.items || []).filter((entry) => cartItemKey(entry) !== itemKey);
   await saveTableItems(tableId, nextItems, `${removed?.name || "Item"} removido.`);
 }
 
@@ -6459,7 +6648,7 @@ async function mergeTable(tableId) {
 function combineItems(baseItems, extraItems) {
   const next = structuredClone(baseItems || []);
   extraItems.forEach((item) => {
-    const existing = next.find((entry) => entry.productId === item.productId);
+    const existing = next.find((entry) => cartItemKey(entry) === cartItemKey(item));
     if (existing) existing.qty += item.qty;
     else next.push({ ...item });
   });
@@ -7706,15 +7895,16 @@ function renderStock() {
       </div>
       <div class="table-wrap stock-table">
         <table>
-          <thead><tr><th>Insumo</th><th>Unidade</th><th>Saldo</th><th>Minimo</th><th>Custo unit.</th><th>Status</th></tr></thead>
+          <thead><tr><th>Insumo</th><th>Saldo</th><th>Embalagens</th><th>Acoes</th><th>Minimo</th><th>Custo unit.</th><th>Status</th></tr></thead>
           <tbody>
             ${state.ingredients
               .map(
                 (ingredient) => `
                   <tr class="stock-row ${ingredient.stock <= ingredient.minStock ? "amber" : "green"}">
-                    <td>${ingredient.name}</td>
-                    <td>${ingredient.unit}</td>
-                    <td>${ingredient.stock}</td>
+                    <td><strong>${escapeHtml(ingredient.name)}</strong><small class="stock-subline">Unidade base: ${escapeHtml(ingredient.unit)}</small></td>
+                    <td>${qty(ingredient.stock)} ${escapeHtml(ingredient.unit)}</td>
+                    <td>${ingredientPackageConfig(ingredient) ? `<strong>${escapeHtml(ingredientPackageBalanceText(ingredient))}</strong><small class="stock-subline">${escapeHtml(ingredientPackageConfig(ingredient).name)}: ${money(ingredientPackageConfig(ingredient).cost)}</small>` : "-"}</td>
+                    <td><div class="toolbar stock-actions"><button class="btn compact secondary" type="button" data-open-modal="ingredient" data-id="${ingredient.id}">Editar</button><button class="btn compact secondary" type="button" data-open-modal="ingredientStock" data-id="${ingredient.id}">Ajustar</button></div></td>
                     <td>${ingredient.minStock}</td>
                     <td>${money(ingredient.costPerUnit)}</td>
                     <td><span class="status ${ingredient.stock <= ingredient.minStock ? "amber" : "green"}">${ingredient.stock <= ingredient.minStock ? "Baixo" : "Ok"}</span></td>
@@ -8045,7 +8235,7 @@ function renderProducts() {
                     <td>${money(product.price)}</td>
                     <td>${money(product.cost)}</td>
                     <td>${product.station || "Bar"}</td>
-                    <td>${product.recipe?.length ? `${product.recipe.length} insumos` : "Baixa direta"}</td>
+                    <td>${productUsesIngredientStock(product) ? "Ficha/variacoes" : "Baixa direta"}</td>
                     <td>${product.favorite ? "Sim" : "Nao"}</td>
                     <td>${money(product.price - product.cost)}</td>
                     <td><span class="status ${product.active ? "green" : "red"}">${product.active ? "Ativo" : "Inativo"}</span></td>
@@ -9290,8 +9480,10 @@ function renderTeam() {
 function renderModal() {
   const renderers = {
     product: renderProductModal,
+    productSelection: renderProductSelectionModal,
     stock: renderStockModal,
     ingredient: renderIngredientModal,
+    ingredientStock: renderIngredientStockModal,
     inventory: renderInventoryModal,
     supplier: renderSupplierModal,
     purchase: renderPurchaseModal,
@@ -9861,6 +10053,53 @@ function bindProductPackageEditor() {
   updateProductPackageEditor();
 }
 
+function updateIngredientPackageEditor() {
+  const formElement = document.querySelector("#ingredient-form");
+  if (!formElement) return;
+  const unitsPerPackage = Math.max(0, Number(formElement.elements.namedItem("unitsPerPackage")?.value || 0));
+  const packageCost = Math.max(0, Number(formElement.elements.namedItem("packageCost")?.value || 0));
+  const unitsPerInnerPackage = Math.max(0, Number(formElement.elements.namedItem("unitsPerInnerPackage")?.value || 0));
+  const stock = Math.max(0, Number(formElement.elements.namedItem("stock")?.value || 0));
+  const unit = String(formElement.elements.namedItem("unit")?.value || "un").trim() || "un";
+  const packageName = String(formElement.elements.namedItem("packageName")?.value || "Embalagem").trim() || "Embalagem";
+  const innerName = String(formElement.elements.namedItem("innerPackageName")?.value || "Subembalagem").trim() || "Subembalagem";
+  const costOutput = formElement.querySelector("[data-ingredient-package-cost]");
+  const preview = formElement.querySelector("[data-ingredient-package-preview]");
+  const applyButton = formElement.querySelector("[data-apply-ingredient-unit-cost]");
+  const unitCost = unitsPerPackage > 0 && packageCost > 0 ? packageCost / unitsPerPackage : 0;
+  if (costOutput) costOutput.textContent = unitCost ? `${money(unitCost)} por ${unit}` : "-- por unidade";
+  if (applyButton) applyButton.disabled = !unitCost;
+  if (preview) {
+    const packages = unitsPerPackage > 0 ? Math.floor(stock / unitsPerPackage) : 0;
+    let remainder = unitsPerPackage > 0 ? stock - packages * unitsPerPackage : stock;
+    const innerPackages = unitsPerInnerPackage > 0 && unitsPerInnerPackage < unitsPerPackage ? Math.floor(remainder / unitsPerInnerPackage) : 0;
+    remainder -= innerPackages * unitsPerInnerPackage;
+    preview.textContent = unitsPerPackage > 0
+      ? `Saldo informado: ${qty(stock)} ${unit} = ${qty(packages)} x ${packageName}${innerPackages ? ` + ${qty(innerPackages)} x ${innerName}` : ""}${remainder ? ` + ${qty(remainder)} ${unit}` : ""}.`
+      : "Exemplo: pacote com 10 macos de 20 cigarros = 200 unidades base.";
+  }
+}
+
+function bindIngredientPackageEditor() {
+  const formElement = document.querySelector("#ingredient-form");
+  if (!formElement) return;
+  ["unit", "stock", "packageName", "unitsPerPackage", "packageCost", "innerPackageName", "unitsPerInnerPackage"].forEach((name) => {
+    formElement.elements.namedItem(name)?.addEventListener("input", updateIngredientPackageEditor);
+  });
+  formElement.querySelector("[data-apply-ingredient-unit-cost]")?.addEventListener("click", () => {
+    const unitsPerPackage = Number(formElement.elements.namedItem("unitsPerPackage")?.value || 0);
+    const packageCost = Number(formElement.elements.namedItem("packageCost")?.value || 0);
+    if (!(unitsPerPackage > 0 && packageCost > 0)) {
+      notify("Informe a quantidade e o valor da embalagem.");
+      return;
+    }
+    formElement.elements.namedItem("costPerUnit").value = (packageCost / unitsPerPackage).toFixed(3);
+    updateIngredientPackageEditor();
+    notify("Custo por unidade base aplicado.");
+  });
+  updateIngredientPackageEditor();
+}
+
 function localProductNameSuggestion(value) {
   const connectors = new Set(["a", "as", "com", "da", "das", "de", "do", "dos", "e", "em", "para", "sem"]);
   return String(value || "")
@@ -9973,6 +10212,60 @@ function bindProductCatalogAssistant() {
     reviewButton.disabled = false;
     reviewButton.innerHTML = `${icon("sparkles")} Revisar nome e buscar fotos`;
   });
+}
+
+function renderProductSelectionModal() {
+  const product = state.products.find((entry) => entry.id === currentModal.id);
+  if (!product) return '<div class="modal-body"><p>Produto nao encontrado.</p></div>';
+  const variants = productSaleVariants(product);
+  const flavors = productSaleFlavors(product);
+  const destinationLabel = currentModal.destination === "table" ? "Adicionar a mesa" : "Adicionar a comanda";
+  return `
+    <form id="product-selection-form">
+      <input type="hidden" name="productId" value="${product.id}" />
+      <div class="modal-head">
+        <div><h2>${escapeHtml(product.name)}</h2><p>Escolha as opcoes antes de adicionar.</p></div>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body product-selection-body">
+        ${
+          variants.length
+            ? `<fieldset class="selection-group">
+                <legend>Tamanho ou variacao</legend>
+                <div class="selection-option-grid">
+                  ${variants.map((option, index) => `
+                    <label class="selection-option">
+                      <input type="radio" name="variantId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
+                      <span><strong>${escapeHtml(option.label)}</strong><small>${money(option.price > 0 ? option.price : product.price)}</small></span>
+                    </label>
+                  `).join("")}
+                </div>
+              </fieldset>`
+            : ""
+        }
+        ${
+          flavors.length
+            ? `<fieldset class="selection-group">
+                <legend>Sabor ou complemento</legend>
+                <div class="selection-option-grid flavors">
+                  ${flavors.map((option, index) => `
+                    <label class="selection-option">
+                      <input type="radio" name="flavorId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
+                      <span><strong>${escapeHtml(option.label)}</strong><small>Baixa separada no estoque</small></span>
+                    </label>
+                  `).join("")}
+                </div>
+              </fieldset>`
+            : ""
+        }
+        <div class="notice compact">O carrinho exibira o tamanho e o sabor escolhidos. Cada combinacao sera controlada separadamente.</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">${destinationLabel}</button>
+      </div>
+    </form>
+  `;
 }
 
 function renderProductModal() {
@@ -10149,8 +10442,27 @@ function renderProductModal() {
           <label class="field full">
             <span>Ficha tecnica</span>
             <textarea name="recipeText" placeholder="Ex.: Cachaca:60, Limao:1">${recipeToText(product?.recipe || [])}</textarea>
-            <small class="hint">Para venda fracionada, cadastre o estoque real como insumo e informe o consumo por venda. Ex.: Cigarro Marlboro:1 ou Whisky 1L:50.</small>
+            <small class="hint">Itens comuns a todas as opcoes. Para venda fracionada, cadastre o estoque real como insumo. Ex.: Canudo:1.</small>
           </label>
+          <section class="product-sale-options-editor full">
+            <div class="product-package-head">
+              <div>
+                <strong>Tamanhos e sabores na venda</strong>
+                <small>Opcional. Ao vender, o operador precisara escolher as opcoes configuradas.</small>
+              </div>
+              <span class="status blue">Baixa por escolha</span>
+            </div>
+            <label class="field full">
+              <span>Tamanhos ou variacoes</span>
+              <textarea name="saleVariantsText" rows="4" placeholder="500 ml | 15,00 | Copo 500 ml:1; Whisky:80; Energetico:200\n700 ml | 20,00 | Copo 700 ml:1; Whisky:100; Energetico:250">${escapeHtml(saleOptionLines(product?.saleVariants, "variant"))}</textarea>
+              <small class="hint">Uma opcao por linha: nome | preco opcional | ficha adicional. Deixe o preco vazio para usar o preco principal.</small>
+            </label>
+            <label class="field full">
+              <span>Sabores ou complementos obrigatorios</span>
+              <textarea name="saleFlavorsText" rows="5" placeholder="Coco | Gelo saborizado Coco:1\nMaca verde | Gelo saborizado Maca Verde:1\nMorango | Gelo saborizado Morango:1">${escapeHtml(saleOptionLines(product?.saleFlavors, "flavor"))}</textarea>
+              <small class="hint">Uma opcao por linha: nome | ficha adicional. O app baixa somente o sabor escolhido.</small>
+            </label>
+          </section>
         </div>
       </div>
       <div class="modal-actions">
@@ -10212,25 +10524,77 @@ function renderStockModal() {
 }
 
 function renderIngredientModal() {
+  const ingredient = state.ingredients.find((entry) => entry.id === currentModal.id);
   return `
     <form id="ingredient-form">
       <div class="modal-head">
-        <h2>Novo insumo</h2>
+        <h2>${ingredient ? "Editar insumo" : "Novo insumo"}</h2>
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body">
         <div class="form-grid">
-          <label class="field"><span>Nome</span><input name="name" required /></label>
-          <label class="field"><span>Unidade</span><input name="unit" required placeholder="ml, g, un" /></label>
-          <label class="field"><span>Saldo</span><input name="stock" type="number" min="0" step="0.01" required /></label>
-          <label class="field"><span>Minimo</span><input name="minStock" type="number" min="0" step="0.01" required /></label>
-          <label class="field"><span>Custo unitario</span><input name="costPerUnit" type="number" min="0" step="0.001" required /></label>
+          <label class="field"><span>Nome</span><input name="name" required value="${escapeHtml(ingredient?.name || "")}" /></label>
+          <label class="field"><span>Unidade base</span><input name="unit" required placeholder="ml, g, un" value="${escapeHtml(ingredient?.unit || "")}" /></label>
+          <label class="field"><span>Saldo em unidades base</span><input name="stock" type="number" min="0" step="0.01" required value="${ingredient?.stock ?? 0}" /></label>
+          <label class="field"><span>Minimo</span><input name="minStock" type="number" min="0" step="0.01" required value="${ingredient?.minStock ?? 0}" /></label>
+          <label class="field"><span>Custo por unidade base</span><input name="costPerUnit" type="number" min="0" step="0.001" required value="${ingredient?.costPerUnit ?? 0}" /></label>
+          <section class="ingredient-package-editor full">
+            <div class="product-package-head">
+              <div><strong>Embalagens de compra e fracionamento</strong><small>Opcional. O saldo continua sempre na unidade base.</small></div>
+              <strong data-ingredient-package-cost>${ingredientPackageConfig(ingredient)?.cost ? `${money(ingredientPackageConfig(ingredient).cost / ingredientPackageConfig(ingredient).unitsPerPackage)} por ${escapeHtml(ingredient?.unit || "un")}` : "-- por unidade"}</strong>
+            </div>
+            <div class="product-package-fields">
+              <label class="field"><span>Embalagem de compra</span><input name="packageName" placeholder="Pacote, fardo, garrafa" value="${escapeHtml(ingredient?.packageName || "")}" /></label>
+              <label class="field"><span>Unidades base por embalagem</span><input name="unitsPerPackage" type="number" min="0" step="0.01" placeholder="Ex.: 200" value="${ingredient?.unitsPerPackage || ""}" /></label>
+              <label class="field"><span>Valor da embalagem</span><input name="packageCost" type="number" min="0" step="0.01" placeholder="Ex.: 100,00" value="${ingredient?.packageCost || ""}" /></label>
+              <label class="field"><span>Embalagem intermediaria</span><input name="innerPackageName" placeholder="Ex.: Maco" value="${escapeHtml(ingredient?.innerPackageName || "")}" /></label>
+              <label class="field"><span>Unidades base por intermediaria</span><input name="unitsPerInnerPackage" type="number" min="0" step="0.01" placeholder="Ex.: 20" value="${ingredient?.unitsPerInnerPackage || ""}" /></label>
+              <div class="product-package-action"><button class="btn secondary" type="button" data-apply-ingredient-unit-cost>Aplicar custo por unidade</button></div>
+            </div>
+            <p class="hint" data-ingredient-package-preview>${ingredientPackageConfig(ingredient) ? `Saldo atual: ${escapeHtml(ingredientPackageBalanceText(ingredient))}.` : "Exemplo: pacote com 10 macos de 20 cigarros = 200 unidades base."}</p>
+          </section>
         </div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
         <button class="btn primary" type="submit">Salvar</button>
       </div>
+    </form>
+  `;
+}
+
+function renderIngredientStockModal() {
+  const ingredient = state.ingredients.find((entry) => entry.id === currentModal.id);
+  if (!ingredient) return '<div class="modal-body"><p>Insumo nao encontrado.</p></div>';
+  const config = ingredientPackageConfig(ingredient);
+  return `
+    <form id="ingredient-stock-form">
+      <div class="modal-head">
+        <div><h2>Ajustar insumo</h2><p>${escapeHtml(ingredient.name)}</p></div>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="summary-list compact">
+          <div class="summary-row"><span>Saldo atual</span><strong>${qty(ingredient.stock)} ${escapeHtml(ingredient.unit)}</strong></div>
+          ${config ? `<div class="summary-row"><span>Convertido</span><strong>${escapeHtml(ingredientPackageBalanceText(ingredient))}</strong></div>` : ""}
+        </div>
+        <div class="form-grid">
+          <label class="field">
+            <span>Tipo</span>
+            <select name="mode">
+              <option value="add">Adicionar unidades base</option>
+              <option value="remove">Remover unidades base</option>
+              <option value="set">Definir saldo total</option>
+              ${config?.innerName ? `<option value="add-inner">Adicionar ${escapeHtml(config.innerName)}(s)</option><option value="remove-inner">Remover ${escapeHtml(config.innerName)}(s)</option>` : ""}
+              ${config ? `<option value="add-package">Adicionar ${escapeHtml(config.name)}(s)</option><option value="remove-package">Remover ${escapeHtml(config.name)}(s)</option>` : ""}
+            </select>
+          </label>
+          <label class="field"><span>Quantidade</span><input name="qty" type="number" min="0" step="0.01" required /></label>
+          <label class="field full"><span>Motivo</span><input name="reason" value="Reposicao de insumo" /></label>
+        </div>
+        ${config ? `<div class="notice compact">1 ${escapeHtml(config.name)} = ${qty(config.unitsPerPackage)} ${escapeHtml(ingredient.unit)}${config.innerName ? `. 1 ${escapeHtml(config.innerName)} = ${qty(config.unitsPerInnerPackage)} ${escapeHtml(ingredient.unit)}.` : "."}</div>` : ""}
+      </div>
+      <div class="modal-actions"><button class="btn secondary" type="button" data-close-modal>Cancelar</button><button class="btn primary" type="submit">Salvar ajuste</button></div>
     </form>
   `;
 }
@@ -11220,8 +11584,10 @@ function bindModalForms() {
   document.querySelector("#add-tables-form")?.addEventListener("submit", saveNewTables);
   document.querySelector("#table-split-form")?.addEventListener("submit", saveTableSplitPlan);
   document.querySelector("#product-form")?.addEventListener("submit", saveProduct);
+  document.querySelector("#product-selection-form")?.addEventListener("submit", saveProductSelection);
   document.querySelector("#stock-form")?.addEventListener("submit", saveStockAdjustment);
   document.querySelector("#ingredient-form")?.addEventListener("submit", saveIngredient);
+  document.querySelector("#ingredient-stock-form")?.addEventListener("submit", saveIngredientStockAdjustment);
   document.querySelector("#inventory-form")?.addEventListener("submit", saveInventoryCount);
   document.querySelector("#supplier-form")?.addEventListener("submit", saveSupplier);
   document.querySelector("#purchase-form")?.addEventListener("submit", savePurchase);
@@ -11253,6 +11619,7 @@ function bindModalForms() {
   bindProductImageSearch();
   bindProductFormPricingSimulator();
   bindProductPackageEditor();
+  bindIngredientPackageEditor();
   bindProductCatalogAssistant();
 }
 
@@ -11527,6 +11894,24 @@ function bindProductImageSearch() {
   });
 }
 
+async function saveProductSelection(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const product = state.products.find((entry) => entry.id === String(form.get("productId") || currentModal.id));
+  const destination = currentModal.destination || "cart";
+  const tableId = currentModal.tableId || "";
+  const item = buildConfiguredSaleItem(product, {
+    variantId: String(form.get("variantId") || ""),
+    flavorId: String(form.get("flavorId") || ""),
+  });
+  if (!item) {
+    notify("Escolha o tamanho e o sabor antes de continuar.");
+    return;
+  }
+  if (destination === "table") await addConfiguredItemToTable(tableId, item);
+  else addConfiguredItemToCart(item);
+}
+
 async function saveProduct(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
@@ -11534,6 +11919,18 @@ async function saveProduct(event) {
   const removeImage = form.get("removeImage") === "on";
   const internetImageUrl = productImageUrl({ imageUrl: form.get("internetImageUrl") });
   const currentProduct = state.products.find((product) => product.id === currentModal.id);
+  const parsedBaseRecipe = parseRecipeTextDetailed(form.get("recipeText"));
+  const parsedVariants = parseSaleOptionLines(form.get("saleVariantsText"), "variant");
+  const parsedFlavors = parseSaleOptionLines(form.get("saleFlavorsText"), "flavor");
+  const invalidConfiguration = [
+    ...parsedBaseRecipe.invalid.map((entry) => `ficha: ${entry}`),
+    ...parsedVariants.invalid.map((entry) => `tamanho: ${entry}`),
+    ...parsedFlavors.invalid.map((entry) => `sabor: ${entry}`),
+  ];
+  if (invalidConfiguration.length) {
+    notify(`Revise os insumos ou o formato: ${invalidConfiguration.slice(0, 3).join(" | ")}.`, 10000);
+    return;
+  }
   const payload = {
     name: form.get("name").trim(),
     productCode: form.get("productCode").trim(),
@@ -11552,7 +11949,9 @@ async function saveProduct(event) {
     criticalStock: Number(form.get("criticalStock")),
     expiresAt: form.get("expiresAt") || "",
     station: form.get("station"),
-    recipe: parseRecipeText(form.get("recipeText")),
+    recipe: parsedBaseRecipe.recipe,
+    saleVariants: parsedVariants.options,
+    saleFlavors: parsedFlavors.options,
     favorite: form.get("favorite") === "true",
     active: form.get("active") === "true",
     imageUrl: removeImage ? "" : internetImageUrl || currentProduct?.imageUrl || "",
@@ -11562,8 +11961,8 @@ async function saveProduct(event) {
     notify("Para controlar por fardo, informe a quantidade por embalagem e o valor de compra.");
     return;
   }
-  if (payload.recipe.length && payload.unitsPerPackage > 0) {
-    notify("Use controle por fardo somente em produtos baixados por unidade. Produtos com ficha tecnica baixam os insumos.");
+  if ((payload.recipe.length || payload.saleVariants.length || payload.saleFlavors.length) && payload.unitsPerPackage > 0) {
+    notify("Use controle por fardo somente em produtos baixados diretamente. Produtos com ficha ou opcoes baixam os insumos.");
     return;
   }
   if (!payload.unitsPerPackage) {
@@ -11690,6 +12089,8 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     package_name: payload.packageName || null,
     units_per_package: payload.unitsPerPackage,
     package_cost: payload.packageCost,
+    sale_variants: payload.saleVariants,
+    sale_flavors: payload.saleFlavors,
     min_stock: payload.minStock,
     critical_stock: payload.criticalStock,
     expires_at: payload.expiresAt || null,
@@ -11703,7 +12104,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
 
   const fallbackPayload = { ...dbPayload };
   const removedOptionalColumns = [];
-  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost"]) {
+  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "sale_variants", "sale_flavors"]) {
     if (!result.error || !String(result.error.message || "").includes(column)) continue;
     delete fallbackPayload[column];
     removedOptionalColumns.push(column);
@@ -11717,6 +12118,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
       if (column === "product_code") return "codigo";
       if (column === "barcode_codes") return "codigos de barras";
       if (["package_name", "units_per_package", "package_cost"].includes(column)) return "controle por fardo";
+      if (["sale_variants", "sale_flavors"].includes(column)) return "tamanhos e sabores";
       return "validade";
     }))];
     notify(`Produto salvo. Para gravar ${labels.join(" e ")} online, rode a migracao no Supabase.`);
@@ -11818,7 +12220,7 @@ function activeProductSalesQuantitySince(productId, since) {
 
 function recentStockHistoryRecoveryPlan() {
   return state.products
-    .filter((product) => product.active !== false && !product.recipe?.length)
+    .filter((product) => product.active !== false && !productUsesIngredientStock(product))
     .map((product) => {
       const currentStock = Number(product.stock || 0);
       const counts = state.inventoryCounts
@@ -12152,40 +12554,209 @@ async function saveStockAdjustment(event) {
 async function saveIngredient(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
+  const previousIngredient = state.ingredients.find((entry) => entry.id === currentModal.id);
   const ingredient = {
-    id: id("ingredient"),
+    id: previousIngredient?.id || id("ingredient"),
     name: form.get("name").trim(),
     unit: form.get("unit").trim(),
     stock: Number(form.get("stock")),
     minStock: Number(form.get("minStock")),
     costPerUnit: Number(form.get("costPerUnit")),
+    packageName: String(form.get("packageName") || "").trim(),
+    unitsPerPackage: Math.max(0, Number(form.get("unitsPerPackage") || 0)),
+    innerPackageName: String(form.get("innerPackageName") || "").trim(),
+    unitsPerInnerPackage: Math.max(0, Number(form.get("unitsPerInnerPackage") || 0)),
+    packageCost: Math.max(0, Number(form.get("packageCost") || 0)),
   };
+  if ((ingredient.unitsPerPackage > 0 && ingredient.packageCost <= 0) || (ingredient.packageCost > 0 && ingredient.unitsPerPackage <= 0)) {
+    notify("Informe a quantidade e o valor da embalagem de compra.");
+    return;
+  }
+  if (ingredient.unitsPerInnerPackage > 0 && (!ingredient.innerPackageName || ingredient.unitsPerInnerPackage >= ingredient.unitsPerPackage)) {
+    notify("A embalagem intermediaria precisa ter nome e conter menos unidades que a embalagem de compra.");
+    return;
+  }
+  if (!ingredient.unitsPerPackage) {
+    ingredient.packageName = "";
+    ingredient.packageCost = 0;
+    ingredient.innerPackageName = "";
+    ingredient.unitsPerInnerPackage = 0;
+  }
 
   if (isOnlineSession()) {
-    const { error } = await supabaseClient.from("ingredients").insert({
+    const dbPayload = {
       name: ingredient.name,
       unit: ingredient.unit,
       stock: ingredient.stock,
       min_stock: ingredient.minStock,
       cost_per_unit: ingredient.costPerUnit,
-    });
-    if (error) {
-      notify(`Erro ao salvar insumo online: ${error.message}`);
+      package_name: ingredient.packageName || null,
+      units_per_package: ingredient.unitsPerPackage,
+      inner_package_name: ingredient.innerPackageName || null,
+      units_per_inner_package: ingredient.unitsPerInnerPackage,
+      package_cost: ingredient.packageCost,
+    };
+    let result = previousIngredient
+      ? await supabaseClient.from("ingredients").update(dbPayload).eq("id", ingredient.id).select("*").single()
+      : await supabaseClient.from("ingredients").insert(dbPayload).select("*").single();
+    const fallbackPayload = { ...dbPayload };
+    const packageColumns = ["package_name", "units_per_package", "inner_package_name", "units_per_inner_package", "package_cost"];
+    for (const column of packageColumns) {
+      if (!result.error || !String(result.error.message || "").includes(column)) continue;
+      delete fallbackPayload[column];
+      result = previousIngredient
+        ? await supabaseClient.from("ingredients").update(fallbackPayload).eq("id", ingredient.id).select("*").single()
+        : await supabaseClient.from("ingredients").insert(fallbackPayload).select("*").single();
+    }
+    if (result.error) {
+      notify(`Erro ao salvar insumo online: ${result.error.message}`);
       return;
+    }
+    ingredient.id = result.data.id;
+    if (packageColumns.some((column) => !(column in fallbackPayload))) {
+      notify("Insumo salvo, mas execute a migracao de embalagens no Supabase para gravar pacote, maco ou fardo.", 10000);
+    }
+    const previousStock = Number(previousIngredient?.stock || 0);
+    if (ingredient.stock !== previousStock) {
+      await supabaseClient.from("inventory_counts").insert({
+        user_id: session.id,
+        item_type: "ingredient",
+        item_id: ingredient.id,
+        expected: previousStock,
+        counted: ingredient.stock,
+        difference: ingredient.stock - previousStock,
+        notes: previousIngredient ? "Ajuste pela edicao do insumo" : "Estoque inicial do insumo",
+      });
     }
     currentModal = null;
     await loadOnlineStockData();
-    logAudit("Insumo criado online", ingredient.name);
+    logAudit(previousIngredient ? "Insumo editado online" : "Insumo criado online", ingredient.name);
     notify("Insumo salvo no Supabase.");
     renderApp();
     return;
   }
 
-  state.ingredients.push(ingredient);
+  if (previousIngredient) state.ingredients = state.ingredients.map((entry) => entry.id === ingredient.id ? ingredient : entry);
+  else state.ingredients.push(ingredient);
+  const previousStock = Number(previousIngredient?.stock || 0);
+  if (ingredient.stock !== previousStock) {
+    state.inventoryCounts.unshift({
+      id: id("inventory"),
+      date: new Date().toISOString(),
+      itemType: "ingredient",
+      itemId: ingredient.id,
+      expected: previousStock,
+      counted: ingredient.stock,
+      difference: ingredient.stock - previousStock,
+      userId: session.id,
+      notes: previousIngredient ? "Ajuste pela edicao do insumo" : "Estoque inicial do insumo",
+    });
+  }
   currentModal = null;
-  logAudit("Insumo criado", ingredient.name);
+  logAudit(previousIngredient ? "Insumo editado" : "Insumo criado", ingredient.name);
   saveState();
   notify("Insumo salvo.");
+  renderApp();
+}
+
+async function saveIngredientStockAdjustment(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const ingredient = state.ingredients.find((entry) => entry.id === currentModal.id);
+  if (!ingredient) return;
+  const mode = String(form.get("mode") || "add");
+  const informedQty = Number(form.get("qty") || 0);
+  const config = ingredientPackageConfig(ingredient);
+  const packagedMode = /package|inner/.test(mode);
+  if (!Number.isFinite(informedQty) || informedQty < 0 || (mode !== "set" && informedQty <= 0)) {
+    notify("Informe uma quantidade valida.");
+    return;
+  }
+  if (packagedMode && !Number.isInteger(informedQty)) {
+    notify("Informe uma quantidade inteira de embalagens.");
+    return;
+  }
+  let factor = 1;
+  let packageLabel = ingredient.unit;
+  if (mode.includes("inner")) {
+    if (!config?.unitsPerInnerPackage) return;
+    factor = config.unitsPerInnerPackage;
+    packageLabel = config.innerName;
+  } else if (mode.includes("package")) {
+    if (!config) return;
+    factor = config.unitsPerPackage;
+    packageLabel = config.name;
+  }
+  const units = informedQty * factor;
+  const previousStock = Number(ingredient.stock || 0);
+  const nextStock = mode === "set"
+    ? informedQty
+    : mode.startsWith("remove")
+      ? previousStock - units
+      : previousStock + units;
+  if (nextStock < 0) {
+    notify("A retirada e maior que o saldo disponivel.");
+    return;
+  }
+  const difference = Number((nextStock - previousStock).toFixed(3));
+  const reason = String(form.get("reason") || "Reposicao de insumo").trim() || "Reposicao de insumo";
+  const operation = mode === "set" ? "Saldo definido" : difference > 0 ? "Entrada" : "Retirada";
+  const details = packagedMode
+    ? `${operation}: ${qty(informedQty)} x ${packageLabel} (${qty(Math.abs(difference))} ${ingredient.unit}). ${reason}`
+    : `${operation}: ${qty(Math.abs(difference))} ${ingredient.unit}. ${reason}`;
+
+  if (isOnlineSession()) {
+    const update = await supabaseClient
+      .from("ingredients")
+      .update({ stock: nextStock })
+      .eq("id", ingredient.id)
+      .eq("stock", previousStock)
+      .select("id")
+      .maybeSingle();
+    if (update.error) {
+      notify(`Erro ao ajustar insumo: ${update.error.message}`);
+      return;
+    }
+    if (!update.data) {
+      await loadOnlineStockData();
+      notify("O saldo mudou em outro computador. Confira o valor atualizado e tente novamente.");
+      renderApp();
+      return;
+    }
+    const history = await supabaseClient.from("inventory_counts").insert({
+      user_id: session.id,
+      item_type: "ingredient",
+      item_id: ingredient.id,
+      expected: previousStock,
+      counted: nextStock,
+      difference,
+      notes: details,
+    });
+    if (history.error) {
+      await supabaseClient.from("ingredients").update({ stock: previousStock }).eq("id", ingredient.id).eq("stock", nextStock);
+      notify(`O ajuste foi cancelado porque o historico nao pode ser registrado: ${history.error.message}`, 10000);
+      return;
+    }
+    currentModal = null;
+    await loadOnlineStockData();
+  } else {
+    state.ingredients = state.ingredients.map((entry) => entry.id === ingredient.id ? { ...entry, stock: nextStock } : entry);
+    state.inventoryCounts.unshift({
+      id: id("inventory"),
+      date: new Date().toISOString(),
+      itemType: "ingredient",
+      itemId: ingredient.id,
+      expected: previousStock,
+      counted: nextStock,
+      difference,
+      userId: session.id,
+      notes: details,
+    });
+    currentModal = null;
+    saveState();
+  }
+  logAudit("Insumo ajustado", `${ingredient.name}: ${details}`);
+  notify(`Saldo atualizado: ${qty(nextStock)} ${ingredient.unit}${config ? ` (${ingredientPackageBalanceText(ingredient, nextStock)})` : ""}.`);
   renderApp();
 }
 
@@ -13447,6 +14018,7 @@ function externalPaymentItemsFromForm(form) {
 
     const product = findProductBySearchValue(productSearch);
     if (!product) return { error: `Produto nao encontrado: ${productSearch}. Escolha uma opcao da lista.` };
+    if (productHasSaleOptions(product)) return { error: `${product.name} exige escolha de tamanho ou sabor. Registre essa venda pelo Balcao.` };
 
     const quantityValue = form.get(`externalQty-${index}`);
     const quantity = quantityValue ? Number(quantityValue) : 1;
@@ -13787,16 +14359,7 @@ async function saveExternalPayment(event) {
     }
 
     if (saleItems.length) {
-      const itemsResult = await supabaseClient.from("sale_items").insert(
-        saleItems.map((item) => ({
-          sale_id: saleResult.data.id,
-          product_id: item.productId,
-          name: item.name,
-          qty: item.qty,
-          price: item.price,
-          cost: item.cost,
-        })),
-      );
+      const itemsResult = await insertSaleItemsOnline(saleResult.data.id, saleItems);
 
       if (itemsResult.error) {
         notify(`Pagamento registrado, mas falhou ao salvar produtos: ${itemsResult.error.message}`);
@@ -14052,18 +14615,80 @@ function recipeToText(recipe) {
     .join(", ");
 }
 
-function parseRecipeText(text) {
-  if (!text?.trim()) return [];
-  return text
-    .split(",")
+function parseRecipeTextDetailed(text, separator = /[,;]+/) {
+  if (!text?.trim()) return { recipe: [], invalid: [] };
+  const recipe = [];
+  const invalid = [];
+  String(text)
+    .split(separator)
     .map((chunk) => chunk.trim())
-    .map((chunk) => {
-      const [name, qty] = chunk.split(":").map((part) => part.trim());
+    .filter(Boolean)
+    .forEach((chunk) => {
+      const separatorIndex = chunk.lastIndexOf(":");
+      const name = separatorIndex >= 0 ? chunk.slice(0, separatorIndex).trim() : "";
+      const rawQty = separatorIndex >= 0 ? chunk.slice(separatorIndex + 1).trim().replace(",", ".") : "";
+      const quantity = Number(rawQty);
       const ingredient = state.ingredients.find((item) => item.name.toLowerCase() === name.toLowerCase());
-      if (!ingredient || !Number(qty)) return null;
-      return { ingredientId: ingredient.id, qty: Number(qty) };
+      if (!ingredient || !Number.isFinite(quantity) || quantity <= 0) {
+        invalid.push(chunk);
+        return;
+      }
+      recipe.push({ ingredientId: ingredient.id, qty: quantity });
+    });
+  return { recipe: mergeStockRecipes(recipe), invalid };
+}
+
+function parseRecipeText(text) {
+  return parseRecipeTextDetailed(text).recipe;
+}
+
+function saleOptionLines(options, type = "variant") {
+  return normalizeProductSaleOptions(options, type)
+    .map((option) => {
+      const recipe = option.recipe.map((item) => `${ingredientName(item.ingredientId)}:${qty(item.qty)}`).join("; ");
+      return type === "variant"
+        ? `${option.label} | ${option.price > 0 ? option.price.toFixed(2).replace(".", ",") : ""} | ${recipe}`
+        : `${option.label} | ${recipe}`;
     })
-    .filter(Boolean);
+    .join("\n");
+}
+
+function saleOptionId(type, label, index) {
+  const slug = String(label || "opcao")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "opcao";
+  return `${type}-${slug}-${index + 1}`;
+}
+
+function parseSaleOptionLines(text, type = "variant") {
+  const options = [];
+  const invalid = [];
+  String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line, index) => {
+      const parts = line.split("|").map((part) => part.trim());
+      const label = parts[0] || "";
+      const rawPrice = type === "variant" ? parts[1] || "" : "";
+      const recipeText = type === "variant" ? parts.slice(2).join("|") : parts.slice(1).join("|");
+      const parsedRecipe = parseRecipeTextDetailed(recipeText, /[;]+/);
+      const price = rawPrice ? Number(rawPrice.replace(",", ".")) : 0;
+      if (!label || !recipeText || parsedRecipe.invalid.length || (rawPrice && (!Number.isFinite(price) || price < 0))) {
+        invalid.push(line);
+        return;
+      }
+      options.push({
+        id: saleOptionId(type, label, index),
+        label,
+        price: type === "variant" ? price : 0,
+        recipe: parsedRecipe.recipe,
+      });
+    });
+  return { options, invalid };
 }
 
 function applyReportFilter(event) {
