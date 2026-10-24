@@ -42,6 +42,8 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Fluxo de caixa projetado para 30, 60 e 90 dias
 - Simulador de preco com custos, taxas, impostos e margem
 - Conferencia detalhada do fechamento por forma de pagamento
+- Comprovantes compartilhados pelo WhatsApp e enviados por e-mail
+- Relatorios de vendas enviados por e-mail no fechamento do caixa
 - 2FA e central de aparelhos
 - Auditoria imutavel
 - Gerente diario com alertas de anomalias
@@ -120,6 +122,21 @@ uma vez no SQL Editor:
 O app adia essas atualizacoes enquanto houver carrinho, formulario, mesa em
 fechamento ou pagamento aberto. Assim que a operacao termina, os dados pendentes
 sao aplicados automaticamente.
+
+### WhatsApp e e-mail
+
+O comprovante pode ser compartilhado pelo WhatsApp sem chave adicional. Para
+enviar comprovantes e relatorios por e-mail, configure estas variaveis no projeto
+da Vercel e publique novamente:
+
+- `RESEND_API_KEY`: chave criada no painel da Resend.
+- `EMAIL_FROM`: remetente verificado, por exemplo `DISTRIBUIDORA ENCONTRO DAS AGUAS <comprovantes@seudominio.com.br>`.
+- `EMAIL_REPLY_TO`: e-mail que recebera respostas dos clientes (opcional).
+- `REPORT_EMAILS`: destinatarios dos relatorios separados por virgula.
+
+O fechamento comum e o botao `Fechar caixa + relatorio` enviam o relatorio para
+os enderecos de `REPORT_EMAILS`. O envio de e-mail exige login online; as chaves
+ficam somente na Vercel e nunca sao expostas no navegador.
 
 Para dividir a conta de uma mesa entre duas ou mais pessoas, execute uma vez no
 SQL Editor:

@@ -181,6 +181,8 @@ const iconPaths = {
     '<path d="M12 3a9 9 0 0 0 0 18h1.2a1.8 1.8 0 0 0 1.2-3.1 1.8 1.8 0 0 1 1.2-3.1H18a3 3 0 0 0 3-3A9 9 0 0 0 12 3Z"></path><circle cx="7.5" cy="10" r="1"></circle><circle cx="10" cy="6.8" r="1"></circle><circle cx="14" cy="6.8" r="1"></circle><circle cx="16.5" cy="10" r="1"></circle>',
   download: '<path d="M12 3v12"></path><path d="M7 10l5 5 5-5"></path><path d="M5 21h14"></path>',
   print: '<path d="M7 8V3h10v5"></path><path d="M7 17H5a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-2"></path><path d="M7 14h10v7H7v-7Z"></path>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="m3 7 9 6 9-6"></path>',
+  message: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.7-5.1A8 8 0 1 1 21 15Z"></path>',
   star: '<path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.8 1-6.1-4.4-4.3 6.1-.9L12 3Z"></path>',
 };
 
@@ -4138,6 +4140,10 @@ function bindViewEvents() {
   document.querySelectorAll("[data-print-sales-period-report]").forEach((button) => {
     button.addEventListener("click", () => downloadSalesPeriodReportPdf(button.dataset.printSalesPeriodReport));
   });
+  document.querySelectorAll("[data-email-sales-period-report]").forEach((button) => {
+    button.addEventListener("click", () => emailSalesPeriodReport(button.dataset.emailSalesPeriodReport));
+  });
+  document.querySelector("[data-email-current-report]")?.addEventListener("click", emailCurrentFilteredReport);
   document.querySelectorAll("[data-store-daily-sales-total]").forEach((button) => {
     button.addEventListener("click", () => {
       const summary = storeDailySalesTotal(localDateKey(), "manual");
@@ -4155,6 +4161,12 @@ function bindViewEvents() {
 
   document.querySelectorAll("[data-print-sale]").forEach((button) => {
     button.addEventListener("click", () => printSale(button.dataset.printSale));
+  });
+  document.querySelectorAll("[data-share-sale-whatsapp]").forEach((button) => {
+    button.addEventListener("click", () => shareSaleWhatsApp(button.dataset.shareSaleWhatsapp));
+  });
+  document.querySelectorAll("[data-email-sale]").forEach((button) => {
+    button.addEventListener("click", () => sendSaleReceiptEmail(button.dataset.emailSale));
   });
   document.querySelectorAll("[data-print-ticket]").forEach((button) => {
     button.addEventListener("click", () => printSaleTicketsIndividual(button.dataset.printTicket));
@@ -4403,7 +4415,11 @@ function renderPos() {
               <strong>Venda finalizada: ${money(lastSaleForTickets.total)}</strong>
               <span>${lastSaleTicketCount ? `${lastSaleTicketCount} ficha(s) individuais disponiveis para impressao.` : "Recibo individual disponivel para esta parte da conta."}</span>
             </div>
-            <button class="btn primary" type="button" ${lastSaleTicketCount ? `data-print-last-tickets="${lastSaleForTickets.id}"` : `data-print-sale="${lastSaleForTickets.id}"`}>${icon("print")} ${lastSaleTicketCount ? "Imprimir fichas" : "Imprimir recibo"}</button>
+            <div class="toolbar">
+              <button class="btn secondary" type="button" data-share-sale-whatsapp="${lastSaleForTickets.id}">${icon("message")} WhatsApp</button>
+              <button class="btn secondary" type="button" data-email-sale="${lastSaleForTickets.id}">${icon("mail")} E-mail</button>
+              <button class="btn primary" type="button" ${lastSaleTicketCount ? `data-print-last-tickets="${lastSaleForTickets.id}"` : `data-print-sale="${lastSaleForTickets.id}"`}>${icon("print")} ${lastSaleTicketCount ? "Imprimir fichas" : "Imprimir recibo"}</button>
+            </div>
           </section>`
         : ""
     }
@@ -6757,6 +6773,7 @@ function renderSales() {
         <button class="btn secondary" type="button" data-print-sales-period-report="monthly">${icon("print")} Mensal</button>
         <button class="btn secondary" type="button" data-print-sales-period-report="semester">${icon("print")} Semestral</button>
         <button class="btn secondary" type="button" data-print-sales-period-report="annual">${icon("print")} Anual</button>
+        <button class="btn secondary" type="button" data-email-sales-period-report="daily">${icon("mail")} E-mail diario</button>
         <button class="btn danger" type="button" data-zero-today-sales ${todayReceivedSales.length ? "" : "disabled"}>Zerar vendas do dia</button>
       </div>
     </div>
@@ -6912,6 +6929,8 @@ function salesTable(sales) {
                   <td>
                     <div class="toolbar">
                       <button class="btn compact secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
+                      <button class="btn compact secondary" type="button" data-share-sale-whatsapp="${sale.id}">${icon("message")} WhatsApp</button>
+                      <button class="btn compact secondary" type="button" data-email-sale="${sale.id}">${icon("mail")} E-mail</button>
                       ${(sale.items || []).length && !isManualChargeSale(sale) ? `<button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>` : ""}
                       ${
                         !isFinancialSale(sale)
@@ -7510,6 +7529,7 @@ async function closeCashAndDownloadSalesReport(useFormValues = false) {
   if (!closedCash) return;
 
   await downloadSalesReportPdf(closedCash);
+  await emailCashClosingReport(closedCash);
   renderApp();
 }
 
@@ -7802,7 +7822,10 @@ async function bindCashForm() {
       const authorization = await authorizeCashClosingDifference(openCash, counted, notes, form);
       if (authorization === false) return;
       const closedCash = await closeOpenCash({ counted, notes, authorization });
-      if (closedCash) renderApp();
+      if (closedCash) {
+        renderApp();
+        void emailCashClosingReport(closedCash);
+      }
     } else {
       if (isOnlineSession()) {
         const { error } = await supabaseClient.from("cash_sessions").insert({
@@ -9082,6 +9105,7 @@ function renderReports() {
       </div>
       <div class="toolbar">
         <button class="btn secondary" type="button" data-print-report>${icon("print")} Imprimir/PDF</button>
+        <button class="btn secondary" type="button" data-email-current-report>${icon("mail")} Enviar por e-mail</button>
         <button class="btn secondary" type="button" data-export-sales>${icon("download")} CSV vendas</button>
       </div>
     </div>
@@ -9879,6 +9903,8 @@ function renderPrintTicketsModal() {
     </div>
     <div class="modal-actions">
       <button class="btn secondary" type="button" data-close-modal>Fechar</button>
+      <button class="btn secondary" type="button" data-share-sale-whatsapp="${sale.id}">${icon("message")} WhatsApp</button>
+      <button class="btn secondary" type="button" data-email-sale="${sale.id}">${icon("mail")} E-mail</button>
       <button class="btn secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
       <button class="btn primary" type="button" data-print-last-tickets="${sale.id}" ${ticketCount ? "" : "disabled"}>${icon("print")} Imprimir fichas</button>
     </div>
@@ -15084,6 +15110,18 @@ async function payClient(clientId) {
 function printSale(saleId) {
   const sale = state.sales.find((entry) => entry.id === saleId);
   if (!sale) return;
+  const receipt = saleReceiptText(sale);
+  const win = window.open("", "_blank", "width=420,height=640");
+  if (!win) {
+    notify("Nao foi possivel abrir a janela de impressao.");
+    return;
+  }
+  win.document.write(`<pre style="font: 14px monospace; white-space: pre-wrap;">${escapeHtml(receipt)}</pre>`);
+  win.document.close();
+  win.print();
+}
+
+function saleReceiptText(sale) {
   const receipt = [
     state.settings.barName || APP_DISPLAY_NAME,
     state.settings.cnpj ? `CNPJ: ${state.settings.cnpj}` : "",
@@ -15111,14 +15149,152 @@ function printSale(saleId) {
     "",
     state.settings.receiptFooter || "",
   ].filter(Boolean).join("\n");
-  const win = window.open("", "_blank", "width=420,height=640");
-  if (!win) {
-    notify("Nao foi possivel abrir a janela de impressao.");
+  return receipt;
+}
+
+function appEmailBusinessData() {
+  return {
+    name: state.settings.barName || APP_DISPLAY_NAME,
+    cnpj: state.settings.cnpj || "",
+    address: state.settings.address || "",
+  };
+}
+
+function saleEmailData(sale) {
+  return {
+    id: sale.id,
+    date: dateTime(sale.date),
+    operator: userName(sale.cashierId),
+    tableName: sale.tableName || "",
+    customerName: sale.customerName || "",
+    payment: paymentDisplay(sale),
+    total: Number(sale.total || 0),
+    cashReceived: Number(sale.cashReceived || 0),
+    cashChange: Number(sale.cashChange || 0),
+    footer: state.settings.receiptFooter || "",
+    items: (sale.items || []).map((item) => ({
+      name: item.name,
+      qty: Number(item.qty || 0),
+      price: Number(item.price || 0),
+    })),
+  };
+}
+
+async function postAppEmail(payload, { silent = false } = {}) {
+  if (!isOnlineSession()) {
+    if (!silent) notify("Entre com uma conta online para enviar e-mails pelo app.");
+    return false;
+  }
+  try {
+    const accessToken = await onlineAccessToken();
+    if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
+    const response = await fetch("/api/communications/email", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "Nao foi possivel enviar o e-mail.");
+    if (!silent) notify("E-mail enviado com sucesso.");
+    return true;
+  } catch (error) {
+    notify(`E-mail nao enviado: ${error.message}`);
+    return false;
+  }
+}
+
+function shareSaleWhatsApp(saleId) {
+  const sale = state.sales.find((entry) => entry.id === saleId);
+  if (!sale) {
+    notify("Venda nao encontrada para compartilhar.");
     return;
   }
-  win.document.write(`<pre style="font: 14px monospace; white-space: pre-wrap;">${receipt}</pre>`);
-  win.document.close();
-  win.print();
+  const url = `https://wa.me/?text=${encodeURIComponent(saleReceiptText(sale))}`;
+  const opened = window.open(url, "_blank", "noopener");
+  if (!opened) notify("O navegador bloqueou o WhatsApp. Libere pop-ups e tente novamente.");
+}
+
+async function sendSaleReceiptEmail(saleId) {
+  const sale = state.sales.find((entry) => entry.id === saleId);
+  if (!sale) {
+    notify("Venda nao encontrada para enviar.");
+    return;
+  }
+  const recipient = prompt("Digite o e-mail do cliente para receber o comprovante:", "")?.trim();
+  if (!recipient) return;
+  await postAppEmail({
+    type: "sale_receipt",
+    recipient,
+    business: appEmailBusinessData(),
+    sale: saleEmailData(sale),
+  });
+}
+
+function salesReportEmailData(sales, period) {
+  const financialSales = sales.filter(isFinancialSale);
+  const receivedSales = financialSales.filter(isReceivedSale);
+  const fiadoSales = financialSales.filter((sale) => saleFiadoAmount(sale) > 0);
+  const received = receivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const fiado = fiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
+  return {
+    period,
+    generatedAt: dateTime(new Date().toISOString()),
+    operator: session?.name || "Usuario",
+    summary: {
+      received,
+      fiado,
+      launched: received + fiado,
+      count: financialSales.length,
+    },
+    paymentTotals: {
+      ...cashSalesPaymentTotals(receivedSales),
+      Fiado: fiado,
+    },
+    sales: financialSales.slice(-300).map((sale) => ({
+      date: dateTime(sale.date),
+      items: saleItemsDescription(sale) || saleItemsLabel(sale),
+      payment: paymentDisplay(sale),
+      total: saleDisplayTotal(sale),
+    })),
+  };
+}
+
+async function sendSalesReportEmail(sales, period, options = {}) {
+  if (!sales.length && !options.silent) {
+    notify("Nao ha vendas neste periodo para enviar.");
+    return false;
+  }
+  return postAppEmail(
+    {
+      type: "sales_report",
+      business: appEmailBusinessData(),
+      report: salesReportEmailData(sales, period),
+    },
+    options,
+  );
+}
+
+async function emailSalesPeriodReport(period = "daily") {
+  if (isOnlineSession() && ["monthly", "semester", "annual"].includes(period)) {
+    notify("Carregando o historico completo para enviar o relatorio...");
+    const loaded = await loadOnlineSalesData();
+    if (!loaded) return;
+  }
+  const periodInfo = salesReportPeriodRange(period);
+  const sales = salesForRange(periodInfo.start, periodInfo.end, { includeInactive: true });
+  await sendSalesReportEmail(sales, `${periodInfo.title} - ${periodInfo.label}`);
+}
+
+async function emailCurrentFilteredReport() {
+  await sendSalesReportEmail(reportSales(), reportPeriodLabel());
+}
+
+async function emailCashClosingReport(cash) {
+  const sales = salesForCashPeriod(cash);
+  const period = `Fechamento ${cashSessionCode(cash)} - ${dateTime(cash.openedAt)} ate ${dateTime(
+    cash.closedAt || new Date().toISOString(),
+  )}`;
+  return sendSalesReportEmail(sales, period, { silent: true });
 }
 
 function ticketUnitList(sale) {
