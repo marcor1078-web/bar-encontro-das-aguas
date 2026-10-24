@@ -15188,7 +15188,7 @@ async function postAppEmail(payload, { silent = false } = {}) {
   try {
     const accessToken = await onlineAccessToken();
     if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
-    const response = await fetch("/api/communications/email", {
+    const response = await fetch("/api/health?action=email", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
       body: JSON.stringify(payload),
