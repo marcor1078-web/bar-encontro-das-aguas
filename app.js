@@ -601,6 +601,7 @@ let categoryFilter = "Todos";
 let stockSortMode = "default";
 let reportFilter = { mode: "24h", start: "", end: "" };
 let salesDateFilter = "";
+let topProductsPeriodDays = 7;
 let suppressBroadcast = false;
 let deferredInstallPrompt = null;
 let searchRenderTimer = null;
@@ -616,6 +617,7 @@ let onlineSalesRefreshInProgress = false;
 let automaticCashOpeningInProgress = false;
 let automaticCashLastCloudRefreshAt = 0;
 let storageWarningShown = false;
+let atomicTableMigrationWarningShown = false;
 let paymentRecoveryState = {
   loading: false,
   date: "",
@@ -1239,6 +1241,19 @@ function realtimeInteractionLocked() {
   );
 }
 
+function realtimeRefreshBlocked() {
+  const activeElement = document.activeElement;
+  const tableModalCanRefresh =
+    currentModal?.type === "table" &&
+    !assistantBusy &&
+    !connectionState.syncing &&
+    !cart.length &&
+    !tableCheckout &&
+    !document.querySelector('form[data-submitting="true"], [aria-busy="true"]') &&
+    !activeElement?.matches?.("input, textarea, select, [contenteditable='true']");
+  return realtimeInteractionLocked() && !tableModalCanRefresh;
+}
+
 function realtimeCanRender(areas) {
   if (realtimeInteractionLocked()) return false;
   const activeElement = document.activeElement;
@@ -1268,7 +1283,7 @@ function queueFullRealtimeRefresh() {
 
 async function flushRealtimeUpdates() {
   if (!realtimePendingAreas.size || !isOnlineSession()) return;
-  if (realtimeRefreshRunning || realtimeInteractionLocked()) {
+  if (realtimeRefreshRunning || realtimeRefreshBlocked()) {
     scheduleRealtimeRefresh(900);
     return;
   }
@@ -1288,7 +1303,8 @@ async function flushRealtimeUpdates() {
     if (areas.has("suppliers")) await loadOnlineSupplierData();
     realtimeLastUpdateAt = new Date().toISOString();
     saveState();
-    if (session && realtimeCanRender(areas)) renderApp();
+    const tableModalCanRender = currentModal?.type === "table" && areas.has("tables");
+    if (session && (realtimeCanRender(areas) || tableModalCanRender)) renderApp();
   } catch (error) {
     console.warn("Falha ao aplicar atualizacao em tempo real", error);
   } finally {
@@ -4222,6 +4238,12 @@ function bindViewEvents() {
   document.querySelector("#sales-date-filter-form")?.addEventListener("submit", applySalesDateFilter);
   document.querySelector("[data-clear-sales-date-filter]")?.addEventListener("click", clearSalesDateFilter);
   document.querySelector("[data-restore-zeroed-sales-date]")?.addEventListener("click", restoreZeroedSalesForSelectedDate);
+  document.querySelectorAll("[data-top-products-period]").forEach((button) => {
+    button.addEventListener("click", () => {
+      topProductsPeriodDays = Number(button.dataset.topProductsPeriod || 7);
+      renderApp();
+    });
+  });
   document.querySelectorAll("[data-close-cash-sales-report]").forEach((button) => {
     button.addEventListener("click", () => closeCashAndDownloadSalesReport(button.dataset.closeCashSalesReport === "form"));
   });
@@ -6446,6 +6468,31 @@ async function addProductToTable(tableId, productId) {
   requestProductSelection(productId, "table", tableId);
 }
 
+function isAtomicTableMutationMissing(error) {
+  return /mutate_table_item|schema cache|could not find the function|pgrst202/i.test(
+    `${error?.code || ""} ${error?.message || ""}`,
+  );
+}
+
+async function mutateOnlineTableItem(tableId, action, { item = null, itemKey = "", change = 0 } = {}) {
+  const result = await supabaseClient.rpc("mutate_table_item", {
+    p_table_id: tableId,
+    p_action: action,
+    p_item: item,
+    p_item_key: itemKey,
+    p_change: Number(change || 0),
+  });
+  if (!result.error) return { ok: true, data: result.data };
+  if (isAtomicTableMutationMissing(result.error)) {
+    if (!atomicTableMigrationWarningShown) {
+      atomicTableMigrationWarningShown = true;
+      notify("Execute SUPABASE_MESAS_ATOMICAS.sql para impedir conflitos entre computadores.", 12000);
+    }
+    return { ok: false, missing: true, error: result.error };
+  }
+  return { ok: false, missing: false, error: result.error };
+}
+
 async function addConfiguredItemToTable(tableId, item) {
   const table = state.tables.find((item) => item.id === tableId);
   const product = state.products.find((productEntry) => productEntry.id === item?.productId);
@@ -6468,6 +6515,23 @@ async function addConfiguredItemToTable(tableId, item) {
   }
 
   if (isOnlineSession()) {
+    const mutation = await mutateOnlineTableItem(tableId, "add", {
+      item,
+      itemKey: cartItemKey(item),
+      change: Number(item.qty || 1),
+    });
+    if (!mutation.ok && !mutation.missing) {
+      notify(`Erro ao adicionar item na mesa online: ${mutation.error.message}`);
+      return;
+    }
+    if (mutation.ok) {
+      await loadOnlineTableData();
+      currentModal = { type: "table", id: tableId };
+      logAudit("Item em mesa online", `${item.name} em ${table.name}.`);
+      renderApp();
+      return;
+    }
+
     const { error } = await supabaseClient
       .from("bar_tables")
       .update({
@@ -6510,7 +6574,7 @@ async function addConfiguredItemToTable(tableId, item) {
   renderApp();
 }
 
-async function saveTableItems(tableId, nextItems, actionLabel) {
+async function saveTableItems(tableId, nextItems, actionLabel, mutation = null) {
   const table = state.tables.find((entry) => entry.id === tableId);
   if (!table) return;
   if (table.splitBill) {
@@ -6522,6 +6586,21 @@ async function saveTableItems(tableId, nextItems, actionLabel) {
   selectedTableId = tableId;
 
   if (isOnlineSession()) {
+    if (mutation) {
+      const mutationResult = await mutateOnlineTableItem(tableId, mutation.action, mutation);
+      if (!mutationResult.ok && !mutationResult.missing) {
+        notify(`Erro ao editar pedido da mesa: ${mutationResult.error.message}`);
+        return;
+      }
+      if (mutationResult.ok) {
+        await loadOnlineTableData();
+        logAudit("Pedido da mesa editado online", `${table.name}: ${actionLabel}.`);
+        notify("Pedido da mesa atualizado.");
+        renderApp();
+        return;
+      }
+    }
+
     const { error } = await supabaseClient
       .from("bar_tables")
       .update({
@@ -6581,7 +6660,11 @@ async function changeTableItemQty(tableId, itemKey, change) {
     return;
   }
 
-  await saveTableItems(tableId, nextItems, `${item.name} ajustado para ${qty(nextQty)}.`);
+  await saveTableItems(tableId, nextItems, `${item.name} ajustado para ${qty(nextQty)}.`, {
+    action: "delta",
+    itemKey,
+    change,
+  });
 }
 
 async function removeTableItem(tableId, itemKey) {
@@ -6589,7 +6672,10 @@ async function removeTableItem(tableId, itemKey) {
   if (!table) return;
   const removed = (table.items || []).find((entry) => cartItemKey(entry) === itemKey);
   const nextItems = (table.items || []).filter((entry) => cartItemKey(entry) !== itemKey);
-  await saveTableItems(tableId, nextItems, `${removed?.name || "Item"} removido.`);
+  await saveTableItems(tableId, nextItems, `${removed?.name || "Item"} removido.`, {
+    action: "remove",
+    itemKey,
+  });
 }
 
 async function closeTable(tableId) {
@@ -6778,7 +6864,7 @@ function renderSales() {
   const weeklyRange = salesReportPeriodRange("weekly");
   const weeklySales = salesForRange(weeklyRange.start, weeklyRange.end);
   const weeklyReceivedTotal = weeklySales.filter(isReceivedSale).reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
-  const weeklyTopProducts = topProductsForPeriod(7, 10);
+  const periodTopProducts = topProductsForPeriod(topProductsPeriodDays, 10);
   const todaySales = salesForToday({ includeInactive: true }).slice().reverse();
   const todayFinancialSales = todaySales.filter(isFinancialSale);
   const todayReceivedSales = todayFinancialSales.filter(isReceivedSale);
@@ -6887,11 +6973,18 @@ function renderSales() {
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
         <div>
-          <h2 class="card-title">Top 10 produtos da semana</h2>
-          <p>Mais vendidos nos ultimos 7 dias, incluindo pagamentos externos com produtos.</p>
+          <h2 class="card-title">Top 10 produtos mais vendidos</h2>
+          <p>Ranking dos ultimos ${topProductsPeriodDays} dias, incluindo pagamentos externos com produtos.</p>
+        </div>
+        <div class="toolbar" aria-label="Periodo do ranking">
+          ${[7, 15, 30]
+            .map(
+              (days) => `<button class="btn compact ${topProductsPeriodDays === days ? "primary" : "secondary"}" type="button" data-top-products-period="${days}">${days} dias</button>`,
+            )
+            .join("")}
         </div>
       </div>
-      ${topProductsTable(weeklyTopProducts)}
+      ${topProductsTable(periodTopProducts, topProductsPeriodDays)}
     </section>
     <section class="card" style="margin-top: 16px;">
       <div class="card-head">
@@ -7529,8 +7622,8 @@ function topProductsForPeriod(days = 7, limit = 10) {
     .slice(0, limit);
 }
 
-function topProductsTable(products) {
-  if (!products.length) return '<div class="empty">Nenhum produto vendido nos ultimos 7 dias.</div>';
+function topProductsTable(products, days = 7) {
+  if (!products.length) return `<div class="empty">Nenhum produto vendido nos ultimos ${days} dias.</div>`;
 
   return `
     <div class="table-wrap">
