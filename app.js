@@ -1382,8 +1382,21 @@ function isPointPayment(payment) {
 }
 
 function normalizePaymentMethod(method) {
-  if (method === "Cartao") return "Credito";
-  return String(method || "").trim();
+  const value = String(method || "").trim();
+  const key = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+  if (key === "pix") return "Pix";
+  if (["debito", "debit", "cartao de debito"].includes(key)) return "Debito";
+  if (["credito", "credit", "cartao", "cartao de credito"].includes(key)) return "Credito";
+  if (["dinheiro", "cash", "especie"].includes(key)) return "Dinheiro";
+  if (["fiado", "conta cliente", "credito cliente"].includes(key)) return "Fiado";
+  if (key === "dividido") return "Dividido";
+  return value;
 }
 
 function normalizePaymentBreakdown(breakdown = []) {
@@ -6755,6 +6768,7 @@ function renderSales() {
   const todayTotal = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
   const todayProfit = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
   const todayFiadoTotal = todayFiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
+  const todayPaymentTotals = salesPaymentTotals(todayFinancialSales);
   const filteredDateSales = salesDateFilter ? salesForDateKey(salesDateFilter, { includeCanceled: true }).slice().reverse() : [];
   const filteredZeroedSales = filteredDateSales.filter(isZeroedSale);
   const pendingOffline = pendingOfflineOperations();
@@ -6829,7 +6843,7 @@ function renderSales() {
       <div class="card-head">
         <div>
           <h2 class="card-title">Resumo diario</h2>
-          <p>Vendas de hoje, sem contar fiado, canceladas ou zeradas.</p>
+          <p>Valores recebidos separados por forma de pagamento; fiado aparece fora do total recebido.</p>
         </div>
         <div class="toolbar">
           <button class="btn compact secondary" type="button" data-print-daily-sales-report>${icon("print")} PDF diario</button>
@@ -6839,7 +6853,12 @@ function renderSales() {
       </div>
       <div class="summary-list">
         <div class="summary-row total"><span>Recebido hoje</span><strong>${money(todayTotal)}</strong></div>
+        <div class="summary-row"><span>Pix</span><strong>${money(todayPaymentTotals.Pix)}</strong></div>
+        <div class="summary-row"><span>Debito</span><strong>${money(todayPaymentTotals.Debito)}</strong></div>
+        <div class="summary-row"><span>Credito</span><strong>${money(todayPaymentTotals.Credito)}</strong></div>
+        <div class="summary-row"><span>Dinheiro</span><strong>${money(todayPaymentTotals.Dinheiro)}</strong></div>
         <div class="summary-row"><span>Fiado separado hoje</span><strong>${money(todayFiadoTotal)}</strong></div>
+        ${todayPaymentTotals.Outros > 0 ? `<div class="summary-row"><span>Forma nao identificada</span><strong>${money(todayPaymentTotals.Outros)}</strong></div>` : ""}
         <div class="summary-row"><span>Lucro estimado hoje</span><strong>${money(todayProfit)}</strong></div>
         <div class="summary-row"><span>Vendas recebidas</span><strong>${todayReceivedSales.length}</strong></div>
         <div class="summary-row"><span>Fiado hoje</span><strong>${todayFiadoSales.length}</strong></div>
@@ -7377,16 +7396,26 @@ function salesReportPeriodRange(period = "daily") {
 }
 
 function cashSalesPaymentTotals(sales) {
-  const totals = Object.fromEntries(cashPaymentMethods.map((method) => [method, 0]));
+  const detailed = salesPaymentTotals(sales);
+  return Object.fromEntries(cashPaymentMethods.map((method) => [method, detailed[method] || 0]));
+}
+
+function salesPaymentTotals(sales) {
+  const totals = {
+    ...Object.fromEntries(paymentMethods.map((method) => [method, 0])),
+    Outros: 0,
+  };
+
   sales.forEach((sale) => {
-    if (!isReceivedSale(sale)) return;
+    if (!isFinancialSale(sale)) return;
     salePaymentParts(sale).forEach((part) => {
-      if (part.method === "Fiado") return;
-      const key = normalizePaymentMethod(part.method);
-      totals[key] = Number(totals[key] || 0) + Number(part.amount || 0);
+      const method = normalizePaymentMethod(part.method);
+      const key = paymentMethods.includes(method) ? method : "Outros";
+      totals[key] += Number(part.amount || 0);
     });
   });
-  return totals;
+
+  return Object.fromEntries(Object.entries(totals).map(([method, amount]) => [method, Number(amount.toFixed(2))]));
 }
 
 function isExternalPaymentSale(sale) {
@@ -16202,22 +16231,17 @@ function salesForDateKey(dateKey, { includeCanceled = false } = {}) {
 function buildDailySalesTotal(dateKey, source = "automatico") {
   const sales = salesForDateKey(dateKey, { includeCanceled: false });
   const financialSales = sales.filter(isFinancialSale);
-  const payments = Object.fromEntries(paymentMethods.map((method) => [method, 0]));
-  financialSales.forEach((sale) => {
-    salePaymentParts(sale).forEach((part) => {
-      payments[part.method] = Number(payments[part.method] || 0) + Number(part.amount || 0);
-    });
-  });
+  const payments = salesPaymentTotals(financialSales);
 
   return {
     id: dateKey,
     date: dateKey,
     updatedAt: new Date().toISOString(),
     source,
-    salesCount: sales.length,
+    salesCount: financialSales.length,
     receivedCount: financialSales.filter((sale) => saleStoredReceivedAmount(sale) > 0).length,
     fiadoCount: financialSales.filter((sale) => saleStoredFiadoAmount(sale) > 0).length,
-    itemCount: sales.reduce((sum, sale) => sum + (sale.items || []).reduce((itemSum, item) => itemSum + Number(item.qty || 0), 0), 0),
+    itemCount: financialSales.reduce((sum, sale) => sum + (sale.items || []).reduce((itemSum, item) => itemSum + Number(item.qty || 0), 0), 0),
     totalSold: financialSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
     received: financialSales.reduce((sum, sale) => sum + saleStoredReceivedAmount(sale), 0),
     fiado: financialSales.reduce((sum, sale) => sum + saleStoredFiadoAmount(sale), 0),
@@ -16276,6 +16300,7 @@ function renderDailySalesTotalsTable() {
             <th>Debito</th>
             <th>Credito</th>
             <th>Dinheiro</th>
+            <th>Outros</th>
             <th>Atualizado</th>
           </tr>
         </thead>
@@ -16295,6 +16320,7 @@ function renderDailySalesTotalsTable() {
                   <td>${money(entry.payments?.Debito || 0)}</td>
                   <td>${money(entry.payments?.Credito || 0)}</td>
                   <td>${money(entry.payments?.Dinheiro || 0)}</td>
+                  <td>${money(entry.payments?.Outros || 0)}</td>
                   <td>${entry.updatedAt ? dateTime(entry.updatedAt) : "-"}</td>
                 </tr>
               `,
