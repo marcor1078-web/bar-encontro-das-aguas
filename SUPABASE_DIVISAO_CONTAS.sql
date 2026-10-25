@@ -149,6 +149,7 @@ declare
   item_uuid uuid;
   product_uuid uuid;
   item_quantity numeric(12,3);
+  stock_quantity numeric(12,3);
   kitchen_order jsonb;
   transaction_data jsonb;
   fiado_amount numeric(12,2);
@@ -269,6 +270,7 @@ begin
     item_uuid := coalesce(nullif(item->>'syncId', '')::uuid, gen_random_uuid());
     product_uuid := nullif(item->>'productId', '')::uuid;
     item_quantity := greatest(0, coalesce((item->>'qty')::numeric, 0));
+    stock_quantity := item_quantity * greatest(1, coalesce((item->'selection'->>'stockUnitsPerItem')::numeric, 1));
     if product_uuid is not null and not exists (select 1 from public.products where id = product_uuid) then
       product_uuid := null;
     end if;
@@ -288,13 +290,13 @@ begin
     if product_uuid is not null then
       if exists (select 1 from public.product_recipes where product_id = product_uuid) then
         update public.ingredients as ingredient
-        set stock = greatest(0, ingredient.stock - recipe.qty * item_quantity)
+        set stock = greatest(0, ingredient.stock - recipe.qty * stock_quantity)
         from public.product_recipes as recipe
         where recipe.product_id = product_uuid
           and recipe.ingredient_id = ingredient.id;
       else
         update public.products
-        set stock = greatest(0, stock - item_quantity)
+        set stock = greatest(0, stock - stock_quantity)
         where id = product_uuid;
       end if;
     end if;

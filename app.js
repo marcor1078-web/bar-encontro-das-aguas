@@ -735,6 +735,7 @@ function migrateState(nextState) {
       packageName: "",
       unitsPerPackage: 0,
       packageCost: 0,
+      packageSalePrice: 0,
       saleBrands: [],
       saleCombinations: [],
       saleVariants: [],
@@ -2733,6 +2734,7 @@ function mapProductFromDb(row, recipes = []) {
     packageName: row.package_name || "",
     unitsPerPackage: Number(row.units_per_package || 0),
     packageCost: Number(row.package_cost || 0),
+    packageSalePrice: Number(row.package_sale_price || 0),
     saleBrands: Array.isArray(row.sale_brands) ? row.sale_brands : [],
     saleCombinations: Array.isArray(row.sale_combinations) ? row.sale_combinations : [],
     saleVariants: Array.isArray(row.sale_variants) ? row.sale_variants : [],
@@ -2993,6 +2995,7 @@ function productPackageConfig(product) {
     name: String(product.packageName || "Fardo").trim() || "Fardo",
     unitsPerPackage,
     cost: Math.max(0, Number(product.packageCost || 0)),
+    salePrice: Math.max(0, Number(product.packageSalePrice || 0)) || Number(product.price || 0) * unitsPerPackage,
   };
 }
 
@@ -3060,7 +3063,7 @@ function recipeCost(recipe) {
   }, 0);
 }
 
-function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavorId = "" } = {}) {
+function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavorId = "", saleUnit = "unit" } = {}) {
   if (!product) return null;
   const brands = productSaleBrands(product);
   const variants = productSaleVariants(product);
@@ -3080,20 +3083,28 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
     ? mergeStockRecipes(product.recipe, saleCombination?.recipe, flavor?.recipe)
     : mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe);
   const labels = [brand?.label, variant?.label, flavor?.label].filter(Boolean);
-  const price = saleCombination && saleCombination.price > 0
+  const unitPrice = saleCombination && saleCombination.price > 0
     ? saleCombination.price
     : variant && variant.price > 0
       ? variant.price
       : Number(product.price || 0);
+  const packageConfig = productPackageConfig(product);
+  const sellsPackage = saleUnit === "package" && Boolean(packageConfig);
+  const stockUnitsPerItem = sellsPackage ? packageConfig.unitsPerPackage : 1;
+  const baseCartKey = brands.length
+    ? [product.id, brand?.id || "base", variant?.id || "base", flavor?.id || "base"].join("::")
+    : [product.id, variant?.id || "base", flavor?.id || "base"].join("::");
   return {
     productId: product.id,
-    cartKey: brands.length
-      ? [product.id, brand?.id || "base", variant?.id || "base", flavor?.id || "base"].join("::")
-      : [product.id, variant?.id || "base", flavor?.id || "base"].join("::"),
-    name: [product.name, ...labels].join(" - "),
+    cartKey: packageConfig ? `${baseCartKey}::${sellsPackage ? "package" : "unit"}` : baseCartKey,
+    name: [product.name, ...labels, sellsPackage ? packageConfig.name : ""].filter(Boolean).join(" - "),
     qty: 1,
-    price,
-    cost: stockRecipe.length ? Number(recipeCost(stockRecipe).toFixed(3)) : Number(product.cost || 0),
+    price: sellsPackage ? packageConfig.salePrice : unitPrice,
+    cost: stockRecipe.length
+      ? Number((recipeCost(stockRecipe) * stockUnitsPerItem).toFixed(3))
+      : sellsPackage
+        ? packageConfig.cost || Number(product.cost || 0) * stockUnitsPerItem
+        : Number(product.cost || 0),
     stockRecipe,
     selection: {
       brandId: brand?.id || "",
@@ -3102,8 +3113,16 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
       variantLabel: variant?.label || "",
       flavorId: flavor?.id || "",
       flavorLabel: flavor?.label || "",
+      saleUnit: sellsPackage ? "package" : "unit",
+      packageName: sellsPackage ? packageConfig.name : "",
+      stockUnitsPerItem,
     },
   };
+}
+
+function saleItemStockQuantity(item) {
+  const multiplier = Math.max(1, Number(item?.selection?.stockUnitsPerItem || 1));
+  return Number(item?.qty || 0) * multiplier;
 }
 
 function productExpiryStatus(product) {
@@ -4876,7 +4895,7 @@ function renderKitchen() {
 function requestProductSelection(productId, destination = "cart", tableId = "") {
   const product = state.products.find((item) => item.id === productId);
   if (!product) return;
-  if (productHasSaleOptions(product)) {
+  if (productHasSaleOptions(product) || productPackageConfig(product)) {
     currentModal = { type: "productSelection", id: productId, destination, tableId };
     renderApp();
     return;
@@ -5508,7 +5527,7 @@ function cartStockRequirements(items) {
   for (const item of items) {
     const product = state.products.find((entry) => entry.id === item.productId);
     if (!product) return { ok: false, message: `Produto nao encontrado: ${item.name}.` };
-    const itemQty = Number(item.qty || 0);
+    const itemQty = saleItemStockQuantity(item);
 
     const stockRecipe = itemStockRecipe(item, product);
     if (stockRecipe.length) {
@@ -7958,10 +7977,13 @@ function renderStock() {
                       </div>
                     </td>
                     <td data-label="Categoria">${product.category}</td>
-                    <td data-label="Preco">${money(product.price)}</td>
+                    <td data-label="Preco">
+                      ${money(product.price)}
+                      ${productPackageConfig(product) ? `<small class="stock-package-cost">${escapeHtml(productPackageConfig(product).name)}: ${money(productPackageConfig(product).salePrice)}</small>` : ""}
+                    </td>
                     <td data-label="Custo">
                       ${money(product.cost)}
-                      ${productPackageConfig(product) ? `<small class="stock-package-cost">${escapeHtml(productPackageConfig(product).name)}: ${money(productPackageConfig(product).cost)}</small>` : ""}
+                      ${productPackageConfig(product) ? `<small class="stock-package-cost">Compra ${escapeHtml(productPackageConfig(product).name)}: ${money(productPackageConfig(product).cost)}</small>` : ""}
                     </td>
                     <td data-label="Praca">${product.station || "Bar"}</td>
                     <td data-label="Minimo">${product.minStock}</td>
@@ -8155,7 +8177,7 @@ function productStockHistory(productId) {
         entries.push({
           date: sale.date,
           type: sale.status === "Cancelada" ? "Venda cancelada" : isZeroedSale(sale) ? "Venda zerada" : "Venda",
-          qty: sale.status === "Cancelada" ? 0 : -Number(item.qty || 0),
+          qty: sale.status === "Cancelada" ? 0 : -saleItemStockQuantity(item),
           balance: "",
           userId: sale.cashierId,
           details: `${qty(item.qty)}x ${item.name} - ${paymentDisplay(sale)} - ${money(Number(item.qty || 0) * Number(item.price || 0))}`,
@@ -10123,9 +10145,12 @@ function productPackageFormValues(formElement) {
   const name = String(formElement?.elements.namedItem("packageName")?.value || "Fardo").trim() || "Fardo";
   const unitsPerPackage = Math.max(0, Math.trunc(Number(formElement?.elements.namedItem("unitsPerPackage")?.value || 0)));
   const packageCost = Math.max(0, Number(formElement?.elements.namedItem("packageCost")?.value || 0));
+  const packageSalePrice = Math.max(0, Number(formElement?.elements.namedItem("packageSalePrice")?.value || 0));
+  const unitSalePrice = Math.max(0, Number(formElement?.elements.namedItem("price")?.value || 0));
   const stock = Math.max(0, Number(formElement?.elements.namedItem("stock")?.value || 0));
   const unitCost = unitsPerPackage > 0 && packageCost > 0 ? packageCost / unitsPerPackage : 0;
-  return { name, unitsPerPackage, packageCost, stock, unitCost };
+  const effectiveSalePrice = packageSalePrice || unitSalePrice * unitsPerPackage;
+  return { name, unitsPerPackage, packageCost, packageSalePrice, effectiveSalePrice, stock, unitCost };
 }
 
 function updateProductPackageEditor() {
@@ -10145,7 +10170,7 @@ function updateProductPackageEditor() {
     } else {
       const fullPackages = Math.floor((values.stock + 0.000001) / values.unitsPerPackage);
       const looseUnits = Math.max(0, Number((values.stock - fullPackages * values.unitsPerPackage).toFixed(3)));
-      preview.textContent = `Saldo informado: ${qty(values.stock)} un. = ${qty(fullPackages)} x ${values.name}${looseUnits > 0 ? ` + ${qty(looseUnits)} un.` : ""}.`;
+      preview.textContent = `Saldo informado: ${qty(values.stock)} un. = ${qty(fullPackages)} x ${values.name}${looseUnits > 0 ? ` + ${qty(looseUnits)} un.` : ""}. Venda por ${values.name}: ${money(values.effectiveSalePrice)}.`;
     }
   }
 }
@@ -10153,7 +10178,7 @@ function updateProductPackageEditor() {
 function bindProductPackageEditor() {
   const formElement = document.querySelector("#product-form");
   if (!formElement) return;
-  ["packageName", "unitsPerPackage", "packageCost", "stock"].forEach((name) => {
+  ["packageName", "unitsPerPackage", "packageCost", "packageSalePrice", "price", "stock"].forEach((name) => {
     formElement.elements.namedItem(name)?.addEventListener("input", updateProductPackageEditor);
   });
   formElement.querySelector("[data-apply-package-unit-cost]")?.addEventListener("click", () => {
@@ -10338,6 +10363,7 @@ function renderProductSelectionModal() {
   const variants = productSaleVariants(product);
   const flavors = productSaleFlavors(product);
   const combinations = productSaleCombinations(product);
+  const packageConfig = productPackageConfig(product);
   const initialBrandId = brands[0]?.id || "";
   const initialVariant = combinations.length
     ? variants.find((variant) => combinations.some((combination) => combination.brandId === initialBrandId && combination.variantId === variant.id))
@@ -10351,6 +10377,23 @@ function renderProductSelectionModal() {
         <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
       </div>
       <div class="modal-body product-selection-body">
+        ${
+          packageConfig
+            ? `<fieldset class="selection-group">
+                <legend>Forma de venda</legend>
+                <div class="selection-option-grid">
+                  <label class="selection-option">
+                    <input type="radio" name="saleUnit" value="unit" checked required />
+                    <span><strong>Unidade</strong><small>${money(product.price)} cada</small></span>
+                  </label>
+                  <label class="selection-option">
+                    <input type="radio" name="saleUnit" value="package" required />
+                    <span><strong>${escapeHtml(packageConfig.name)}</strong><small>${qty(packageConfig.unitsPerPackage)} un. por ${money(packageConfig.salePrice)}</small></span>
+                  </label>
+                </div>
+              </fieldset>`
+            : ""
+        }
         ${
           brands.length
             ? `<fieldset class="selection-group">
@@ -10413,7 +10456,7 @@ function renderProductSelectionModal() {
               </fieldset>`
             : ""
         }
-        <div class="notice compact">O carrinho exibira a marca, o tamanho e o sabor escolhidos. Cada combinacao tera seu proprio preco e sua baixa de estoque.</div>
+        <div class="notice compact">O carrinho exibira a opcao escolhida com seu preco. A baixa de estoque respeitara a quantidade de unidades contida na embalagem.</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
@@ -10549,6 +10592,10 @@ function renderProductModal() {
               <label class="field">
                 <span>Valor de compra da embalagem</span>
                 <input name="packageCost" type="number" min="0" step="0.01" value="${product?.packageCost || ""}" placeholder="Ex.: 48,00" />
+              </label>
+              <label class="field">
+                <span>Preco de venda da embalagem</span>
+                <input name="packageSalePrice" type="number" min="0" step="0.01" value="${product?.packageSalePrice || ""}" placeholder="Vazio = preco unitario x quantidade" />
               </label>
               <div class="product-package-action">
                 <button class="btn secondary" type="button" data-apply-package-unit-cost>Aplicar custo por unidade</button>
@@ -12098,6 +12145,7 @@ async function saveProductSelection(event) {
     brandId: String(form.get("brandId") || ""),
     variantId: String(form.get("variantId") || ""),
     flavorId: String(form.get("flavorId") || ""),
+    saleUnit: String(form.get("saleUnit") || "unit"),
   });
   if (!item) {
     notify("Escolha a marca, o tamanho e o sabor antes de continuar.");
@@ -12146,6 +12194,7 @@ async function saveProduct(event) {
     packageName: String(form.get("packageName") || "").trim(),
     unitsPerPackage: Math.max(0, Math.trunc(Number(form.get("unitsPerPackage") || 0))),
     packageCost: Math.max(0, Number(form.get("packageCost") || 0)),
+    packageSalePrice: Math.max(0, Number(form.get("packageSalePrice") || 0)),
     minStock: Number(form.get("minStock")),
     criticalStock: Number(form.get("criticalStock")),
     expiresAt: form.get("expiresAt") || "",
@@ -12171,6 +12220,7 @@ async function saveProduct(event) {
   if (!payload.unitsPerPackage) {
     payload.packageName = "";
     payload.packageCost = 0;
+    payload.packageSalePrice = 0;
   } else if (!payload.packageName) {
     payload.packageName = "Fardo";
   }
@@ -12292,6 +12342,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     package_name: payload.packageName || null,
     units_per_package: payload.unitsPerPackage,
     package_cost: payload.packageCost,
+    package_sale_price: payload.packageSalePrice,
     sale_brands: payload.saleBrands,
     sale_combinations: payload.saleCombinations,
     sale_variants: payload.saleVariants,
@@ -12309,7 +12360,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
 
   const fallbackPayload = { ...dbPayload };
   const removedOptionalColumns = [];
-  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "sale_brands", "sale_combinations", "sale_variants", "sale_flavors"]) {
+  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "package_sale_price", "sale_brands", "sale_combinations", "sale_variants", "sale_flavors"]) {
     if (!result.error || !String(result.error.message || "").includes(column)) continue;
     delete fallbackPayload[column];
     removedOptionalColumns.push(column);
@@ -12322,7 +12373,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     const labels = [...new Set(removedOptionalColumns.map((column) => {
       if (column === "product_code") return "codigo";
       if (column === "barcode_codes") return "codigos de barras";
-      if (["package_name", "units_per_package", "package_cost"].includes(column)) return "controle por fardo";
+      if (["package_name", "units_per_package", "package_cost", "package_sale_price"].includes(column)) return "controle por fardo";
       if (["sale_brands", "sale_combinations", "sale_variants", "sale_flavors"].includes(column)) return "marcas, tamanhos e sabores";
       return "validade";
     }))];
