@@ -5596,6 +5596,32 @@ function canFulfillCart(items) {
   return { ok: true };
 }
 
+function canFulfillCartChange(previousItems, nextItems) {
+  const previousRequirements = cartStockRequirements(previousItems);
+  if (!previousRequirements.ok) return previousRequirements;
+  const nextRequirements = cartStockRequirements(nextItems);
+  if (!nextRequirements.ok) return nextRequirements;
+
+  for (const [productId, { product, qty: required }] of nextRequirements.products) {
+    const previousRequired = Number(previousRequirements.products.get(productId)?.qty || 0);
+    if (required > previousRequired && Number(product.stock || 0) < required) {
+      return { ok: false, message: `Estoque insuficiente para ${product.name}.` };
+    }
+  }
+
+  for (const [ingredientId, { ingredient, qty: required, products }] of nextRequirements.ingredients) {
+    const previousRequired = Number(previousRequirements.ingredients.get(ingredientId)?.qty || 0);
+    if (required > previousRequired && Number(ingredient.stock || 0) < required) {
+      return {
+        ok: false,
+        message: `Insumo insuficiente (${ingredient.name}) para: ${[...products].join(", ")}.`,
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
 function applyCartStock(items) {
   const requirements = cartStockRequirements(items);
   if (!requirements.ok) return;
@@ -6508,7 +6534,7 @@ async function addConfiguredItemToTable(tableId, item) {
   if (existingNextItem) existingNextItem.qty += 1;
   else nextItems.push(item);
 
-  const check = canFulfillCart(nextItems);
+  const check = canFulfillCartChange(table.items || [], nextItems);
   if (!check.ok) {
     notify(check.message);
     return;
@@ -6654,7 +6680,7 @@ async function changeTableItemQty(tableId, itemKey, change) {
   }
 
   item.qty = nextQty;
-  const check = canFulfillCart(nextItems);
+  const check = canFulfillCartChange(table.items || [], nextItems);
   if (!check.ok) {
     notify(check.message);
     return;
