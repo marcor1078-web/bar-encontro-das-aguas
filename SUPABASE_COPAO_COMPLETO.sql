@@ -5,6 +5,30 @@
 -- Cada energetico baixa 350 ml no Copao de 500 ml e 450 ml no de 700 ml.
 
 alter table public.products
+add column if not exists package_name text;
+
+alter table public.products
+add column if not exists units_per_package numeric(12,3) not null default 0;
+
+alter table public.products
+add column if not exists package_cost numeric(12,2) not null default 0;
+
+alter table public.products
+add column if not exists package_sale_price numeric(12,2) not null default 0;
+
+alter table public.products
+add column if not exists sale_brands jsonb not null default '[]'::jsonb;
+
+alter table public.products
+add column if not exists sale_combinations jsonb not null default '[]'::jsonb;
+
+alter table public.products
+add column if not exists sale_variants jsonb not null default '[]'::jsonb;
+
+alter table public.products
+add column if not exists sale_flavors jsonb not null default '[]'::jsonb;
+
+alter table public.products
 add column if not exists sale_mixers jsonb not null default '[]'::jsonb;
 
 insert into public.ingredients (name, unit, stock, min_stock, cost_per_unit)
