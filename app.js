@@ -8086,6 +8086,7 @@ function renderStock() {
         <input class="field-input search" data-search type="search" placeholder="Buscar item" />
         <button class="btn secondary" type="button" data-open-modal="product">Novo produto</button>
         <button class="btn secondary" type="button" data-open-modal="ingredient">Novo insumo</button>
+        <button class="btn primary" type="button" data-open-modal="copaoStock">Estoque do Copao</button>
         <button class="btn secondary" type="button" data-open-modal="inventory">Nova contagem</button>
         <button class="btn secondary" type="button" data-open-modal="priceSimulator">Simular preco</button>
         <button class="btn secondary" type="button" data-open-modal="inventoryIntelligence">Inteligencia de estoque</button>
@@ -9779,6 +9780,7 @@ function renderModal() {
     stock: renderStockModal,
     ingredient: renderIngredientModal,
     ingredientStock: renderIngredientStockModal,
+    copaoStock: renderCopaoStockModal,
     inventory: renderInventoryModal,
     supplier: renderSupplierModal,
     purchase: renderPurchaseModal,
@@ -9813,7 +9815,7 @@ function renderModal() {
     ? "modal sale-payment-modal"
     : ["tableSplit", "counterSplit"].includes(currentModal.type)
       ? "modal table-split-modal"
-    : currentModal.type === "inventoryIntelligence"
+    : ["inventoryIntelligence", "copaoStock"].includes(currentModal.type)
       ? "modal inventory-intelligence-modal"
       : currentModal.type === "priceSimulator"
         ? "modal price-simulator-modal"
@@ -10985,6 +10987,103 @@ function renderIngredientStockModal() {
   `;
 }
 
+function copaoStockGroups() {
+  const definitions = [
+    {
+      label: "Bebidas",
+      names: [
+        "Whisky Ballantines",
+        "Whisky Red Label",
+        "Whisky Passport",
+        "Whisky Black Fire",
+        "Whisky Cavalo Branco",
+        "Whisky Buchanans",
+        "Whisky Chivas",
+        "Whisky Jack Daniels",
+        "Gin",
+        "Busca Brisa",
+      ],
+    },
+    {
+      label: "Energeticos",
+      names: ["Energetico Start", "Energetico Bad Wolf", "Energetico Baly Tadala", "Energetico Baly Tropical"],
+    },
+    {
+      label: "Copos, canudos e gelos",
+      names: [
+        "Copo 500 ml",
+        "Copo 700 ml",
+        "Canudo",
+        "Gelo saborizado Coco",
+        "Gelo saborizado Maracuja",
+        "Gelo saborizado Maca Verde",
+        "Gelo saborizado Morango",
+        "Gelo saborizado Melancia",
+      ],
+    },
+  ];
+  const byName = new Map(state.ingredients.map((ingredient) => [ingredient.name.trim().toLocaleLowerCase("pt-BR"), ingredient]));
+  return definitions.map((group) => ({
+    ...group,
+    ingredients: group.names.map((name) => byName.get(name.toLocaleLowerCase("pt-BR"))).filter(Boolean),
+    missing: group.names.filter((name) => !byName.has(name.toLocaleLowerCase("pt-BR"))),
+  }));
+}
+
+function renderCopaoStockModal() {
+  const groups = copaoStockGroups();
+  const missing = groups.flatMap((group) => group.missing);
+  return `
+    <form id="copao-stock-form">
+      <div class="modal-head">
+        <div><h2>Estoque do Copao</h2><p>Informe quanto existe agora de cada insumo.</p></div>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="notice compact"><strong>Saldo total atual:</strong> bebidas e energeticos em ml; copos, canudos e gelos em unidades. Digite o total existente, nao apenas a quantidade que entrou.</div>
+        ${missing.length ? `<div class="notice compact danger">Insumos ausentes: ${escapeHtml(missing.join(", "))}. Execute novamente SUPABASE_COPAO_COMPLETO.sql.</div>` : ""}
+        ${groups.map((group) => `
+          <section class="copao-stock-group">
+            <h3 class="compact-title">${escapeHtml(group.label)}</h3>
+            <div class="table-wrap stock-table modal-table-wrap">
+              <table>
+                <thead><tr><th>Insumo</th><th>Saldo atual</th><th>Novo saldo total</th><th>Conversao</th></tr></thead>
+                <tbody>
+                  ${group.ingredients.map((ingredient) => `
+                    <tr>
+                      <td><strong>${escapeHtml(ingredient.name)}</strong></td>
+                      <td>${qty(ingredient.stock)} ${escapeHtml(ingredient.unit)}</td>
+                      <td>
+                        <input
+                          class="field-input copao-stock-input"
+                          name="stock-${ingredient.id}"
+                          data-copao-stock-id="${ingredient.id}"
+                          data-previous-stock="${Number(ingredient.stock || 0)}"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value="${Number(ingredient.stock || 0)}"
+                          aria-label="Novo saldo de ${escapeHtml(ingredient.name)}"
+                        />
+                      </td>
+                      <td>${ingredientPackageConfig(ingredient) ? escapeHtml(ingredientPackageBalanceText(ingredient)) : `Em ${escapeHtml(ingredient.unit)}`}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        `).join("")}
+        <label class="field full"><span>Motivo</span><input name="reason" value="Contagem do estoque do Copao" /></label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">Salvar todos os saldos</button>
+      </div>
+    </form>
+  `;
+}
+
 function renderInventoryModal() {
   const productOptions = state.products.map((product) => `<option value="product:${product.id}">${product.name}</option>`).join("");
   const ingredientOptions = state.ingredients.map((ingredient) => `<option value="ingredient:${ingredient.id}">${ingredient.name}</option>`).join("");
@@ -11974,6 +12073,7 @@ function bindModalForms() {
   document.querySelector("#stock-form")?.addEventListener("submit", saveStockAdjustment);
   document.querySelector("#ingredient-form")?.addEventListener("submit", saveIngredient);
   document.querySelector("#ingredient-stock-form")?.addEventListener("submit", saveIngredientStockAdjustment);
+  document.querySelector("#copao-stock-form")?.addEventListener("submit", saveCopaoStock);
   document.querySelector("#inventory-form")?.addEventListener("submit", saveInventoryCount);
   document.querySelector("#supplier-form")?.addEventListener("submit", saveSupplier);
   document.querySelector("#purchase-form")?.addEventListener("submit", savePurchase);
@@ -13197,6 +13297,126 @@ async function saveIngredientStockAdjustment(event) {
   }
   logAudit("Insumo ajustado", `${ingredient.name}: ${details}`);
   notify(`Saldo atualizado: ${qty(nextStock)} ${ingredient.unit}${config ? ` (${ingredientPackageBalanceText(ingredient, nextStock)})` : ""}.`);
+  renderApp();
+}
+
+async function saveCopaoStock(event) {
+  event.preventDefault();
+  const formElement = event.currentTarget;
+  const form = new FormData(formElement);
+  const reason = String(form.get("reason") || "Contagem do estoque do Copao").trim() || "Contagem do estoque do Copao";
+  const inputs = [...formElement.querySelectorAll("[data-copao-stock-id]")];
+  const changes = [];
+
+  for (const input of inputs) {
+    const ingredient = state.ingredients.find((entry) => entry.id === input.dataset.copaoStockId);
+    if (!ingredient) continue;
+    const nextStock = Number(input.value);
+    if (!Number.isFinite(nextStock) || nextStock < 0) {
+      notify(`Informe um saldo valido para ${ingredient.name}.`);
+      input.focus();
+      return;
+    }
+    const previousStock = Number(ingredient.stock || 0);
+    const normalizedStock = Number(nextStock.toFixed(3));
+    const difference = Number((normalizedStock - previousStock).toFixed(3));
+    if (Math.abs(difference) < 0.0001) continue;
+    changes.push({ ingredient, previousStock, nextStock: normalizedStock, difference });
+  }
+
+  if (!changes.length) {
+    notify("Nenhum saldo foi alterado.");
+    return;
+  }
+
+  const submitButton = formElement.querySelector('button[type="submit"]');
+  if (submitButton) {
+    submitButton.disabled = true;
+    submitButton.textContent = "Salvando...";
+  }
+
+  if (isOnlineSession()) {
+    const updates = await Promise.all(changes.map(async (change) => {
+      const result = await supabaseClient
+        .from("ingredients")
+        .update({ stock: change.nextStock })
+        .eq("id", change.ingredient.id)
+        .eq("stock", change.previousStock)
+        .select("id")
+        .maybeSingle();
+      return { ...change, result };
+    }));
+    const failed = updates.find(({ result }) => result.error || !result.data);
+    if (failed) {
+      await Promise.all(updates
+        .filter(({ result }) => result.data)
+        .map((change) => supabaseClient
+          .from("ingredients")
+          .update({ stock: change.previousStock })
+          .eq("id", change.ingredient.id)
+          .eq("stock", change.nextStock)));
+      await loadOnlineStockData();
+      if (failed.result.error) {
+        notify(`Erro ao salvar ${failed.ingredient.name}: ${failed.result.error.message}`, 10000);
+      } else {
+        notify(`O saldo de ${failed.ingredient.name} mudou em outro computador. Confira os valores atualizados e tente novamente.`, 10000);
+      }
+      renderApp();
+      return;
+    }
+
+    const historyRows = changes.map((change) => ({
+      user_id: session.id,
+      item_type: "ingredient",
+      item_id: change.ingredient.id,
+      expected: change.previousStock,
+      counted: change.nextStock,
+      difference: change.difference,
+      notes: `Saldo definido: ${qty(change.nextStock)} ${change.ingredient.unit}. ${reason}`,
+    }));
+    const history = await supabaseClient.from("inventory_counts").insert(historyRows);
+    if (history.error) {
+      await Promise.all(changes.map((change) => supabaseClient
+        .from("ingredients")
+        .update({ stock: change.previousStock })
+        .eq("id", change.ingredient.id)
+        .eq("stock", change.nextStock)));
+      await loadOnlineStockData();
+      notify(`Os ajustes foram cancelados porque o historico nao pode ser registrado: ${history.error.message}`, 10000);
+      renderApp();
+      return;
+    }
+    currentModal = null;
+    await loadOnlineStockData();
+  } else {
+    const changedById = new Map(changes.map((change) => [change.ingredient.id, change]));
+    state.ingredients = state.ingredients.map((ingredient) => {
+      const change = changedById.get(ingredient.id);
+      return change ? { ...ingredient, stock: change.nextStock } : ingredient;
+    });
+    state.inventoryCounts = state.inventoryCounts || [];
+    changes.forEach((change) => {
+      state.inventoryCounts.unshift({
+        id: id("inventory"),
+        date: new Date().toISOString(),
+        itemType: "ingredient",
+        itemId: change.ingredient.id,
+        expected: change.previousStock,
+        counted: change.nextStock,
+        difference: change.difference,
+        userId: session.id,
+        notes: `Saldo definido: ${qty(change.nextStock)} ${change.ingredient.unit}. ${reason}`,
+      });
+    });
+    currentModal = null;
+  }
+
+  logAudit(
+    "Estoque do Copao atualizado",
+    changes.map((change) => `${change.ingredient.name}: ${qty(change.previousStock)} para ${qty(change.nextStock)} ${change.ingredient.unit}`).join("; "),
+  );
+  saveState();
+  notify(`${changes.length} ${changes.length === 1 ? "saldo atualizado" : "saldos atualizados"}.`);
   renderApp();
 }
 

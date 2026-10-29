@@ -711,6 +711,19 @@ body[data-theme="dark"] .price-simulator-section {
   width: min(1120px, 100%);
 }
 
+.copao-stock-group + .copao-stock-group {
+  margin-top: 18px;
+}
+
+.copao-stock-group .stock-table table {
+  min-width: 680px;
+}
+
+.copao-stock-input {
+  min-width: 130px;
+  width: 150px;
+}
+
 .inventory-intelligence-body .advanced-panel {
   margin-bottom: 0 !important;
   box-shadow: none;
