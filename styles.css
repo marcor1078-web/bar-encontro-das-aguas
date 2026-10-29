@@ -309,6 +309,23 @@
   background: var(--panel-2);
 }
 
+.product-fractional-editor {
+  border-left-color: #0f9f6e;
+  background: color-mix(in srgb, var(--panel-2) 90%, #10b981 10%);
+}
+
+.product-fractional-editor .product-package-unit-cost {
+  color: #047857 !important;
+}
+
+.fractional-stock-fields {
+  grid-template-columns: repeat(3, minmax(170px, 1fr));
+}
+
+[data-theme="dark"] .product-fractional-editor .product-package-unit-cost {
+  color: #6ee7b7 !important;
+}
+
 .product-sale-options-editor,
 .ingredient-package-editor {
   display: grid;
@@ -709,19 +726,6 @@ body[data-theme="dark"] .price-simulator-section {
 
 .inventory-intelligence-modal {
   width: min(1120px, 100%);
-}
-
-.copao-stock-group + .copao-stock-group {
-  margin-top: 18px;
-}
-
-.copao-stock-group .stock-table table {
-  min-width: 680px;
-}
-
-.copao-stock-input {
-  min-width: 130px;
-  width: 150px;
 }
 
 .inventory-intelligence-body .advanced-panel {
