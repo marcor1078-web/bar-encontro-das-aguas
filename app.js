@@ -2905,13 +2905,26 @@ function mergeStockRecipes(...recipes) {
 
 function normalizeProductSaleOptions(options = [], type = "variant") {
   return (Array.isArray(options) ? options : [])
-    .map((option, index) => ({
-      id: String(option?.id || `${type}-${index + 1}`),
-      label: String(option?.label || option?.name || "").trim(),
-      price: type === "variant" ? Math.max(0, Number(option?.price || 0)) : 0,
-      recipe: normalizeStockRecipe(option?.recipe),
-    }))
+    .map((option, index) => {
+      const recipeByVariant = Object.fromEntries(
+        Object.entries(option?.recipeByVariant || {})
+          .map(([variantId, recipe]) => [String(variantId), normalizeStockRecipe(recipe)])
+          .filter(([variantId, recipe]) => variantId && recipe.length),
+      );
+      return {
+        id: String(option?.id || `${type}-${index + 1}`),
+        label: String(option?.label || option?.name || "").trim(),
+        price: type === "variant" ? Math.max(0, Number(option?.price || 0)) : 0,
+        recipe: normalizeStockRecipe(option?.recipe),
+        recipeByVariant,
+      };
+    })
     .filter((option) => option.label);
+}
+
+function saleOptionRecipe(option, variantId = "") {
+  if (!option) return [];
+  return mergeStockRecipes(option.recipe, option.recipeByVariant?.[variantId]);
 }
 
 function productSaleVariants(product) {
@@ -2961,7 +2974,9 @@ function productUsesIngredientStock(product) {
       productSaleCombinations(product).some((combination) => combination.recipe.length) ||
       productSaleVariants(product).some((option) => option.recipe.length) ||
       productSaleFlavors(product).some((option) => option.recipe.length) ||
-      productSaleMixers(product).some((option) => option.recipe.length),
+      productSaleMixers(product).some(
+        (option) => option.recipe.length || Object.values(option.recipeByVariant || {}).some((recipe) => recipe.length),
+      ),
   );
 }
 
@@ -2998,7 +3013,7 @@ function productOptionCombinations(product) {
           flavor,
           mixer,
           saleCombination: combination,
-          recipe: mergeStockRecipes(product?.recipe, combination.recipe, flavor?.recipe, mixer?.recipe),
+          recipe: mergeStockRecipes(product?.recipe, combination.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant.id)),
         })),
       );
     });
@@ -3012,7 +3027,7 @@ function productOptionCombinations(product) {
         variant,
         flavor,
         mixer,
-        recipe: mergeStockRecipes(product?.recipe, variant?.recipe, flavor?.recipe, mixer?.recipe),
+        recipe: mergeStockRecipes(product?.recipe, variant?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id)),
       })),
     ),
   );
@@ -3118,8 +3133,8 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
   if (combinations.length && !saleCombination) return null;
 
   const stockRecipe = combinations.length
-    ? mergeStockRecipes(product.recipe, saleCombination?.recipe, flavor?.recipe, mixer?.recipe)
-    : mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe, mixer?.recipe);
+    ? mergeStockRecipes(product.recipe, saleCombination?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id))
+    : mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id));
   const labels = [variant?.label, brand?.label, mixer?.label, flavor?.label].filter(Boolean);
   const unitPrice = saleCombination && saleCombination.price > 0
     ? saleCombination.price
@@ -10830,8 +10845,8 @@ function renderProductModal() {
             </label>
             <label class="field full">
               <span>Energeticos obrigatorios</span>
-              <textarea name="saleMixersText" rows="5" placeholder="Start | Energetico Start:200\nBad Wolf | Energetico Bad Wolf:200\nBaly Tadala | Energetico Baly Tadala:200">${escapeHtml(saleOptionLines(product?.saleMixers, "mixer"))}</textarea>
-              <small class="hint">Uma opcao por linha: nome | ficha adicional. Enquanto a quantidade nao estiver confirmada, deixe apenas o nome.</small>
+              <textarea name="saleMixersText" rows="5" placeholder="Start | 500 ml=Energetico Start:350 | 700 ml=Energetico Start:450\nBad Wolf | 500 ml=Energetico Bad Wolf:350 | 700 ml=Energetico Bad Wolf:450">${escapeHtml(saleMixerLines(product))}</textarea>
+              <small class="hint">Uma opcao por linha: nome | tamanho=ficha. O volume pode mudar conforme o tamanho escolhido.</small>
             </label>
           </section>
         </div>
@@ -12331,7 +12346,7 @@ async function saveProduct(event) {
   const parsedCombinations = parseSaleCombinationLines(form.get("saleCombinationsText"));
   const parsedVariants = parseSaleOptionLines(form.get("saleVariantsText"), "variant");
   const parsedFlavors = parseSaleOptionLines(form.get("saleFlavorsText"), "flavor");
-  const parsedMixers = parseSaleOptionLines(form.get("saleMixersText"), "mixer");
+  const parsedMixers = parseSaleMixerLines(form.get("saleMixersText"));
   if (parsedCombinations.combinations.length && String(form.get("saleVariantsText") || "").trim()) {
     notify("Use marcas + tamanhos ou variacoes sem marca. Nao preencha os dois campos no mesmo produto.", 10000);
     return;
@@ -15078,6 +15093,21 @@ function saleOptionLines(options, type = "variant") {
     .join("\n");
 }
 
+function saleMixerLines(product) {
+  const variants = new Map(productSaleVariants(product).map((variant) => [variant.id, variant.label]));
+  return productSaleMixers(product)
+    .map((option) => {
+      const variantRecipes = Object.entries(option.recipeByVariant || {}).map(([variantId, recipe]) => {
+        const recipeText = recipe.map((item) => `${ingredientName(item.ingredientId)}:${qty(item.qty)}`).join("; ");
+        return `${variants.get(variantId) || variantId}=${recipeText}`;
+      });
+      if (variantRecipes.length) return [option.label, ...variantRecipes].join(" | ");
+      const baseRecipe = option.recipe.map((item) => `${ingredientName(item.ingredientId)}:${qty(item.qty)}`).join("; ");
+      return baseRecipe ? `${option.label} | ${baseRecipe}` : option.label;
+    })
+    .join("\n");
+}
+
 function saleChoiceId(type, label) {
   const slug = String(label || "opcao")
     .normalize("NFD")
@@ -15209,6 +15239,55 @@ function parseSaleOptionLines(text, type = "variant") {
         label,
         price: type === "variant" ? price : 0,
         recipe: parsedRecipe.recipe,
+      });
+    });
+  return { options, invalid };
+}
+
+function parseSaleMixerLines(text) {
+  const options = [];
+  const invalid = [];
+  String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line, index) => {
+      const parts = line.split("|").map((part) => part.trim());
+      const label = parts.shift() || "";
+      const recipeByVariant = {};
+      let recipe = [];
+      let lineInvalid = !label;
+      const hasVariantRecipes = parts.some((part) => part.includes("="));
+
+      if (hasVariantRecipes) {
+        for (const part of parts) {
+          const separatorIndex = part.indexOf("=");
+          const variantLabel = separatorIndex >= 0 ? part.slice(0, separatorIndex).trim() : "";
+          const recipeText = separatorIndex >= 0 ? part.slice(separatorIndex + 1).trim() : "";
+          const parsed = parseRecipeTextDetailed(recipeText, /[;]+/);
+          if (!variantLabel || !recipeText || parsed.invalid.length || !parsed.recipe.length) {
+            lineInvalid = true;
+            break;
+          }
+          recipeByVariant[saleChoiceId("variant", variantLabel)] = parsed.recipe;
+        }
+      } else {
+        const recipeText = parts.join("|").trim();
+        const parsed = parseRecipeTextDetailed(recipeText, /[;]+/);
+        if (parsed.invalid.length) lineInvalid = true;
+        recipe = parsed.recipe;
+      }
+
+      if (lineInvalid) {
+        invalid.push(line);
+        return;
+      }
+      options.push({
+        id: saleOptionId("mixer", label, index),
+        label,
+        price: 0,
+        recipe,
+        recipeByVariant,
       });
     });
   return { options, invalid };

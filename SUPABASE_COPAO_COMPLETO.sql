@@ -2,8 +2,7 @@
 -- Cria os insumos ausentes e configura um unico produto Copao com escolhas de
 -- tamanho, bebida, energetico e gelo. Os demais produtos nao sao alterados.
 --
--- A baixa do energetico fica aguardando a confirmacao dos ml usados em 500 ml
--- e 700 ml. A escolha ja aparece e fica registrada na venda.
+-- Cada energetico baixa 350 ml no Copao de 500 ml e 450 ml no de 700 ml.
 
 alter table public.products
 add column if not exists sale_mixers jsonb not null default '[]'::jsonb;
@@ -135,17 +134,27 @@ begin
       'id', energy.mixer_id,
       'label', energy.label,
       'price', 0,
-      'recipe', '[]'::jsonb
+      'recipe', '[]'::jsonb,
+      'recipeByVariant', jsonb_build_object(
+        'variant-500-ml', jsonb_build_array(
+          jsonb_build_object('ingredientId', energy_stock.id::text, 'qty', 350)
+        ),
+        'variant-700-ml', jsonb_build_array(
+          jsonb_build_object('ingredientId', energy_stock.id::text, 'qty', 450)
+        )
+      )
     )
     order by energy.sort_order
   ) into energeticos
   from (
     values
-      (1, 'mixer-start', 'Start'),
-      (2, 'mixer-bad-wolf', 'Bad Wolf'),
-      (3, 'mixer-baly-tadala', 'Baly Tadala'),
-      (4, 'mixer-baly-tropical', 'Baly Tropical')
-  ) as energy(sort_order, mixer_id, label);
+      (1, 'mixer-start', 'Start', 'Energetico Start'),
+      (2, 'mixer-bad-wolf', 'Bad Wolf', 'Energetico Bad Wolf'),
+      (3, 'mixer-baly-tadala', 'Baly Tadala', 'Energetico Baly Tadala'),
+      (4, 'mixer-baly-tropical', 'Baly Tropical', 'Energetico Baly Tropical')
+  ) as energy(sort_order, mixer_id, label, ingredient_name)
+  join public.ingredients energy_stock
+    on lower(trim(energy_stock.name)) = lower(trim(energy.ingredient_name));
 
   select jsonb_agg(
     jsonb_build_object(
