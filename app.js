@@ -742,6 +742,7 @@ function migrateState(nextState) {
       saleCombinations: [],
       saleVariants: [],
       saleFlavors: [],
+      saleMixers: [],
       station: "Bar",
       recipe: [],
       criticalStock: Math.max(1, Math.floor(Number(product.minStock || base.minStock || 1) / 2)),
@@ -2755,6 +2756,7 @@ function mapProductFromDb(row, recipes = []) {
     saleCombinations: Array.isArray(row.sale_combinations) ? row.sale_combinations : [],
     saleVariants: Array.isArray(row.sale_variants) ? row.sale_variants : [],
     saleFlavors: Array.isArray(row.sale_flavors) ? row.sale_flavors : [],
+    saleMixers: Array.isArray(row.sale_mixers) ? row.sale_mixers : [],
     minStock: Number(row.min_stock || 0),
     criticalStock: Number(row.critical_stock || 0),
     expiresAt: row.expires_at || "",
@@ -2924,6 +2926,10 @@ function productSaleFlavors(product) {
   return normalizeProductSaleOptions(product?.saleFlavors, "flavor");
 }
 
+function productSaleMixers(product) {
+  return normalizeProductSaleOptions(product?.saleMixers, "mixer");
+}
+
 function normalizeProductSaleCombinations(combinations = []) {
   return (Array.isArray(combinations) ? combinations : [])
     .map((combination, index) => ({
@@ -2941,7 +2947,12 @@ function productSaleCombinations(product) {
 }
 
 function productHasSaleOptions(product) {
-  return productSaleBrands(product).length > 0 || productSaleVariants(product).length > 0 || productSaleFlavors(product).length > 0;
+  return (
+    productSaleBrands(product).length > 0 ||
+    productSaleVariants(product).length > 0 ||
+    productSaleFlavors(product).length > 0 ||
+    productSaleMixers(product).length > 0
+  );
 }
 
 function productUsesIngredientStock(product) {
@@ -2949,7 +2960,8 @@ function productUsesIngredientStock(product) {
     product?.recipe?.length ||
       productSaleCombinations(product).some((combination) => combination.recipe.length) ||
       productSaleVariants(product).some((option) => option.recipe.length) ||
-      productSaleFlavors(product).some((option) => option.recipe.length),
+      productSaleFlavors(product).some((option) => option.recipe.length) ||
+      productSaleMixers(product).some((option) => option.recipe.length),
   );
 }
 
@@ -2969,7 +2981,9 @@ function productOptionCombinations(product) {
   const brands = productSaleBrands(product);
   const variants = productSaleVariants(product);
   const flavors = productSaleFlavors(product);
+  const mixers = productSaleMixers(product);
   const flavorChoices = flavors.length ? flavors : [null];
+  const mixerChoices = mixers.length ? mixers : [null];
 
   const configuredCombinations = productSaleCombinations(product);
   if (configuredCombinations.length) {
@@ -2977,24 +2991,30 @@ function productOptionCombinations(product) {
       const brand = brands.find((option) => option.id === combination.brandId);
       const variant = variants.find((option) => option.id === combination.variantId);
       if (!brand || !variant) return [];
-      return flavorChoices.map((flavor) => ({
-        brand,
-        variant,
-        flavor,
-        saleCombination: combination,
-        recipe: mergeStockRecipes(product?.recipe, combination.recipe, flavor?.recipe),
-      }));
+      return flavorChoices.flatMap((flavor) =>
+        mixerChoices.map((mixer) => ({
+          brand,
+          variant,
+          flavor,
+          mixer,
+          saleCombination: combination,
+          recipe: mergeStockRecipes(product?.recipe, combination.recipe, flavor?.recipe, mixer?.recipe),
+        })),
+      );
     });
   }
 
   const variantChoices = variants.length ? variants : [null];
   return variantChoices.flatMap((variant) =>
-    flavorChoices.map((flavor) => ({
-      brand: null,
-      variant,
-      flavor,
-      recipe: mergeStockRecipes(product?.recipe, variant?.recipe, flavor?.recipe),
-    })),
+    flavorChoices.flatMap((flavor) =>
+      mixerChoices.map((mixer) => ({
+        brand: null,
+        variant,
+        flavor,
+        mixer,
+        recipe: mergeStockRecipes(product?.recipe, variant?.recipe, flavor?.recipe, mixer?.recipe),
+      })),
+    ),
   );
 }
 
@@ -3079,16 +3099,18 @@ function recipeCost(recipe) {
   }, 0);
 }
 
-function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavorId = "", saleUnit = "unit" } = {}) {
+function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavorId = "", mixerId = "", saleUnit = "unit" } = {}) {
   if (!product) return null;
   const brands = productSaleBrands(product);
   const variants = productSaleVariants(product);
   const flavors = productSaleFlavors(product);
+  const mixers = productSaleMixers(product);
   const combinations = productSaleCombinations(product);
   const brand = brands.length ? brands.find((option) => option.id === brandId) : null;
   const variant = variants.length ? variants.find((option) => option.id === variantId) : null;
   const flavor = flavors.length ? flavors.find((option) => option.id === flavorId) : null;
-  if ((brands.length && !brand) || (variants.length && !variant) || (flavors.length && !flavor)) return null;
+  const mixer = mixers.length ? mixers.find((option) => option.id === mixerId) : null;
+  if ((brands.length && !brand) || (variants.length && !variant) || (flavors.length && !flavor) || (mixers.length && !mixer)) return null;
 
   const saleCombination = combinations.length
     ? combinations.find((entry) => entry.brandId === brand?.id && entry.variantId === variant?.id)
@@ -3096,9 +3118,9 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
   if (combinations.length && !saleCombination) return null;
 
   const stockRecipe = combinations.length
-    ? mergeStockRecipes(product.recipe, saleCombination?.recipe, flavor?.recipe)
-    : mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe);
-  const labels = [brand?.label, variant?.label, flavor?.label].filter(Boolean);
+    ? mergeStockRecipes(product.recipe, saleCombination?.recipe, flavor?.recipe, mixer?.recipe)
+    : mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe, mixer?.recipe);
+  const labels = [variant?.label, brand?.label, mixer?.label, flavor?.label].filter(Boolean);
   const unitPrice = saleCombination && saleCombination.price > 0
     ? saleCombination.price
     : variant && variant.price > 0
@@ -3108,8 +3130,8 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
   const sellsPackage = saleUnit === "package" && Boolean(packageConfig);
   const stockUnitsPerItem = sellsPackage ? packageConfig.unitsPerPackage : 1;
   const baseCartKey = brands.length
-    ? [product.id, brand?.id || "base", variant?.id || "base", flavor?.id || "base"].join("::")
-    : [product.id, variant?.id || "base", flavor?.id || "base"].join("::");
+    ? [product.id, brand?.id || "base", variant?.id || "base", mixer?.id || "base", flavor?.id || "base"].join("::")
+    : [product.id, variant?.id || "base", mixer?.id || "base", flavor?.id || "base"].join("::");
   return {
     productId: product.id,
     cartKey: packageConfig ? `${baseCartKey}::${sellsPackage ? "package" : "unit"}` : baseCartKey,
@@ -3129,6 +3151,8 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
       variantLabel: variant?.label || "",
       flavorId: flavor?.id || "",
       flavorLabel: flavor?.label || "",
+      mixerId: mixer?.id || "",
+      mixerLabel: mixer?.label || "",
       saleUnit: sellsPackage ? "package" : "unit",
       packageName: sellsPackage ? packageConfig.name : "",
       stockUnitsPerItem,
@@ -10481,6 +10505,7 @@ function renderProductSelectionModal() {
   const brands = productSaleBrands(product);
   const variants = productSaleVariants(product);
   const flavors = productSaleFlavors(product);
+  const mixers = productSaleMixers(product);
   const combinations = productSaleCombinations(product);
   const packageConfig = productPackageConfig(product);
   const initialBrandId = brands[0]?.id || "";
@@ -10514,24 +10539,9 @@ function renderProductSelectionModal() {
             : ""
         }
         ${
-          brands.length
-            ? `<fieldset class="selection-group">
-                <legend>Marca</legend>
-                <div class="selection-option-grid">
-                  ${brands.map((option, index) => `
-                    <label class="selection-option">
-                      <input type="radio" name="brandId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
-                      <span><strong>${escapeHtml(option.label)}</strong><small>Escolha a marca</small></span>
-                    </label>
-                  `).join("")}
-                </div>
-              </fieldset>`
-            : ""
-        }
-        ${
           variants.length
             ? `<fieldset class="selection-group">
-                <legend>Tamanho ou variacao</legend>
+                <legend>Tamanho</legend>
                 <div class="selection-option-grid">
                   ${variants.map((option) => {
                     const optionCombinations = combinations.filter((combination) => combination.variantId === option.id);
@@ -10561,9 +10571,39 @@ function renderProductSelectionModal() {
             : ""
         }
         ${
+          brands.length
+            ? `<fieldset class="selection-group">
+                <legend>Bebida</legend>
+                <div class="selection-option-grid">
+                  ${brands.map((option, index) => `
+                    <label class="selection-option">
+                      <input type="radio" name="brandId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
+                      <span><strong>${escapeHtml(option.label)}</strong><small>Escolha a bebida</small></span>
+                    </label>
+                  `).join("")}
+                </div>
+              </fieldset>`
+            : ""
+        }
+        ${
+          mixers.length
+            ? `<fieldset class="selection-group">
+                <legend>Energético</legend>
+                <div class="selection-option-grid">
+                  ${mixers.map((option, index) => `
+                    <label class="selection-option">
+                      <input type="radio" name="mixerId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
+                      <span><strong>${escapeHtml(option.label)}</strong><small>Escolha o energético</small></span>
+                    </label>
+                  `).join("")}
+                </div>
+              </fieldset>`
+            : ""
+        }
+        ${
           flavors.length
             ? `<fieldset class="selection-group">
-                <legend>Sabor ou complemento</legend>
+                <legend>Sabor do gelo</legend>
                 <div class="selection-option-grid flavors">
                   ${flavors.map((option, index) => `
                     <label class="selection-option">
@@ -10575,7 +10615,7 @@ function renderProductSelectionModal() {
               </fieldset>`
             : ""
         }
-        <div class="notice compact">O carrinho exibira a opcao escolhida com seu preco. A baixa de estoque respeitara a quantidade de unidades contida na embalagem.</div>
+        <div class="notice compact">O carrinho exibira tamanho, bebida, energetico e gelo. A ficha tecnica baixara somente os insumos escolhidos.</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
@@ -10768,7 +10808,7 @@ function renderProductModal() {
           <section class="product-sale-options-editor full">
             <div class="product-package-head">
               <div>
-                <strong>Marcas, tamanhos e sabores na venda</strong>
+                <strong>Bebidas, tamanhos, energeticos e sabores na venda</strong>
                 <small>Opcional. Ao vender, o operador precisara escolher as opcoes configuradas.</small>
               </div>
               <span class="status blue">Baixa por escolha</span>
@@ -10787,6 +10827,11 @@ function renderProductModal() {
               <span>Sabores ou complementos obrigatorios</span>
               <textarea name="saleFlavorsText" rows="5" placeholder="Coco | Gelo saborizado Coco:1\nMaca verde | Gelo saborizado Maca Verde:1\nMorango | Gelo saborizado Morango:1">${escapeHtml(saleOptionLines(product?.saleFlavors, "flavor"))}</textarea>
               <small class="hint">Uma opcao por linha: nome | ficha adicional. O app baixa somente o sabor escolhido.</small>
+            </label>
+            <label class="field full">
+              <span>Energeticos obrigatorios</span>
+              <textarea name="saleMixersText" rows="5" placeholder="Start | Energetico Start:200\nBad Wolf | Energetico Bad Wolf:200\nBaly Tadala | Energetico Baly Tadala:200">${escapeHtml(saleOptionLines(product?.saleMixers, "mixer"))}</textarea>
+              <small class="hint">Uma opcao por linha: nome | ficha adicional. Enquanto a quantidade nao estiver confirmada, deixe apenas o nome.</small>
             </label>
           </section>
         </div>
@@ -12264,10 +12309,11 @@ async function saveProductSelection(event) {
     brandId: String(form.get("brandId") || ""),
     variantId: String(form.get("variantId") || ""),
     flavorId: String(form.get("flavorId") || ""),
+    mixerId: String(form.get("mixerId") || ""),
     saleUnit: String(form.get("saleUnit") || "unit"),
   });
   if (!item) {
-    notify("Escolha a marca, o tamanho e o sabor antes de continuar.");
+    notify("Escolha o tamanho, a bebida, o energetico e o sabor antes de continuar.");
     return;
   }
   if (destination === "table") await addConfiguredItemToTable(tableId, item);
@@ -12285,6 +12331,7 @@ async function saveProduct(event) {
   const parsedCombinations = parseSaleCombinationLines(form.get("saleCombinationsText"));
   const parsedVariants = parseSaleOptionLines(form.get("saleVariantsText"), "variant");
   const parsedFlavors = parseSaleOptionLines(form.get("saleFlavorsText"), "flavor");
+  const parsedMixers = parseSaleOptionLines(form.get("saleMixersText"), "mixer");
   if (parsedCombinations.combinations.length && String(form.get("saleVariantsText") || "").trim()) {
     notify("Use marcas + tamanhos ou variacoes sem marca. Nao preencha os dois campos no mesmo produto.", 10000);
     return;
@@ -12294,6 +12341,7 @@ async function saveProduct(event) {
     ...parsedCombinations.invalid.map((entry) => `marca + tamanho: ${entry}`),
     ...parsedVariants.invalid.map((entry) => `tamanho: ${entry}`),
     ...parsedFlavors.invalid.map((entry) => `sabor: ${entry}`),
+    ...parsedMixers.invalid.map((entry) => `energetico: ${entry}`),
   ];
   if (invalidConfiguration.length) {
     notify(`Revise os insumos ou o formato: ${invalidConfiguration.slice(0, 3).join(" | ")}.`, 10000);
@@ -12323,6 +12371,7 @@ async function saveProduct(event) {
     saleCombinations: parsedCombinations.combinations,
     saleVariants: parsedCombinations.combinations.length ? parsedCombinations.variants : parsedVariants.options,
     saleFlavors: parsedFlavors.options,
+    saleMixers: parsedMixers.options,
     favorite: form.get("favorite") === "true",
     active: form.get("active") === "true",
     imageUrl: removeImage ? "" : internetImageUrl || currentProduct?.imageUrl || "",
@@ -12332,7 +12381,7 @@ async function saveProduct(event) {
     notify("Para controlar por fardo, informe a quantidade por embalagem e o valor de compra.");
     return;
   }
-  if ((payload.recipe.length || payload.saleBrands.length || payload.saleVariants.length || payload.saleFlavors.length) && payload.unitsPerPackage > 0) {
+  if ((payload.recipe.length || payload.saleBrands.length || payload.saleVariants.length || payload.saleFlavors.length || payload.saleMixers.length) && payload.unitsPerPackage > 0) {
     notify("Use controle por fardo somente em produtos baixados diretamente. Produtos com ficha ou opcoes baixam os insumos.");
     return;
   }
@@ -12466,6 +12515,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     sale_combinations: payload.saleCombinations,
     sale_variants: payload.saleVariants,
     sale_flavors: payload.saleFlavors,
+    sale_mixers: payload.saleMixers,
     min_stock: payload.minStock,
     critical_stock: payload.criticalStock,
     expires_at: payload.expiresAt || null,
@@ -12479,7 +12529,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
 
   const fallbackPayload = { ...dbPayload };
   const removedOptionalColumns = [];
-  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "package_sale_price", "sale_brands", "sale_combinations", "sale_variants", "sale_flavors"]) {
+  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "package_sale_price", "sale_brands", "sale_combinations", "sale_variants", "sale_flavors", "sale_mixers"]) {
     if (!result.error || !String(result.error.message || "").includes(column)) continue;
     delete fallbackPayload[column];
     removedOptionalColumns.push(column);
@@ -12493,7 +12543,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
       if (column === "product_code") return "codigo";
       if (column === "barcode_codes") return "codigos de barras";
       if (["package_name", "units_per_package", "package_cost", "package_sale_price"].includes(column)) return "controle por fardo";
-      if (["sale_brands", "sale_combinations", "sale_variants", "sale_flavors"].includes(column)) return "marcas, tamanhos e sabores";
+      if (["sale_brands", "sale_combinations", "sale_variants", "sale_flavors", "sale_mixers"].includes(column)) return "bebidas, tamanhos, energeticos e sabores";
       return "validade";
     }))];
     notify(`Produto salvo. Para gravar ${labels.join(" e ")} online, rode a migracao no Supabase.`);
@@ -15138,6 +15188,7 @@ function saleOptionId(type, label, index) {
 function parseSaleOptionLines(text, type = "variant") {
   const options = [];
   const invalid = [];
+  const recipeRequired = type !== "mixer";
   String(text || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -15149,7 +15200,7 @@ function parseSaleOptionLines(text, type = "variant") {
       const recipeText = type === "variant" ? parts.slice(2).join("|") : parts.slice(1).join("|");
       const parsedRecipe = parseRecipeTextDetailed(recipeText, /[;]+/);
       const price = rawPrice ? Number(rawPrice.replace(",", ".")) : 0;
-      if (!label || !recipeText || parsedRecipe.invalid.length || (rawPrice && (!Number.isFinite(price) || price < 0))) {
+      if (!label || (recipeRequired && !recipeText) || parsedRecipe.invalid.length || (rawPrice && (!Number.isFinite(price) || price < 0))) {
         invalid.push(line);
         return;
       }

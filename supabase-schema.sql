@@ -29,6 +29,7 @@ create table if not exists products (
   sale_combinations jsonb not null default '[]'::jsonb,
   sale_variants jsonb not null default '[]'::jsonb,
   sale_flavors jsonb not null default '[]'::jsonb,
+  sale_mixers jsonb not null default '[]'::jsonb,
   min_stock numeric(12,3) not null default 0,
   critical_stock numeric(12,3) not null default 0,
   expires_at date,
