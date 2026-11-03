@@ -1120,6 +1120,8 @@ function notify(message, duration = 3200) {
 
   const toast = document.createElement("div");
   toast.className = "toast";
+  toast.setAttribute("role", "alert");
+  toast.setAttribute("aria-live", "assertive");
   toast.textContent = message;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), duration);
@@ -12714,8 +12716,24 @@ async function saveProduct(event) {
     return;
   }
   const hasSaleChoices = payload.saleBrands.length || payload.saleVariants.length || payload.saleFlavors.length || payload.saleMixers.length;
-  if (payload.unitVolumeMl > 0 && (payload.recipe.length || hasSaleChoices)) {
-    notify("O controle em ml deve ser usado na bebida vendida inteira. Nao misture esse campo com ficha tecnica ou opcoes de venda.", 10000);
+  if (payload.unitVolumeMl > 0 && payload.recipe.length) {
+    const recipeItem = payload.recipe.length === 1 ? payload.recipe[0] : null;
+    const recipeIngredient = recipeItem ? state.ingredients.find((ingredient) => ingredient.id === recipeItem.ingredientId) : null;
+    const sameIngredient = !payload.fractionalIngredientId || payload.fractionalIngredientId === recipeItem?.ingredientId;
+    const sameVolume = Math.abs(Number(recipeItem?.qty || 0) - payload.unitVolumeMl) < 0.0001;
+    if (recipeIngredient?.unit?.trim().toLowerCase() === "ml" && sameIngredient && sameVolume) {
+      payload.fractionalIngredientId = recipeIngredient.id;
+      payload.recipe = [];
+    } else {
+      notify("Para usar o controle em ml, deixe a ficha tecnica vazia ou mantenha nela apenas o mesmo insumo em ml e o mesmo volume informado. Confira tambem se o insumo selecionado e o mesmo.", 12000);
+      const recipeField = document.querySelector('#product-form [name="recipeText"]');
+      recipeField?.focus();
+      recipeField?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+  }
+  if (payload.unitVolumeMl > 0 && hasSaleChoices) {
+    notify("O controle em ml e para uma bebida vendida inteira. Para copao, dose preparada ou produto com opcoes, deixe esse campo vazio e configure o consumo nas fichas tecnicas das opcoes.", 12000);
     return;
   }
   if ((payload.recipe.length || hasSaleChoices) && payload.unitsPerPackage > 0 && !(payload.unitVolumeMl > 0)) {
@@ -15524,10 +15542,15 @@ function parseRecipeTextDetailed(text, separator = /[,;]+/) {
     .forEach((chunk) => {
       const separatorIndex = chunk.lastIndexOf(":");
       const name = separatorIndex >= 0 ? chunk.slice(0, separatorIndex).trim() : "";
-      const rawQty = separatorIndex >= 0 ? chunk.slice(separatorIndex + 1).trim().replace(",", ".") : "";
-      const quantity = Number(rawQty);
+      const rawQty = separatorIndex >= 0 ? chunk.slice(separatorIndex + 1).trim() : "";
+      const quantityMatch = rawQty.match(/^(\d+(?:[.,]\d+)?)(?:\s*([a-zA-Z\u00c0-\u024f.]+))?$/);
+      const quantity = quantityMatch ? Number(quantityMatch[1].replace(",", ".")) : NaN;
+      const enteredUnit = String(quantityMatch?.[2] || "").trim().toLowerCase().replace(/\.$/, "");
       const ingredient = state.ingredients.find((item) => item.name.toLowerCase() === name.toLowerCase());
-      if (!ingredient || !Number.isFinite(quantity) || quantity <= 0) {
+      const unitAliases = { unidade: "un", unidades: "un", unid: "un", mililitro: "ml", mililitros: "ml", grama: "g", gramas: "g", litro: "l", litros: "l" };
+      const normalizedEnteredUnit = unitAliases[enteredUnit] || enteredUnit;
+      const normalizedIngredientUnit = unitAliases[String(ingredient?.unit || "").trim().toLowerCase().replace(/\.$/, "")] || String(ingredient?.unit || "").trim().toLowerCase().replace(/\.$/, "");
+      if (!ingredient || !Number.isFinite(quantity) || quantity <= 0 || (normalizedEnteredUnit && normalizedEnteredUnit !== normalizedIngredientUnit)) {
         invalid.push(chunk);
         return;
       }

@@ -3768,8 +3768,12 @@ body[data-theme="dark"] #manual-charge-form .modal-actions {
   position: fixed;
   right: 18px;
   bottom: 18px;
-  z-index: 40;
+  z-index: 10000;
   max-width: min(420px, calc(100vw - 36px));
+  max-height: min(42vh, 260px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
   border-radius: 8px;
   background: #111827;
   color: #fff;
