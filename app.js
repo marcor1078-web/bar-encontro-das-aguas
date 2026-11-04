@@ -11728,6 +11728,7 @@ function renderCancelSaleModal() {
       </div>
       <div class="modal-body">
         <p><strong>${sale?.id || "Venda"}</strong> - ${money(sale?.total || 0)}</p>
+        <div class="notice warning compact">O cancelamento registra a venda como cancelada e devolve o estoque no app. Ele nao estorna pagamentos na maquininha; pagamentos por cartao devem ser estornados separadamente no provedor.</div>
         <div class="form-grid">
           <label class="field full">
             <span>Senha de administrador</span>
@@ -14628,7 +14629,7 @@ async function removeClientTransaction(event) {
   renderApp();
 }
 
-function saveCancelSale(event) {
+async function saveCancelSale(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const admin = state.users.find((user) => user.role === "admin" && user.password === form.get("adminPassword") && user.active);
@@ -14644,6 +14645,55 @@ function saveCancelSale(event) {
     return;
   }
 
+  const reason = String(form.get("reason") || "").trim();
+  if (session?.online) {
+    if (!isOnlineSession()) {
+      notify("Conecte o app a internet para cancelar essa venda online. Nenhuma alteracao foi feita.");
+      return;
+    }
+
+    const { error } = await supabaseClient.rpc("cancel_sale_restore_inventory", {
+      p_sale_id: sale.id,
+      p_reason: reason,
+      p_authorized_by: admin.id,
+    });
+    if (error) {
+      notify(`Cancelamento online nao concluido: ${error.message}`, 12000);
+      return;
+    }
+
+    restoreSaleStock(sale.items);
+    const fiadoAmount = saleFiadoAmount(sale);
+    if (fiadoAmount > 0 && sale.clientId) {
+      state.clients = state.clients.map((client) =>
+        client.id === sale.clientId ? { ...client, debt: Math.max(0, Number(client.debt || 0) - fiadoAmount) } : client,
+      );
+    }
+
+    sale.status = "Cancelada";
+    sale.cancelledAt = new Date().toISOString();
+    sale.cancelledBy = session.id;
+    sale.cancelReason = reason;
+    state.cancellations.unshift({
+      id: id("cancel"),
+      saleId: sale.id,
+      date: sale.cancelledAt,
+      userId: session.id,
+      authorizedBy: admin.id,
+      reason,
+      total: sale.total,
+    });
+    currentModal = null;
+    storeDailySalesTotal(localDateKey(sale.date), "cancelamento");
+    logAudit("Venda cancelada online", `${sale.id}: ${reason}`);
+    await Promise.all([loadOnlineStockData(), loadOnlineClientsData(), loadOnlineSalesData()]);
+    storeDailySalesTotal(localDateKey(sale.date), "cancelamento");
+    saveState();
+    notify("Venda cancelada; estoque e insumos devolvidos online.");
+    renderApp();
+    return;
+  }
+
   restoreSaleStock(sale.items);
   const fiadoAmount = saleFiadoAmount(sale);
   if (fiadoAmount > 0 && sale.clientId) {
@@ -14655,7 +14705,7 @@ function saveCancelSale(event) {
   sale.status = "Cancelada";
   sale.cancelledAt = new Date().toISOString();
   sale.cancelledBy = session.id;
-  sale.cancelReason = form.get("reason").trim();
+  sale.cancelReason = reason;
   state.cancellations.unshift({
     id: id("cancel"),
     saleId: sale.id,
