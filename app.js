@@ -3044,6 +3044,7 @@ function visibleStockIngredients() {
 function normalizeProductSaleOptions(options = [], type = "variant") {
   return (Array.isArray(options) ? options : [])
     .map((option, index) => {
+      const label = String(option?.label || option?.name || "").trim();
       const recipeByVariant = Object.fromEntries(
         Object.entries(option?.recipeByVariant || {})
           .map(([variantId, recipe]) => [String(variantId), normalizeStockRecipe(recipe)])
@@ -3051,8 +3052,11 @@ function normalizeProductSaleOptions(options = [], type = "variant") {
       );
       return {
         id: String(option?.id || `${type}-${index + 1}`),
-        label: String(option?.label || option?.name || "").trim(),
+        label,
         price: type === "variant" ? Math.max(0, Number(option?.price || 0)) : 0,
+        priceAdjustment: type === "mixer"
+          ? Math.max(0, Number(option?.priceAdjustment ?? (/red[\s-]*bull/i.test(label) ? 10 : 0)))
+          : 0,
         recipe: normalizeStockRecipe(option?.recipe),
         recipeByVariant,
       };
@@ -3315,6 +3319,7 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
     : variant && variant.price > 0
       ? variant.price
       : Number(product.price || 0);
+  const finalUnitPrice = unitPrice + Number(mixer?.priceAdjustment || 0);
   const packageConfig = productPackageConfig(product);
   const sellsPackage = saleUnit === "package" && Boolean(packageConfig);
   const stockUnitsPerItem = sellsPackage ? packageConfig.unitsPerPackage : 1;
@@ -3326,7 +3331,7 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
     cartKey: packageConfig ? `${baseCartKey}::${sellsPackage ? "package" : "unit"}` : baseCartKey,
     name: [product.name, ...labels, sellsPackage ? packageConfig.name : ""].filter(Boolean).join(" - "),
     qty: 1,
-    price: sellsPackage ? packageConfig.salePrice : unitPrice,
+    price: sellsPackage ? packageConfig.salePrice : finalUnitPrice,
     cost: stockRecipe.length
       ? Number((recipeCost(stockRecipe) * stockUnitsPerItem).toFixed(3))
       : sellsPackage
@@ -10863,7 +10868,7 @@ function renderProductSelectionModal() {
                   ${mixers.map((option, index) => `
                     <label class="selection-option">
                       <input type="radio" name="mixerId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
-                      <span><strong>${escapeHtml(option.label)}</strong><small>Escolha o energético</small></span>
+                      <span><strong>${escapeHtml(option.label)}</strong><small>${option.priceAdjustment > 0 ? `Adicional de ${money(option.priceAdjustment)}` : "Escolha o energético"}</small></span>
                     </label>
                   `).join("")}
                 </div>
@@ -11129,13 +11134,13 @@ function renderProductModal() {
             </label>
             <label class="field full">
               <span>Sabores ou complementos obrigatorios</span>
-              <textarea name="saleFlavorsText" rows="5" placeholder="Coco | Gelo saborizado Coco:1\nMaca verde | Gelo saborizado Maca Verde:1\nMorango | Gelo saborizado Morango:1">${escapeHtml(saleOptionLines(product?.saleFlavors, "flavor"))}</textarea>
+              <textarea name="saleFlavorsText" rows="5" placeholder="Coco | Gelo saborizado Coco:1\nMaca verde | Gelo saborizado Maca Verde:1\nMorango | Gelo saborizado Morango:1\nBlueberry/Azul | Gelo saborizado Blueberry/Azul:1">${escapeHtml(saleOptionLines(product?.saleFlavors, "flavor"))}</textarea>
               <small class="hint">Uma opcao por linha: nome | consumo adicional. O app baixa somente o item escolhido do estoque.</small>
             </label>
             <label class="field full">
               <span>Energeticos obrigatorios</span>
-              <textarea name="saleMixersText" rows="5" placeholder="Start | 500 ml=Energetico Start:350 | 700 ml=Energetico Start:450\nBad Wolf | 500 ml=Energetico Bad Wolf:350 | 700 ml=Energetico Bad Wolf:450">${escapeHtml(saleMixerLines(product))}</textarea>
-              <small class="hint">Uma opcao por linha: nome | tamanho=consumo. O volume pode mudar conforme o tamanho escolhido.</small>
+              <textarea name="saleMixersText" rows="5" placeholder="Start | 500 ml=Energetico Start:350 | 700 ml=Energetico Start:450\nRed Bull | +10,00 | 500 ml=Red Bull:350 | 700 ml=Red Bull:450">${escapeHtml(saleMixerLines(product))}</textarea>
+              <small class="hint">Uma opcao por linha: nome | tamanho=consumo. Para cobrar adicional, inclua +10,00 antes dos consumos. O volume pode mudar conforme o tamanho.</small>
             </label>
           </section>
         </div>
@@ -15769,13 +15774,16 @@ function saleMixerLines(product) {
   const variants = new Map(productSaleVariants(product).map((variant) => [variant.id, variant.label]));
   return productSaleMixers(product)
     .map((option) => {
+      const priceAdjustment = option.priceAdjustment > 0
+        ? `+${option.priceAdjustment.toFixed(2).replace(".", ",")}`
+        : "";
       const variantRecipes = Object.entries(option.recipeByVariant || {}).map(([variantId, recipe]) => {
         const recipeText = recipe.map(stockRecipeItemText).join("; ");
         return `${variants.get(variantId) || variantId}=${recipeText}`;
       });
-      if (variantRecipes.length) return [option.label, ...variantRecipes].join(" | ");
+      if (variantRecipes.length) return [option.label, priceAdjustment, ...variantRecipes].filter(Boolean).join(" | ");
       const baseRecipe = option.recipe.map(stockRecipeItemText).join("; ");
-      return baseRecipe ? `${option.label} | ${baseRecipe}` : option.label;
+      return [option.label, priceAdjustment, baseRecipe].filter(Boolean).join(" | ");
     })
     .join("\n");
 }
@@ -15929,10 +15937,17 @@ function parseSaleMixerLines(text) {
       const recipeByVariant = {};
       let recipe = [];
       let lineInvalid = !label;
-      const hasVariantRecipes = parts.some((part) => part.includes("="));
+      const adjustmentPattern = /^\+\s*\d+(?:[.,]\d{1,2})?$/;
+      const adjustmentParts = parts.filter((part) => adjustmentPattern.test(part));
+      const priceAdjustment = adjustmentParts.length
+        ? Number(adjustmentParts[0].replace(/^\+\s*/, "").replace(",", "."))
+        : /red[\s-]*bull/i.test(label) ? 10 : 0;
+      const recipeParts = parts.filter((part) => !adjustmentPattern.test(part));
+      if (adjustmentParts.length > 1 || !Number.isFinite(priceAdjustment)) lineInvalid = true;
+      const hasVariantRecipes = recipeParts.some((part) => part.includes("="));
 
       if (hasVariantRecipes) {
-        for (const part of parts) {
+        for (const part of recipeParts) {
           const separatorIndex = part.indexOf("=");
           const variantLabel = separatorIndex >= 0 ? part.slice(0, separatorIndex).trim() : "";
           const recipeText = separatorIndex >= 0 ? part.slice(separatorIndex + 1).trim() : "";
@@ -15944,7 +15959,7 @@ function parseSaleMixerLines(text) {
           recipeByVariant[saleChoiceId("variant", variantLabel)] = parsed.recipe;
         }
       } else {
-        const recipeText = parts.join("|").trim();
+        const recipeText = recipeParts.join("|").trim();
         const parsed = parseRecipeTextDetailed(recipeText, /[;]+/);
         if (parsed.invalid.length) lineInvalid = true;
         recipe = parsed.recipe;
@@ -15958,6 +15973,7 @@ function parseSaleMixerLines(text) {
         id: saleOptionId("mixer", label, index),
         label,
         price: 0,
+        priceAdjustment,
         recipe,
         recipeByVariant,
       });
