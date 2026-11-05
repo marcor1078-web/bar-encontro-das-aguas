@@ -2974,7 +2974,17 @@ function productForIngredient(ingredient) {
   if (fractionalMatches.length === 1) return fractionalMatches[0];
   const key = stockNameKey(ingredient.name);
   const exactMatches = state.products.filter((product) => product.active !== false && stockNameKey(product.name) === key);
-  return exactMatches.length === 1 ? exactMatches[0] : null;
+  if (exactMatches.length === 1) return exactMatches[0];
+
+  if (String(ingredient.unit || "").trim().toLowerCase() !== "ml") return null;
+  const fractionalKey = fractionalStockMatchKey(ingredient.name);
+  if (!fractionalKey) return null;
+  const fractionalNameMatches = state.products.filter((product) =>
+    product.active !== false &&
+    productFractionalStockConfig(product) &&
+    fractionalStockMatchKey(product.name) === fractionalKey,
+  );
+  return fractionalNameMatches.length === 1 ? fractionalNameMatches[0] : null;
 }
 
 function resolveStockRecipeItem(item) {
@@ -3052,7 +3062,12 @@ function normalizeProductSaleOptions(options = [], type = "variant") {
 
 function saleOptionRecipe(option, variantId = "") {
   if (!option) return [];
-  return mergeStockRecipes(option.recipe, option.recipeByVariant?.[variantId]);
+  const recipesByVariant = option.recipeByVariant || {};
+  const normalizedVariantId = String(variantId).replace(/-\d+$/, "");
+  return mergeStockRecipes(
+    option.recipe,
+    recipesByVariant[variantId] || recipesByVariant[normalizedVariantId],
+  );
 }
 
 function productSaleVariants(product) {
@@ -10866,7 +10881,7 @@ function renderProductSelectionModal() {
               </fieldset>`
             : ""
         }
-        <div class="notice compact">O carrinho exibira tamanho, bebida, energetico e gelo. A ficha tecnica baixara somente os insumos escolhidos.</div>
+        <div class="notice compact">O carrinho exibira tamanho, bebida, energetico e gelo. O app baixara do estoque somente os produtos e insumos escolhidos.</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
