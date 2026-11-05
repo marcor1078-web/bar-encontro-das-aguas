@@ -2701,7 +2701,7 @@ async function syncPendingOfflineSales({ manual = false, silent = false } = {}) 
     operation.lastAttemptAt = new Date().toISOString();
     saveState();
     try {
-      const { error } = await supabaseClient.rpc("sync_offline_sale", { payload: operation.payload });
+      const { error } = await supabaseClient.rpc("sync_offline_sale_v2", { payload: operation.payload });
       if (error) throw error;
       state.offlineQueue = state.offlineQueue.filter((entry) => entry.id !== operation.id);
       state.sales = state.sales.map((sale) =>
@@ -6037,6 +6037,7 @@ async function finalizeSaleOnline({
       table_id: tableId,
       total,
       cost,
+      stock_consumption_version: 2,
     })
     .select("*")
     .single();
@@ -14806,6 +14807,8 @@ async function saveCancelSale(event) {
     return;
   }
 
+  const authorizedBy = isOnlineSession() ? session.id : admin.id;
+
   if (!sale || !isFinancialSale(sale)) {
     notify("Venda nao encontrada, ja cancelada ou ja zerada.");
     return;
@@ -14817,11 +14820,15 @@ async function saveCancelSale(event) {
       notify("Conecte o app a internet para cancelar essa venda online. Nenhuma alteracao foi feita.");
       return;
     }
+    if (!isUuid(authorizedBy)) {
+      notify("Nao foi possivel validar o perfil administrador online. Entre novamente com a conta de administrador.");
+      return;
+    }
 
-    const { error } = await supabaseClient.rpc("cancel_sale_restore_inventory", {
+    const { error } = await supabaseClient.rpc("cancel_sale_restore_inventory_v2", {
       p_sale_id: sale.id,
       p_reason: reason,
-      p_authorized_by: admin.id,
+      p_authorized_by: authorizedBy,
     });
     if (error) {
       notify(`Cancelamento online nao concluido: ${error.message}`, 12000);
@@ -14845,7 +14852,7 @@ async function saveCancelSale(event) {
       saleId: sale.id,
       date: sale.cancelledAt,
       userId: session.id,
-      authorizedBy: admin.id,
+      authorizedBy,
       reason,
       total: sale.total,
     });
@@ -14877,7 +14884,7 @@ async function saveCancelSale(event) {
     saleId: sale.id,
     date: sale.cancelledAt,
     userId: session.id,
-    authorizedBy: admin.id,
+    authorizedBy,
     reason: sale.cancelReason,
     total: sale.total,
   });
@@ -15506,6 +15513,17 @@ async function saveExternalPayment(event) {
       const stockResult = await applyCartStockOnline(saleItems);
       if (!stockResult.ok) {
         notify(`Pagamento registrado, mas falhou ao baixar estoque: ${stockResult.message}`);
+        await loadOnlineSalesData({ recent: true });
+        await loadOnlineStockData();
+        renderApp();
+        return;
+      }
+      const markerResult = await supabaseClient
+        .from("sales")
+        .update({ stock_consumption_version: 2 })
+        .eq("id", saleResult.data.id);
+      if (markerResult.error) {
+        notify(`Pagamento registrado e estoque baixado, mas falhou ao registrar o controle do estoque: ${markerResult.error.message}`);
         await loadOnlineSalesData({ recent: true });
         await loadOnlineStockData();
         renderApp();

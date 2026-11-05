@@ -4,6 +4,9 @@
 alter table public.bar_tables
   add column if not exists split_bill jsonb;
 
+alter table public.sales
+  add column if not exists stock_consumption_version integer;
+
 create or replace function public.claim_table_split_payment(
   p_table_id uuid,
   p_split_bill_id text,
@@ -153,6 +156,9 @@ declare
   stock_recipe jsonb;
   recipe_item jsonb;
   ingredient_uuid uuid;
+  stock_product_uuid uuid;
+  fractional_ingredient_uuid uuid;
+  stock_unit text;
   recipe_quantity numeric(12,3);
   kitchen_order jsonb;
   transaction_data jsonb;
@@ -255,6 +261,7 @@ begin
     service_fee,
     total,
     cost,
+    stock_consumption_version,
     created_at
   ) values (
     sale_uuid,
@@ -266,6 +273,7 @@ begin
     coalesce((payload->>'serviceFee')::numeric, 0),
     coalesce((payload->>'total')::numeric, 0),
     coalesce((payload->>'cost')::numeric, 0),
+    2,
     coalesce((payload->>'date')::timestamptz, now())
   );
 
@@ -301,23 +309,72 @@ begin
         for recipe_item in select value from jsonb_array_elements(stock_recipe)
         loop
           ingredient_uuid := nullif(recipe_item->>'ingredientId', '')::uuid;
-          recipe_quantity := greatest(0, coalesce((recipe_item->>'qty')::numeric, 0));
-          if ingredient_uuid is not null and recipe_quantity > 0 then
+          stock_product_uuid := nullif(recipe_item->>'productId', '')::uuid;
+          stock_unit := lower(trim(coalesce(recipe_item->>'unit', 'un')));
+          recipe_quantity := greatest(0, coalesce((recipe_item->>'qty')::numeric, 0)) * stock_quantity;
+
+          if stock_product_uuid is not null and recipe_quantity > 0 then
+            if stock_unit = 'ml' then
+              fractional_ingredient_uuid := null;
+              select recipe.ingredient_id into fractional_ingredient_uuid
+              from public.product_recipes recipe
+              join public.ingredients ingredient on ingredient.id = recipe.ingredient_id
+              where recipe.product_id = stock_product_uuid
+                and lower(trim(ingredient.unit)) = 'ml'
+              order by recipe.ingredient_id
+              limit 1;
+
+              if fractional_ingredient_uuid is null then
+                raise exception 'Produto de estoque sem controle em ml (%).', stock_product_uuid;
+              end if;
+
+              update public.ingredients
+              set stock = stock - recipe_quantity
+              where id = fractional_ingredient_uuid and stock >= recipe_quantity;
+              if not found then
+                raise exception 'Saldo em ml insuficiente para o produto (%).', stock_product_uuid;
+              end if;
+            else
+              update public.products
+              set stock = stock - recipe_quantity
+              where id = stock_product_uuid and stock >= recipe_quantity;
+              if not found then
+                raise exception 'Saldo insuficiente para o produto de estoque (%).', stock_product_uuid;
+              end if;
+            end if;
+          elsif ingredient_uuid is not null and recipe_quantity > 0 then
             update public.ingredients
-            set stock = greatest(0, stock - recipe_quantity * stock_quantity)
-            where id = ingredient_uuid;
+            set stock = stock - recipe_quantity
+            where id = ingredient_uuid and stock >= recipe_quantity;
+            if not found then
+              raise exception 'Saldo insuficiente para o insumo (%).', ingredient_uuid;
+            end if;
           end if;
         end loop;
       elsif exists (select 1 from public.product_recipes where product_id = product_uuid) then
+        if exists (
+          select 1
+          from public.product_recipes as recipe
+          join public.ingredients as ingredient on ingredient.id = recipe.ingredient_id
+          where recipe.product_id = product_uuid
+            and ingredient.stock < recipe.qty * stock_quantity
+        ) then
+          raise exception 'Saldo insuficiente em algum insumo da ficha tecnica (%).', product_uuid;
+        end if;
+
         update public.ingredients as ingredient
-        set stock = greatest(0, ingredient.stock - recipe.qty * stock_quantity)
+        set stock = ingredient.stock - recipe.qty * stock_quantity
         from public.product_recipes as recipe
         where recipe.product_id = product_uuid
-          and recipe.ingredient_id = ingredient.id;
+          and recipe.ingredient_id = ingredient.id
+          and ingredient.stock >= recipe.qty * stock_quantity;
       else
         update public.products
-        set stock = greatest(0, stock - stock_quantity)
-        where id = product_uuid;
+        set stock = stock - stock_quantity
+        where id = product_uuid and stock >= stock_quantity;
+        if not found then
+          raise exception 'Saldo insuficiente para o produto vendido (%).', product_uuid;
+        end if;
       end if;
     end if;
   end loop;
@@ -393,5 +450,17 @@ $$;
 
 revoke all on function public.sync_offline_sale(jsonb) from public;
 grant execute on function public.sync_offline_sale(jsonb) to authenticated;
+
+create or replace function public.sync_offline_sale_v2(payload jsonb)
+returns jsonb
+language sql
+security invoker
+set search_path = public
+as $$
+  select public.sync_offline_sale(payload);
+$$;
+
+revoke all on function public.sync_offline_sale_v2(jsonb) from public;
+grant execute on function public.sync_offline_sale_v2(jsonb) to authenticated;
 
 notify pgrst, 'reload schema';

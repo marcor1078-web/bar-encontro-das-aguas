@@ -1,6 +1,7 @@
 -- Execute no SQL Editor do Supabase antes de cadastrar receitas com produtos.
 -- Permite que receitas usem produtos ja existentes no estoque e atualiza o
--- cancelamento online para restaurar esses saldos.
+-- cancelamento online. Vendas antigas restauram somente o que a sincronizacao
+-- antiga efetivamente baixava; vendas novas usam a versao 2 de consumo.
 
 alter table public.products
   add column if not exists stock_recipe jsonb not null default '[]'::jsonb;
@@ -10,6 +11,9 @@ alter table public.sale_items
 
 alter table public.sale_items
   add column if not exists selection jsonb not null default '{}'::jsonb;
+
+alter table public.sales
+  add column if not exists stock_consumption_version integer;
 
 create or replace function public.cancel_sale_restore_inventory(
   p_sale_id uuid,
@@ -96,7 +100,9 @@ begin
         v_stock_unit := lower(trim(coalesce(v_recipe_item->>'unit', 'un')));
         v_required := greatest(0, coalesce((v_recipe_item->>'qty')::numeric, 0)) * v_stock_units;
 
-        if v_stock_product_id is not null and v_required > 0 then
+        if v_stock_product_id is not null
+           and v_required > 0
+           and coalesce(v_sale.stock_consumption_version, 1) >= 2 then
           if v_stock_unit = 'ml' then
             select pr.ingredient_id into v_ingredient_id
             from public.product_recipes pr
@@ -283,5 +289,22 @@ $function$;
 revoke all on function public.cancel_sale_restore_inventory(uuid, text, uuid) from public;
 revoke all on function public.cancel_sale_restore_inventory(uuid, text, uuid) from anon;
 grant execute on function public.cancel_sale_restore_inventory(uuid, text, uuid) to authenticated;
+
+create or replace function public.cancel_sale_restore_inventory_v2(
+  p_sale_id uuid,
+  p_reason text,
+  p_authorized_by uuid
+)
+returns jsonb
+language sql
+security invoker
+set search_path = public, pg_temp
+as $$
+  select public.cancel_sale_restore_inventory(p_sale_id, p_reason, p_authorized_by);
+$$;
+
+revoke all on function public.cancel_sale_restore_inventory_v2(uuid, text, uuid) from public;
+revoke all on function public.cancel_sale_restore_inventory_v2(uuid, text, uuid) from anon;
+grant execute on function public.cancel_sale_restore_inventory_v2(uuid, text, uuid) to authenticated;
 
 notify pgrst, 'reload schema';
