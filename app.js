@@ -2760,6 +2760,7 @@ function mapProductFromDb(row, recipes = []) {
     saleVariants: Array.isArray(row.sale_variants) ? row.sale_variants : [],
     saleFlavors: Array.isArray(row.sale_flavors) ? row.sale_flavors : [],
     saleMixers: Array.isArray(row.sale_mixers) ? row.sale_mixers : [],
+    stockRecipe: Array.isArray(row.stock_recipe) ? row.stock_recipe : [],
     minStock: Number(row.min_stock || 0),
     criticalStock: Number(row.critical_stock || 0),
     expiresAt: row.expires_at || "",
@@ -2894,16 +2895,23 @@ function findProductBySearchValue(value) {
 
 function normalizeStockRecipe(recipe = []) {
   return (Array.isArray(recipe) ? recipe : [])
-    .map((item) => ({ ingredientId: String(item?.ingredientId || ""), qty: Math.max(0, Number(item?.qty || 0)) }))
-    .filter((item) => item.ingredientId && item.qty > 0);
+    .map((item) => ({
+      ingredientId: String(item?.ingredientId || ""),
+      productId: String(item?.productId || ""),
+      unit: String(item?.unit || "").trim().toLowerCase(),
+      qty: Math.max(0, Number(item?.qty || 0)),
+    }))
+    .filter((item) => (item.ingredientId || item.productId) && item.qty > 0);
 }
 
 function mergeStockRecipes(...recipes) {
   const merged = new Map();
   recipes.flatMap((recipe) => normalizeStockRecipe(recipe)).forEach((item) => {
-    merged.set(item.ingredientId, Number(merged.get(item.ingredientId) || 0) + item.qty);
+    const key = `${item.productId ? "product" : "ingredient"}:${item.productId || item.ingredientId}:${item.unit}`;
+    const previous = merged.get(key);
+    merged.set(key, { ...item, qty: Number(previous?.qty || 0) + item.qty });
   });
-  return [...merged.entries()].map(([ingredientId, qtyValue]) => ({ ingredientId, qty: Number(qtyValue.toFixed(3)) }));
+  return [...merged.values()].map((item) => ({ ...item, qty: Number(item.qty.toFixed(3)) }));
 }
 
 function fractionalStockMatchKey(value) {
@@ -2950,6 +2958,59 @@ function productFractionalStockConfig(product) {
     ingredientId: ingredient.id,
     unitVolumeMl: Number(recipe[0].qty || 0),
   };
+}
+
+function stockNameKey(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function productForIngredient(ingredient) {
+  if (!ingredient) return null;
+  const fractionalMatches = state.products.filter((product) => productFractionalStockConfig(product)?.ingredientId === ingredient.id);
+  if (fractionalMatches.length === 1) return fractionalMatches[0];
+  const key = stockNameKey(ingredient.name);
+  const exactMatches = state.products.filter((product) => product.active !== false && stockNameKey(product.name) === key);
+  return exactMatches.length === 1 ? exactMatches[0] : null;
+}
+
+function resolveStockRecipeItem(item) {
+  const normalized = normalizeStockRecipe([item])[0];
+  if (!normalized || normalized.productId) return normalized;
+  const ingredient = state.ingredients.find((entry) => entry.id === normalized.ingredientId);
+  const product = productForIngredient(ingredient);
+  if (!product) return normalized;
+  const fractional = productFractionalStockConfig(product);
+  const ingredientUnit = String(ingredient?.unit || "").trim().toLowerCase();
+  if (ingredientUnit === "ml" && !fractional) return normalized;
+  return {
+    productId: product.id,
+    qty: normalized.qty,
+    unit: fractional && ingredientUnit === "ml" ? "ml" : normalized.unit || ingredientUnit || "un",
+  };
+}
+
+function resolveStockRecipe(recipe) {
+  return mergeStockRecipes(...normalizeStockRecipe(recipe).map((item) => [resolveStockRecipeItem(item)]));
+}
+
+function stockRecipeItemName(item) {
+  const resolved = resolveStockRecipeItem(item);
+  if (resolved?.productId) {
+    const product = state.products.find((entry) => entry.id === resolved.productId);
+    return product?.name || "Produto";
+  }
+  return ingredientName(resolved?.ingredientId);
+}
+
+function stockRecipeItemText(item) {
+  const resolved = resolveStockRecipeItem(item);
+  const ingredient = state.ingredients.find((entry) => entry.id === resolved?.ingredientId);
+  const unit = resolved?.unit || ingredient?.unit ? ` ${resolved?.unit || ingredient.unit}` : "";
+  return `${stockRecipeItemName(resolved)}:${qty(resolved?.qty || 0)}${unit}`;
 }
 
 function fractionalProductStockDetails(product) {
@@ -3037,7 +3098,7 @@ function productHasSaleOptions(product) {
 
 function productUsesIngredientStock(product) {
   return Boolean(
-    product?.recipe?.length ||
+    product?.recipe?.length || product?.stockRecipe?.length ||
       productSaleCombinations(product).some((combination) => combination.recipe.length) ||
       productSaleVariants(product).some((option) => option.recipe.length) ||
       productSaleFlavors(product).some((option) => option.recipe.length) ||
@@ -3048,9 +3109,18 @@ function productUsesIngredientStock(product) {
 }
 
 function recipeAvailableStock(recipe) {
-  const normalized = normalizeStockRecipe(recipe);
+  const normalized = resolveStockRecipe(recipe);
   if (!normalized.length) return 0;
   const availableByIngredient = normalized.map((recipeItem) => {
+    const product = state.products.find((entry) => entry.id === recipeItem.productId);
+    if (product) {
+      if (recipeItem.unit === "ml") {
+        const fractional = productFractionalStockConfig(product);
+        const ingredient = fractional && state.ingredients.find((entry) => entry.id === fractional.ingredientId);
+        return ingredient && recipeItem.qty > 0 ? Math.floor(Number(ingredient.stock || 0) / recipeItem.qty) : 0;
+      }
+      return recipeItem.qty > 0 ? Math.floor(Number(product.stock || 0) / recipeItem.qty) : 0;
+    }
     const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
     const required = Number(recipeItem.qty || 0);
     if (!ingredient || required <= 0) return 0;
@@ -3080,7 +3150,7 @@ function productOptionCombinations(product) {
           flavor,
           mixer,
           saleCombination: combination,
-          recipe: mergeStockRecipes(product?.recipe, combination.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant.id)),
+          recipe: mergeStockRecipes(product?.recipe, product?.stockRecipe, combination.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant.id)),
         })),
       );
     });
@@ -3094,7 +3164,7 @@ function productOptionCombinations(product) {
         variant,
         flavor,
         mixer,
-        recipe: mergeStockRecipes(product?.recipe, variant?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id)),
+        recipe: mergeStockRecipes(product?.recipe, product?.stockRecipe, variant?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id)),
       })),
     ),
   );
@@ -3140,7 +3210,7 @@ function productStockText(product) {
   }
   const available = productAvailableStock(product);
   const packageText = productPackageBalanceText(product, available);
-  return `${qty(available)} un.${productUsesIngredientStock(product) ? productHasSaleOptions(product) ? " por opcoes" : " por ficha" : packageText ? ` (${packageText})` : ""}`;
+  return `${qty(available)} un.${productUsesIngredientStock(product) ? productHasSaleOptions(product) ? " por opcoes" : " por consumo" : packageText ? ` (${packageText})` : ""}`;
 }
 
 function ingredientPackageConfig(ingredient) {
@@ -3176,11 +3246,24 @@ function cartItemKey(item) {
 }
 
 function itemStockRecipe(item, product) {
-  return Array.isArray(item?.stockRecipe) ? normalizeStockRecipe(item.stockRecipe) : normalizeStockRecipe(product?.recipe);
+  return resolveStockRecipe(
+    Array.isArray(item?.stockRecipe)
+      ? item.stockRecipe
+      : mergeStockRecipes(product?.recipe, product?.stockRecipe),
+  );
 }
 
 function recipeCost(recipe) {
-  return normalizeStockRecipe(recipe).reduce((sum, recipeItem) => {
+  return resolveStockRecipe(recipe).reduce((sum, recipeItem) => {
+    const product = state.products.find((entry) => entry.id === recipeItem.productId);
+    if (product) {
+      if (recipeItem.unit === "ml") {
+        const fractional = productFractionalStockConfig(product);
+        const ingredient = fractional && state.ingredients.find((entry) => entry.id === fractional.ingredientId);
+        return sum + Number(ingredient?.costPerUnit || 0) * recipeItem.qty;
+      }
+      return sum + Number(product.cost || 0) * recipeItem.qty;
+    }
     const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
     return sum + Number(ingredient?.costPerUnit || 0) * recipeItem.qty;
   }, 0);
@@ -3205,8 +3288,8 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
   if (combinations.length && !saleCombination) return null;
 
   const stockRecipe = combinations.length
-    ? mergeStockRecipes(product.recipe, saleCombination?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id))
-    : mergeStockRecipes(product.recipe, variant?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id));
+    ? resolveStockRecipe(mergeStockRecipes(product.recipe, product.stockRecipe, saleCombination?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id)))
+    : resolveStockRecipe(mergeStockRecipes(product.recipe, product.stockRecipe, variant?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id)));
   const labels = [variant?.label, brand?.label, mixer?.label, flavor?.label].filter(Boolean);
   const unitPrice = saleCombination && saleCombination.price > 0
     ? saleCombination.price
@@ -5665,6 +5748,26 @@ function cartStockRequirements(items) {
     const stockRecipe = itemStockRecipe(item, product);
     if (stockRecipe.length) {
       for (const recipeItem of stockRecipe) {
+        if (recipeItem.productId) {
+          const stockProduct = state.products.find((entry) => entry.id === recipeItem.productId);
+          if (!stockProduct) return { ok: false, message: "Produto de estoque nao encontrado para " + item.name + "." };
+          if (recipeItem.unit === "ml") {
+            const fractional = productFractionalStockConfig(stockProduct);
+            const ingredient = fractional && state.ingredients.find((entry) => entry.id === fractional.ingredientId);
+            if (!ingredient) {
+              return { ok: false, message: "Configure o controle em ml do produto " + stockProduct.name + " antes de usa-lo na receita." };
+            }
+            const current = ingredients.get(ingredient.id) || { ingredient, qty: 0, products: new Set(), stockLabel: stockProduct.name };
+            current.qty += Number(recipeItem.qty || 0) * itemQty;
+            current.products.add(item.name || product.name);
+            ingredients.set(ingredient.id, current);
+          } else {
+            const current = products.get(stockProduct.id) || { product: stockProduct, qty: 0 };
+            current.qty += Number(recipeItem.qty || 0) * itemQty;
+            products.set(stockProduct.id, current);
+          }
+          continue;
+        }
         const ingredient = state.ingredients.find((entry) => entry.id === recipeItem.ingredientId);
         if (!ingredient) {
           return { ok: false, message: `Insumo nao encontrado para ${item.name}.` };
@@ -5695,11 +5798,11 @@ function canFulfillCart(items) {
     }
   }
 
-  for (const { ingredient, qty: required, products } of requirements.ingredients.values()) {
+  for (const { ingredient, qty: required, products: usedBy, stockLabel } of requirements.ingredients.values()) {
     if (Number(ingredient.stock || 0) < required) {
       return {
         ok: false,
-        message: `Insumo insuficiente (${ingredient.name}) para: ${[...products].join(", ")}.`,
+        message: `Estoque insuficiente de ${stockLabel || ingredient.name} para: ${[...usedBy].join(", ")}.`,
       };
     }
   }
@@ -5720,12 +5823,12 @@ function canFulfillCartChange(previousItems, nextItems) {
     }
   }
 
-  for (const [ingredientId, { ingredient, qty: required, products }] of nextRequirements.ingredients) {
+  for (const [ingredientId, { ingredient, qty: required, products, stockLabel }] of nextRequirements.ingredients) {
     const previousRequired = Number(previousRequirements.ingredients.get(ingredientId)?.qty || 0);
     if (required > previousRequired && Number(ingredient.stock || 0) < required) {
       return {
         ok: false,
-        message: `Insumo insuficiente (${ingredient.name}) para: ${[...products].join(", ")}.`,
+        message: `Estoque insuficiente de ${stockLabel || ingredient.name} para: ${[...products].join(", ")}.`,
       };
     }
   }
@@ -10983,9 +11086,9 @@ function renderProductModal() {
             </p>
           </section>
           <label class="field full">
-            <span>Ficha tecnica</span>
-            <textarea name="recipeText" placeholder="Ex.: Cachaca:60, Limao:1">${recipeToText(fractionalStock ? [] : product?.recipe || [])}</textarea>
-            <small class="hint">Use para produtos preparados. Em bebidas fracionadas, use o controle em mililitros acima.</small>
+            <span>Consumo do estoque</span>
+            <textarea name="recipeText" placeholder="Ex.: Whisky Ballantines:100ml, Copo 500 ml:1, Canudo:1">${recipeToText(fractionalStock ? [] : mergeStockRecipes(product?.recipe, product?.stockRecipe))}</textarea>
+            <small class="hint">Use os nomes exatos dos produtos cadastrados no estoque. Bebidas com controle em ml podem ser consumidas em ml; copos, canudos e outros itens baixam por unidade. Insumos antigos continuam aceitos.</small>
           </label>
           <section class="product-sale-options-editor full">
             <div class="product-package-head">
@@ -10998,22 +11101,22 @@ function renderProductModal() {
             <label class="field full">
               <span>Marcas + tamanhos com preco proprio</span>
               <textarea name="saleCombinationsText" rows="9" placeholder="Ballantines | 500 ml | 10,00 | Copo 500 ml:1; Whisky Ballantines:80; Energetico:200\nBallantines | 700 ml | 15,00 | Copo 700 ml:1; Whisky Ballantines:100; Energetico:250\nRed Label | 500 ml | 15,00 | Copo 500 ml:1; Whisky Red Label:80; Energetico:200">${escapeHtml(saleCombinationLines(product))}</textarea>
-              <small class="hint">Uma combinacao por linha: marca | tamanho | preco | ficha adicional. Use os nomes exatos dos insumos. O preco e a dose podem mudar em cada linha.</small>
+              <small class="hint">Uma combinacao por linha: marca | tamanho | preco | consumo adicional. Use nomes exatos dos produtos do estoque e informe ml quando fracionar bebida. O preco e a dose podem mudar em cada linha.</small>
             </label>
             <label class="field full">
               <span>Variacoes sem marca</span>
               <textarea name="saleVariantsText" rows="4" placeholder="500 ml | 15,00 | Copo 500 ml:1; Whisky:80; Energetico:200\n700 ml | 20,00 | Copo 700 ml:1; Whisky:100; Energetico:250">${escapeHtml(productSaleCombinations(product).length ? "" : saleOptionLines(product?.saleVariants, "variant"))}</textarea>
-              <small class="hint">Use este campo somente em produtos sem escolha de marca. Uma opcao por linha: nome | preco opcional | ficha adicional.</small>
+              <small class="hint">Use este campo somente em produtos sem escolha de marca. Uma opcao por linha: nome | preco opcional | consumo adicional.</small>
             </label>
             <label class="field full">
               <span>Sabores ou complementos obrigatorios</span>
               <textarea name="saleFlavorsText" rows="5" placeholder="Coco | Gelo saborizado Coco:1\nMaca verde | Gelo saborizado Maca Verde:1\nMorango | Gelo saborizado Morango:1">${escapeHtml(saleOptionLines(product?.saleFlavors, "flavor"))}</textarea>
-              <small class="hint">Uma opcao por linha: nome | ficha adicional. O app baixa somente o sabor escolhido.</small>
+              <small class="hint">Uma opcao por linha: nome | consumo adicional. O app baixa somente o item escolhido do estoque.</small>
             </label>
             <label class="field full">
               <span>Energeticos obrigatorios</span>
               <textarea name="saleMixersText" rows="5" placeholder="Start | 500 ml=Energetico Start:350 | 700 ml=Energetico Start:450\nBad Wolf | 500 ml=Energetico Bad Wolf:350 | 700 ml=Energetico Bad Wolf:450">${escapeHtml(saleMixerLines(product))}</textarea>
-              <small class="hint">Uma opcao por linha: nome | tamanho=ficha. O volume pode mudar conforme o tamanho escolhido.</small>
+              <small class="hint">Uma opcao por linha: nome | tamanho=consumo. O volume pode mudar conforme o tamanho escolhido.</small>
             </label>
           </section>
         </div>
@@ -12711,6 +12814,8 @@ async function saveProduct(event) {
     active: form.get("active") === "true",
     imageUrl: removeImage ? "" : internetImageUrl || currentProduct?.imageUrl || "",
   };
+  payload.stockRecipe = payload.recipe.filter((item) => item.productId);
+  payload.recipe = payload.recipe.filter((item) => item.ingredientId);
 
   if ((payload.unitsPerPackage > 0 && payload.packageCost <= 0) || (payload.packageCost > 0 && payload.unitsPerPackage <= 0)) {
     notify("Para controlar por fardo, informe a quantidade por embalagem e o valor de compra.");
@@ -12885,6 +12990,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
     sale_variants: payload.saleVariants,
     sale_flavors: payload.saleFlavors,
     sale_mixers: payload.saleMixers,
+    stock_recipe: payload.stockRecipe || [],
     min_stock: payload.minStock,
     critical_stock: payload.criticalStock,
     expires_at: payload.expiresAt || null,
@@ -12898,7 +13004,11 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
 
   const fallbackPayload = { ...dbPayload };
   const removedOptionalColumns = [];
-  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "package_sale_price", "sale_brands", "sale_combinations", "sale_variants", "sale_flavors", "sale_mixers"]) {
+  if (result.error && /stock_recipe/i.test(String(result.error.message || "")) && payload.stockRecipe?.length) {
+    notify("Para salvar consumo de produtos do estoque, rode a migracao SUPABASE_CONSUMO_ESTOQUE_PRODUTOS.sql e tente novamente.");
+    return;
+  }
+  for (const column of ["product_code", "barcode_codes", "expires_at", "package_name", "units_per_package", "package_cost", "package_sale_price", "sale_brands", "sale_combinations", "sale_variants", "sale_flavors", "sale_mixers", "stock_recipe"]) {
     if (!result.error || !String(result.error.message || "").includes(column)) continue;
     delete fallbackPayload[column];
     removedOptionalColumns.push(column);
@@ -12913,6 +13023,7 @@ async function saveProductOnline(payload, imageFile = null, removeImage = false,
       if (column === "barcode_codes") return "codigos de barras";
       if (["package_name", "units_per_package", "package_cost", "package_sale_price"].includes(column)) return "controle por fardo";
       if (["sale_brands", "sale_combinations", "sale_variants", "sale_flavors", "sale_mixers"].includes(column)) return "bebidas, tamanhos, energeticos e sabores";
+      if (column === "stock_recipe") return "consumo de produtos do estoque";
       return "validade";
     }))];
     notify(`Produto salvo. Para gravar ${labels.join(" e ")} online, rode a migracao no Supabase.`);
@@ -15576,8 +15687,8 @@ function auditList(logs) {
 }
 
 function recipeToText(recipe) {
-  return (recipe || [])
-    .map((item) => `${ingredientName(item.ingredientId)}:${item.qty}`)
+  return resolveStockRecipe(recipe || [])
+    .map(stockRecipeItemText)
     .join(", ");
 }
 
@@ -15596,9 +15707,20 @@ function parseRecipeTextDetailed(text, separator = /[,;]+/) {
       const quantityMatch = rawQty.match(/^(\d+(?:[.,]\d+)?)(?:\s*([a-zA-Z\u00c0-\u024f.]+))?$/);
       const quantity = quantityMatch ? Number(quantityMatch[1].replace(",", ".")) : NaN;
       const enteredUnit = String(quantityMatch?.[2] || "").trim().toLowerCase().replace(/\.$/, "");
-      const ingredient = state.ingredients.find((item) => item.name.toLowerCase() === name.toLowerCase());
       const unitAliases = { unidade: "un", unidades: "un", unid: "un", mililitro: "ml", mililitros: "ml", grama: "g", gramas: "g", litro: "l", litros: "l" };
       const normalizedEnteredUnit = unitAliases[enteredUnit] || enteredUnit;
+      const product = state.products.find((item) => item.active !== false && stockNameKey(item.name) === stockNameKey(name));
+      const ingredient = state.ingredients.find((item) => item.name.toLowerCase() === name.toLowerCase());
+      if (product) {
+        const fractional = productFractionalStockConfig(product);
+        const productUnit = normalizedEnteredUnit || (fractional ? "ml" : "un");
+        if (product.id === currentModal?.id || !Number.isFinite(quantity) || quantity <= 0 || (productUnit === "ml" && !fractional) || (productUnit !== "ml" && !["un", "unidade", "unidades"].includes(productUnit))) {
+          invalid.push(chunk);
+          return;
+        }
+        recipe.push({ productId: product.id, qty: quantity, unit: productUnit });
+        return;
+      }
       const normalizedIngredientUnit = unitAliases[String(ingredient?.unit || "").trim().toLowerCase().replace(/\.$/, "")] || String(ingredient?.unit || "").trim().toLowerCase().replace(/\.$/, "");
       if (!ingredient || !Number.isFinite(quantity) || quantity <= 0 || (normalizedEnteredUnit && normalizedEnteredUnit !== normalizedIngredientUnit)) {
         invalid.push(chunk);
@@ -15616,7 +15738,7 @@ function parseRecipeText(text) {
 function saleOptionLines(options, type = "variant") {
   return normalizeProductSaleOptions(options, type)
     .map((option) => {
-      const recipe = option.recipe.map((item) => `${ingredientName(item.ingredientId)}:${qty(item.qty)}`).join("; ");
+      const recipe = option.recipe.map(stockRecipeItemText).join("; ");
       return type === "variant"
         ? `${option.label} | ${option.price > 0 ? option.price.toFixed(2).replace(".", ",") : ""} | ${recipe}`
         : `${option.label} | ${recipe}`;
@@ -15629,11 +15751,11 @@ function saleMixerLines(product) {
   return productSaleMixers(product)
     .map((option) => {
       const variantRecipes = Object.entries(option.recipeByVariant || {}).map(([variantId, recipe]) => {
-        const recipeText = recipe.map((item) => `${ingredientName(item.ingredientId)}:${qty(item.qty)}`).join("; ");
+        const recipeText = recipe.map(stockRecipeItemText).join("; ");
         return `${variants.get(variantId) || variantId}=${recipeText}`;
       });
       if (variantRecipes.length) return [option.label, ...variantRecipes].join(" | ");
-      const baseRecipe = option.recipe.map((item) => `${ingredientName(item.ingredientId)}:${qty(item.qty)}`).join("; ");
+      const baseRecipe = option.recipe.map(stockRecipeItemText).join("; ");
       return baseRecipe ? `${option.label} | ${baseRecipe}` : option.label;
     })
     .join("\n");
@@ -15657,7 +15779,7 @@ function saleCombinationLines(product) {
       const brand = brands.find((option) => option.id === combination.brandId);
       const variant = variants.find((option) => option.id === combination.variantId);
       if (!brand || !variant) return "";
-      const recipe = combination.recipe.map((item) => `${ingredientName(item.ingredientId)}:${qty(item.qty)}`).join("; ");
+      const recipe = combination.recipe.map(stockRecipeItemText).join("; ");
       return `${brand.label} | ${variant.label} | ${combination.price.toFixed(2).replace(".", ",")} | ${recipe}`;
     })
     .filter(Boolean)
