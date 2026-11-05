@@ -3191,6 +3191,10 @@ function productAvailableStock(product) {
   return combinations.length ? Math.max(...combinations.map((combination) => recipeAvailableStock(combination.recipe))) : 0;
 }
 
+function productCanBeSelectedForSale(product) {
+  return Boolean(product && (productHasSaleOptions(product) || productAvailableStock(product) > 0));
+}
+
 function productPackageConfig(product) {
   const unitsPerPackage = Math.max(0, Math.trunc(Number(product?.unitsPerPackage || 0)));
   if (!product || (productUsesIngredientStock(product) && !productFractionalStockConfig(product)) || unitsPerPackage <= 0) return null;
@@ -4716,7 +4720,7 @@ function renderPos() {
               ? products
                   .map(
                     (product) => `
-                      <button class="quick-product-tile" type="button" data-add-product="${product.id}" ${counterSplitBill || productAvailableStock(product) <= 0 ? "disabled" : ""}>
+                      <button class="quick-product-tile" type="button" data-add-product="${product.id}" ${counterSplitBill || !productCanBeSelectedForSale(product) ? "disabled" : ""}>
                         ${productImageMarkup(product, "quick-product-photo")}
                         <span class="quick-product-copy">
                           <strong>${escapeHtml(product.name)}</strong>
@@ -5019,7 +5023,7 @@ function renderWaiter() {
           ${products
             .map(
               (product) => `
-                <button class="mobile-product" type="button" data-add-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
+                <button class="mobile-product" type="button" data-add-product="${product.id}" ${!productCanBeSelectedForSale(product) ? "disabled" : ""}>
                   <span class="category-badge">${categoryMeta[product.category]?.icon || "IT"}</span>
                   <span>
                     <strong>${product.name}</strong>
@@ -11703,7 +11707,7 @@ function renderTableModal() {
                   ? products
                       .map(
                         (product) => `
-                          <button class="mobile-product" type="button" data-table-id="${table.id}" data-add-table-product="${product.id}" ${productAvailableStock(product) <= 0 ? "disabled" : ""}>
+                          <button class="mobile-product" type="button" data-table-id="${table.id}" data-add-table-product="${product.id}" ${!productCanBeSelectedForSale(product) ? "disabled" : ""}>
                             <span class="category-badge">${categoryMeta[product.category]?.icon || "IT"}</span>
                             <span><strong>${product.name}</strong><small>${money(product.price)} - ${productStockText(product)}</small></span>
                             <span>+</span>
