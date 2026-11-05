@@ -3074,6 +3074,23 @@ function saleOptionRecipe(option, variantId = "") {
   );
 }
 
+function saleMixerRecipe(option, variantId = "") {
+  const configuredRecipe = saleOptionRecipe(option, variantId);
+  if (!/red[\s-]*bull/i.test(option?.label || "")) return configuredRecipe;
+
+  const activeProducts = state.products.filter((product) => product.active !== false);
+  const exactMatches = activeProducts.filter((product) => stockNameKey(product.name) === "redbull");
+  const matches = exactMatches.length
+    ? exactMatches
+    : activeProducts.filter((product) => stockNameKey(product.name).includes("redbull"));
+  if (matches.length === 1) return [{ productId: matches[0].id, qty: 1, unit: "un" }];
+
+  if (configuredRecipe.length !== 1 || Number(configuredRecipe[0].qty) !== 1) return [];
+  const ingredient = state.ingredients.find((entry) => entry.id === configuredRecipe[0].ingredientId);
+  const unit = configuredRecipe[0].unit || ingredient?.unit || "un";
+  return String(unit).toLowerCase() === "ml" ? [] : configuredRecipe;
+}
+
 function productSaleVariants(product) {
   return normalizeProductSaleOptions(product?.saleVariants, "variant");
 }
@@ -3122,7 +3139,7 @@ function productUsesIngredientStock(product) {
       productSaleVariants(product).some((option) => option.recipe.length) ||
       productSaleFlavors(product).some((option) => option.recipe.length) ||
       productSaleMixers(product).some(
-        (option) => option.recipe.length || Object.values(option.recipeByVariant || {}).some((recipe) => recipe.length),
+        (option) => saleMixerRecipe(option).length || Object.values(option.recipeByVariant || {}).some((recipe) => recipe.length),
       ),
   );
 }
@@ -3169,7 +3186,7 @@ function productOptionCombinations(product) {
           flavor,
           mixer,
           saleCombination: combination,
-          recipe: mergeStockRecipes(product?.recipe, product?.stockRecipe, combination.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant.id)),
+          recipe: mergeStockRecipes(product?.recipe, product?.stockRecipe, combination.recipe, flavor?.recipe, saleMixerRecipe(mixer, variant.id)),
         })),
       );
     });
@@ -3183,7 +3200,7 @@ function productOptionCombinations(product) {
         variant,
         flavor,
         mixer,
-        recipe: mergeStockRecipes(product?.recipe, product?.stockRecipe, variant?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id)),
+        recipe: mergeStockRecipes(product?.recipe, product?.stockRecipe, variant?.recipe, flavor?.recipe, saleMixerRecipe(mixer, variant?.id)),
       })),
     ),
   );
@@ -3310,9 +3327,11 @@ function buildConfiguredSaleItem(product, { brandId = "", variantId = "", flavor
     : null;
   if (combinations.length && !saleCombination) return null;
 
+  const mixerRecipe = saleMixerRecipe(mixer, variant?.id);
+  if (mixer && /red[\s-]*bull/i.test(mixer.label) && !mixerRecipe.length) return null;
   const stockRecipe = combinations.length
-    ? resolveStockRecipe(mergeStockRecipes(product.recipe, product.stockRecipe, saleCombination?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id)))
-    : resolveStockRecipe(mergeStockRecipes(product.recipe, product.stockRecipe, variant?.recipe, flavor?.recipe, saleOptionRecipe(mixer, variant?.id)));
+    ? resolveStockRecipe(mergeStockRecipes(product.recipe, product.stockRecipe, saleCombination?.recipe, flavor?.recipe, mixerRecipe))
+    : resolveStockRecipe(mergeStockRecipes(product.recipe, product.stockRecipe, variant?.recipe, flavor?.recipe, mixerRecipe));
   const labels = [variant?.label, brand?.label, mixer?.label, flavor?.label].filter(Boolean);
   const unitPrice = saleCombination && saleCombination.price > 0
     ? saleCombination.price
@@ -10865,12 +10884,19 @@ function renderProductSelectionModal() {
             ? `<fieldset class="selection-group">
                 <legend>Energético</legend>
                 <div class="selection-option-grid">
-                  ${mixers.map((option, index) => `
-                    <label class="selection-option">
-                      <input type="radio" name="mixerId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
-                      <span><strong>${escapeHtml(option.label)}</strong><small>${option.priceAdjustment > 0 ? `Adicional de ${money(option.priceAdjustment)}` : "Escolha o energético"}</small></span>
-                    </label>
-                  `).join("")}
+                  ${mixers.map((option, index) => {
+                    const isRedBull = /red[\s-]*bull/i.test(option.label);
+                    const hasStockMatch = isRedBull && saleMixerRecipe(option, initialVariant?.id).length > 0;
+                    const details = isRedBull
+                      ? `${money(option.priceAdjustment)} adicional · ${hasStockMatch ? "baixa 1 unidade do estoque" : "cadastre o item Red Bull no estoque"}`
+                      : option.priceAdjustment > 0 ? `Adicional de ${money(option.priceAdjustment)}` : "Escolha o energético";
+                    return `
+                      <label class="selection-option">
+                        <input type="radio" name="mixerId" value="${escapeHtml(option.id)}" ${index === 0 ? "checked" : ""} required />
+                        <span><strong>${escapeHtml(option.label)}</strong><small>${details}</small></span>
+                      </label>
+                    `;
+                  }).join("")}
                 </div>
               </fieldset>`
             : ""
@@ -12624,6 +12650,11 @@ async function saveProductSelection(event) {
     saleUnit: String(form.get("saleUnit") || "unit"),
   });
   if (!item) {
+    const selectedMixer = productSaleMixers(product).find((option) => option.id === String(form.get("mixerId") || ""));
+    if (selectedMixer && /red[\s-]*bull/i.test(selectedMixer.label) && !saleMixerRecipe(selectedMixer, String(form.get("variantId") || "")).length) {
+      notify("Nao encontrei um unico produto ativo Red Bull no estoque. Confira o cadastro ou vincule o item exato na ficha do copao.");
+      return;
+    }
     notify("Escolha o tamanho, a bebida, o energetico e o sabor antes de continuar.");
     return;
   }
