@@ -575,6 +575,10 @@ const defaultState = {
       tax: 0,
       targetMargin: 30,
     },
+    paymentFees: {
+      defaultRates: { pix: 0, debit: 0, credit: 0, creditInstallment: 0 },
+      byTerminal: {},
+    },
     anomalySettings: {
       highDiscountPercent: 15,
       cancellationPercent: 8,
@@ -815,6 +819,14 @@ function migrateState(nextState) {
   }));
   nextState.auditLog = nextState.auditLog || structuredClone(defaultState.auditLog);
   nextState.settings = { ...structuredClone(defaultState.settings), ...(nextState.settings || {}) };
+  nextState.settings.paymentFees = {
+    ...structuredClone(defaultState.settings.paymentFees),
+    ...(nextState.settings.paymentFees || {}),
+    defaultRates: normalizedPaymentFeeRates(nextState.settings.paymentFees?.defaultRates),
+    byTerminal: nextState.settings.paymentFees?.byTerminal && typeof nextState.settings.paymentFees.byTerminal === "object"
+      ? nextState.settings.paymentFees.byTerminal
+      : {},
+  };
   nextState.settings.barName = normalizeBarName(nextState.settings.barName);
   nextState.settings.shiftStartView = {
     ...structuredClone(defaultState.settings.shiftStartView),
@@ -1434,6 +1446,16 @@ function normalizePaymentBreakdown(breakdown = []) {
     .map((part) => ({ ...part, amount: Number(part.amount.toFixed(2)) }));
 }
 
+function normalizePaymentFeeSnapshot(snapshot = []) {
+  return (Array.isArray(snapshot) ? snapshot : []).map((part) => ({
+    method: normalizePaymentMethod(part.method),
+    amount: Number(part.amount || 0),
+    installments: Math.max(1, Math.trunc(Number(part.installments || 1))),
+    ratePercent: Math.min(50, Math.max(0, Number(part.ratePercent || 0))),
+    feeAmount: Math.max(0, Number(part.feeAmount || 0)),
+  }));
+}
+
 function pointPaymentPartsForSale({ payment = "", paymentBreakdown = [], total = 0 } = {}) {
   const parts = normalizePaymentBreakdown(paymentBreakdown);
   if (parts.length) return parts.filter((part) => isPointPayment(part.method));
@@ -1511,12 +1533,14 @@ function encodePaymentDetails({
   manualReference = "",
   terminalLabel = "",
   providerReferences = [],
+  paymentFeeSnapshot = [],
   splitPersonName = "",
   splitMode = "",
 } = {}) {
   const parts = normalizePaymentBreakdown(breakdown);
   const normalizedDiscount = normalizeDiscount(discount);
   const normalizedProviderReferences = normalizeProviderReferences(providerReferences);
+  const normalizedFeeSnapshot = normalizePaymentFeeSnapshot(paymentFeeSnapshot);
   const shouldEncode =
     parts.length > 1 ||
     payment === "Dividido" ||
@@ -1526,6 +1550,7 @@ function encodePaymentDetails({
     normalizedDiscount.amount > 0 ||
     Boolean(paymentOrigin || manualReference || terminalLabel) ||
     normalizedProviderReferences.length > 0 ||
+    normalizedFeeSnapshot.length > 0 ||
     Boolean(splitPersonName || splitMode);
   if (!shouldEncode) return normalizePaymentMethod(payment);
   return `${PAYMENT_DETAILS_PREFIX}${JSON.stringify({
@@ -1538,6 +1563,7 @@ function encodePaymentDetails({
     manualReference: String(manualReference || ""),
     terminalLabel: String(terminalLabel || ""),
     providerReferences: normalizedProviderReferences,
+    paymentFeeSnapshot: normalizedFeeSnapshot,
     splitPersonName: String(splitPersonName || ""),
     splitMode: String(splitMode || ""),
   })}`;
@@ -1557,6 +1583,7 @@ function parsePaymentDetails(value) {
       manualReference: "",
       terminalLabel: "",
       providerReferences: [],
+      paymentFeeSnapshot: [],
       splitPersonName: "",
       splitMode: "",
     };
@@ -1575,6 +1602,7 @@ function parsePaymentDetails(value) {
       manualReference: String(payload.manualReference || ""),
       terminalLabel: String(payload.terminalLabel || ""),
       providerReferences: normalizeProviderReferences(payload.providerReferences),
+      paymentFeeSnapshot: normalizePaymentFeeSnapshot(payload.paymentFeeSnapshot),
       splitPersonName: String(payload.splitPersonName || ""),
       splitMode: String(payload.splitMode || ""),
     };
@@ -1589,6 +1617,7 @@ function parsePaymentDetails(value) {
       manualReference: "",
       terminalLabel: "",
       providerReferences: [],
+      paymentFeeSnapshot: [],
       splitPersonName: "",
       splitMode: "",
     };
@@ -1603,11 +1632,108 @@ function salePaymentParts(sale) {
   return [{ method, amount: Number(sale?.total || 0) }];
 }
 
-function saleReceivedAmount(sale) {
+function normalizedPaymentFeeRates(rates = {}) {
+  const rate = (value) => {
+    const number = Number(value || 0);
+    return Number.isFinite(number) ? Math.min(50, Math.max(0, number)) : 0;
+  };
+  return {
+    pix: rate(rates.pix),
+    debit: rate(rates.debit),
+    credit: rate(rates.credit),
+    creditInstallment: rate(rates.creditInstallment),
+  };
+}
+
+function paymentFeesSettings() {
+  const settings = state.settings.paymentFees || {};
+  return {
+    defaultRates: normalizedPaymentFeeRates(settings.defaultRates),
+    byTerminal: settings.byTerminal && typeof settings.byTerminal === "object" ? settings.byTerminal : {},
+  };
+}
+
+function paymentFeeTerminalOptions() {
+  const terminals = new Map();
+  paymentTerminalOptions().forEach((terminal) => {
+    if (!terminal.terminalId && terminal.integrationMode !== "manual") return;
+    const key = String(terminal.terminalId || terminal.id || "").trim();
+    if (!key || terminals.has(key)) return;
+    terminals.set(key, { key, label: ticketTerminalLabel(terminal) || terminal.label });
+  });
+  return [...terminals.values()];
+}
+
+function salePaymentFeeTerminalId(sale) {
+  const references = normalizeProviderReferences(sale?.providerReferences || []);
+  const reference = references.find((entry) => entry.terminalId);
+  if (reference?.terminalId) return reference.terminalId;
+  const rawLabel = String(references.find((entry) => entry.terminalLabel)?.terminalLabel || sale?.terminalLabel || "").trim();
+  const label = ticketTerminalLabel({ label: rawLabel }).trim().toLowerCase();
+  if (!label) return "";
+  const matchingTerminal = paymentFeeTerminalOptions().find(
+    (terminal) => terminal.label.trim().toLowerCase() === label || ticketTerminalLabel({ label: terminal.label }).trim().toLowerCase() === label,
+  );
+  return matchingTerminal?.key || "";
+}
+
+function paymentFeeRateKey(part) {
+  const method = normalizePaymentMethod(part?.method);
+  return method === "Pix" ? "pix" : method === "Debito" ? "debit" : method === "Credito"
+    ? Number(part.installments || 1) > 1 ? "creditInstallment" : "credit"
+    : "";
+}
+
+function configuredPaymentFeeRateForPart(part, sale) {
+  const rateKey = paymentFeeRateKey(part);
+  if (!rateKey) return 0;
+
+  const fees = paymentFeesSettings();
+  const terminalId = salePaymentFeeTerminalId(sale);
+  const terminalRates = terminalId ? fees.byTerminal[terminalId] : null;
+  return normalizedPaymentFeeRates(terminalRates || fees.defaultRates)[rateKey];
+}
+
+function paymentFeeAmountForPart(part, sale, partIndex = 0) {
+  const saved = sale?.paymentFeeSnapshot?.[partIndex];
+  if (saved && normalizePaymentMethod(saved.method) === normalizePaymentMethod(part.method)) {
+    return Math.max(0, Number(saved.feeAmount ?? ((Number(part.amount || 0) * Number(saved.ratePercent || 0)) / 100)));
+  }
+  return 0;
+}
+
+function buildPaymentFeeSnapshot(sale) {
+  return salePaymentParts(sale).map((part) => {
+    const ratePercent = configuredPaymentFeeRateForPart(part, sale);
+    const amount = Number(part.amount || 0);
+    return {
+      method: normalizePaymentMethod(part.method),
+      amount,
+      installments: Number(part.installments || 1),
+      ratePercent,
+      feeAmount: Number(((amount * ratePercent) / 100).toFixed(2)),
+    };
+  });
+}
+
+function saleGrossReceivedAmount(sale) {
   if (!isFinancialSale(sale)) return 0;
   return salePaymentParts(sale)
     .filter((part) => part.method !== "Fiado")
     .reduce((sum, part) => sum + Number(part.amount || 0), 0);
+}
+
+function saleCardFeeAmount(sale) {
+  if (!isFinancialSale(sale)) return 0;
+  return Number(
+    salePaymentParts(sale)
+      .reduce((sum, part, index) => sum + paymentFeeAmountForPart(part, sale, index), 0)
+      .toFixed(2),
+  );
+}
+
+function saleReceivedAmount(sale) {
+  return Math.max(0, Number((saleGrossReceivedAmount(sale) - saleCardFeeAmount(sale)).toFixed(2)));
 }
 
 function saleFiadoAmount(sale) {
@@ -1626,10 +1752,7 @@ function saleReceivedProfit(sale) {
 }
 
 function saleStoredReceivedAmount(sale) {
-  if (!isFinancialSale(sale)) return 0;
-  return salePaymentParts(sale)
-    .filter((part) => part.method !== "Fiado")
-    .reduce((sum, part) => sum + Number(part.amount || 0), 0);
+  return saleReceivedAmount(sale);
 }
 
 function saleStoredFiadoAmount(sale) {
@@ -2625,6 +2748,7 @@ function queueOfflineSale(sale, fiadoAmount = 0, { releaseTable = true, splitBil
       manualReference: sale.manualReference,
       terminalLabel: sale.terminalLabel,
       providerReferences: sale.providerReferences,
+      paymentFeeSnapshot: sale.paymentFeeSnapshot,
       splitPersonName: sale.splitPersonName,
       splitMode: sale.splitMode,
     }),
@@ -3548,6 +3672,7 @@ function mapSaleFromDb(row, items = []) {
     manualReference: paymentDetails.manualReference,
     terminalLabel: paymentDetails.terminalLabel,
     providerReferences: paymentDetails.providerReferences,
+    paymentFeeSnapshot: paymentDetails.paymentFeeSnapshot,
     splitPersonName: paymentDetails.splitPersonName,
     splitMode: paymentDetails.splitMode,
     discountAmount: Number(paymentDetails.discount?.amount || 0),
@@ -4443,6 +4568,18 @@ function bindViewEvents() {
   document.querySelector("[data-download-price-catalog]")?.addEventListener("click", downloadPriceCatalogPdf);
   document.querySelector("[data-print-clients-report]")?.addEventListener("click", () => printReport("clients"));
   document.querySelector("#report-filter-form")?.addEventListener("submit", applyReportFilter);
+  const reportFilterForm = document.querySelector("#report-filter-form");
+  if (reportFilterForm) {
+    const updateReportDateFields = () => {
+      const mode = reportFilterForm.querySelector('[name="mode"]')?.value;
+      const startField = reportFilterForm.querySelector('[name="start"]');
+      const endField = reportFilterForm.querySelector('[name="end"]');
+      if (startField) startField.disabled = !["day", "period"].includes(mode);
+      if (endField) endField.disabled = mode !== "period";
+    };
+    reportFilterForm.querySelector('[name="mode"]')?.addEventListener("change", updateReportDateFields);
+    updateReportDateFields();
+  }
 
   document.querySelectorAll("[data-print-sale]").forEach((button) => {
     button.addEventListener("click", () => printSale(button.dataset.printSale));
@@ -4695,6 +4832,7 @@ function renderPos() {
       </div>
       <div class="toolbar">
         <input class="field-input search" data-search type="search" placeholder="Buscar produto" />
+        ${session?.role === "admin" ? `<button class="btn secondary" type="button" data-open-modal="paymentFees">${icon("settings")} Taxas das maquininhas</button>` : ""}
         <button class="btn secondary" type="button" data-open-modal="manualCharge" ${counterSplitBill ? "disabled" : ""}>${icon("cash")} Cobranca avulsa</button>
         <button class="btn primary" type="button" data-new-service>Novo atendimento</button>
       </div>
@@ -5656,6 +5794,7 @@ async function finalizeSale({
             : "",
     manualReference,
     providerReferences,
+    paymentFeeSnapshot: buildPaymentFeeSnapshot({ payment, paymentBreakdown: paymentParts, total, providerReferences }),
     cashReceived: printDetails.cashReceived,
     cashChange: printDetails.cashChange,
     discount: totals.discount,
@@ -6015,6 +6154,7 @@ async function finalizeSaleOnline({
   const paymentParts = normalizePaymentBreakdown(paymentBreakdown);
   const normalizedDiscount = normalizeDiscount(discount);
   const fiadoAmount = payment === "Fiado" ? total : paymentParts.find((part) => part.method === "Fiado")?.amount || 0;
+  const paymentFeeSnapshot = buildPaymentFeeSnapshot({ payment, paymentBreakdown: paymentParts, total, providerReferences });
   const encodedPayment = encodePaymentDetails({
     payment,
     breakdown: paymentParts,
@@ -6025,6 +6165,7 @@ async function finalizeSaleOnline({
     manualReference,
     terminalLabel,
     providerReferences,
+    paymentFeeSnapshot,
   });
   const saleResult = await supabaseClient
     .from("sales")
@@ -7155,6 +7296,8 @@ function renderSales() {
   const todayFiadoSales = todayFinancialSales.filter((sale) => saleFiadoAmount(sale) > 0);
   const todayZeroedSales = todaySales.filter(isZeroedSale);
   const todayTotal = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const todayGrossReceived = todayReceivedSales.reduce((sum, sale) => sum + saleGrossReceivedAmount(sale), 0);
+  const todayCardFees = todayReceivedSales.reduce((sum, sale) => sum + saleCardFeeAmount(sale), 0);
   const todayProfit = todayReceivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
   const todayFiadoTotal = todayFiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
   const todayPaymentTotals = salesPaymentTotals(todayFinancialSales);
@@ -7242,6 +7385,8 @@ function renderSales() {
       </div>
       <div class="summary-list">
         <div class="summary-row total"><span>Recebido hoje</span><strong>${money(todayTotal)}</strong></div>
+        <div class="summary-row"><span>Recebido bruto</span><strong>${money(todayGrossReceived)}</strong></div>
+        <div class="summary-row"><span>Taxas estimadas das maquininhas</span><strong>${money(todayCardFees)}</strong></div>
         <div class="summary-row"><span>Pix</span><strong>${money(todayPaymentTotals.Pix)}</strong></div>
         <div class="summary-row"><span>Debito</span><strong>${money(todayPaymentTotals.Debito)}</strong></div>
         <div class="summary-row"><span>Credito</span><strong>${money(todayPaymentTotals.Credito)}</strong></div>
@@ -7804,13 +7949,41 @@ function salesPaymentTotals(sales) {
 
   sales.forEach((sale) => {
     if (!isFinancialSale(sale)) return;
+    salePaymentParts(sale).forEach((part, index) => {
+      const method = normalizePaymentMethod(part.method);
+      const key = paymentMethods.includes(method) ? method : "Outros";
+      const gross = Number(part.amount || 0);
+      const fee = paymentFeeAmountForPart(part, sale, index);
+      totals[key] += Math.max(0, gross - fee);
+    });
+  });
+
+  return Object.fromEntries(Object.entries(totals).map(([method, amount]) => [method, Number(amount.toFixed(2))]));
+}
+
+function salesPaymentGrossTotals(sales) {
+  const totals = { ...Object.fromEntries(paymentMethods.map((method) => [method, 0])), Outros: 0 };
+  sales.forEach((sale) => {
+    if (!isFinancialSale(sale)) return;
     salePaymentParts(sale).forEach((part) => {
       const method = normalizePaymentMethod(part.method);
       const key = paymentMethods.includes(method) ? method : "Outros";
       totals[key] += Number(part.amount || 0);
     });
   });
+  return Object.fromEntries(Object.entries(totals).map(([method, amount]) => [method, Number(amount.toFixed(2))]));
+}
 
+function salesPaymentFeeTotals(sales) {
+  const totals = { ...Object.fromEntries(paymentMethods.map((method) => [method, 0])), Outros: 0 };
+  sales.forEach((sale) => {
+    if (!isFinancialSale(sale)) return;
+    salePaymentParts(sale).forEach((part, index) => {
+      const method = normalizePaymentMethod(part.method);
+      const key = paymentMethods.includes(method) ? method : "Outros";
+      totals[key] += paymentFeeAmountForPart(part, sale, index);
+    });
+  });
   return Object.fromEntries(Object.entries(totals).map(([method, amount]) => [method, Number(amount.toFixed(2))]));
 }
 
@@ -8095,14 +8268,14 @@ function downloadDailySalesReportPdf() {
   return downloadSalesPeriodReportPdf("daily");
 }
 
-async function downloadSalesPeriodReportPdf(period = "daily") {
+async function downloadSalesPeriodReportPdf(period = "daily", customPeriodInfo = null) {
   const { jsPDF } = window.jspdf || {};
   if (!jsPDF) {
     notify("Gerador de PDF ainda nao carregou. Atualize a pagina e tente novamente.");
     return;
   }
 
-  if (isOnlineSession() && ["monthly", "semester", "annual"].includes(period)) {
+  if (isOnlineSession() && (customPeriodInfo || ["monthly", "semester", "annual"].includes(period))) {
     notify("Carregando o historico completo para o relatorio...");
     const loaded = await loadOnlineSalesData();
     if (!loaded) return;
@@ -8115,17 +8288,23 @@ async function downloadSalesPeriodReportPdf(period = "daily") {
   }
   const brandIconData = await getBrandIconDataUrl();
 
-  const periodInfo = salesReportPeriodRange(period);
-  const sales = salesForRange(periodInfo.start, periodInfo.end, { includeInactive: true }).slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+  const periodInfo = customPeriodInfo || salesReportPeriodRange(period);
+  const sales = (customPeriodInfo ? reportSales() : salesForRange(periodInfo.start, periodInfo.end, { includeInactive: true }))
+    .slice()
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
   const financialSales = sales.filter(isFinancialSale);
   const receivedSales = financialSales.filter(isReceivedSale);
   const fiadoSales = financialSales.filter((sale) => saleFiadoAmount(sale) > 0);
   const zeroedSales = sales.filter(isZeroedSale);
   const cancelledSales = sales.filter((sale) => sale.status === "Cancelada");
+  const grossReceived = receivedSales.reduce((sum, sale) => sum + saleGrossReceivedAmount(sale), 0);
+  const fees = receivedSales.reduce((sum, sale) => sum + saleCardFeeAmount(sale), 0);
   const total = receivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
   const profit = receivedSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
   const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
-  const totalLaunched = total + fiadoTotal;
+  const totalLaunched = financialSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
+  const paymentGrossTotals = salesPaymentGrossTotals(receivedSales);
+  const paymentFeeTotals = salesPaymentFeeTotals(receivedSales);
   const paymentTotals = cashSalesPaymentTotals(receivedSales);
   const topProducts = topProductsFromSales(sales);
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
@@ -8156,8 +8335,9 @@ async function downloadSalesPeriodReportPdf(period = "daily") {
 
   doc.autoTable({
     body: [
-      ["Vendas brutas recebidas", money(total), "Fiado separado", money(fiadoTotal)],
-      ["Total geral lancado", money(totalLaunched), "Lucro recebido", money(profit)],
+      ["Recebido bruto", money(grossReceived), "Taxas estimadas", money(fees)],
+      ["Recebido liquido", money(total), "Fiado separado", money(fiadoTotal)],
+      ["Total geral vendido", money(totalLaunched), "Lucro liquido recebido", money(profit)],
       ["Vendas recebidas", receivedSales.length, "Vendas fiado", fiadoSales.length],
       ["Vendas zeradas", zeroedSales.length, "Canceladas", cancelledSales.length],
     ],
@@ -8172,10 +8352,15 @@ async function downloadSalesPeriodReportPdf(period = "daily") {
   });
 
   doc.autoTable({
-    head: [["Forma de pagamento", "Total recebido"]],
-    body: cashPaymentMethods.map((method) => [method, money(paymentTotals[method] || 0)]),
+    head: [["Forma de pagamento", "Bruto", "Taxa", "Liquido recebido"]],
+    body: cashPaymentMethods.map((method) => [
+      method,
+      money(paymentGrossTotals[method] || 0),
+      money(paymentFeeTotals[method] || 0),
+      money(paymentTotals[method] || 0),
+    ]),
     startY: (doc.lastAutoTable?.finalY || 126) + 18,
-    margin: { left: 40, right: 520 },
+    margin: { left: 40, right: 360 },
     theme: "grid",
     styles: { fontSize: 8, cellPadding: 4 },
     headStyles: { fillColor: [15, 118, 110], textColor: [255, 255, 255] },
@@ -8194,7 +8379,7 @@ async function downloadSalesPeriodReportPdf(period = "daily") {
   });
 
   doc.autoTable({
-    head: [["Data", "Produtos", "Pagamento", "Status", "Operador", "Desc.", "Recebido", "Fiado", "Total geral", "Lucro recebido"]],
+    head: [["Data", "Produtos", "Pagamento", "Status", "Operador", "Desc.", "Taxa", "Recebido liquido", "Fiado", "Total geral", "Lucro recebido"]],
     body: sales.length
       ? sales.map((sale) => [
           dateTime(sale.date),
@@ -8203,12 +8388,13 @@ async function downloadSalesPeriodReportPdf(period = "daily") {
           sale.status || "Concluida",
           userName(sale.cashierId),
           saleDiscountAmount(sale) ? money(saleDiscountAmount(sale)) : "-",
+          money(saleCardFeeAmount(sale)),
           money(saleReceivedAmount(sale)),
           money(saleFiadoAmount(sale)),
           money(saleDisplayTotal(sale)),
           money(saleReceivedProfit(sale)),
         ])
-      : [["Nenhuma venda registrada no periodo.", "", "", "", "", "", "", "", "", ""]],
+      : [["Nenhuma venda registrada no periodo.", "", "", "", "", "", "", "", "", "", ""]],
     startY: (doc.lastAutoTable?.finalY || 248) + 24,
     margin: { left: 40, right: 40 },
     theme: "grid",
@@ -9528,22 +9714,25 @@ async function executeAssistantAction() {
 }
 
 function renderReports() {
-  const sales = reportSales().slice().reverse();
+  const filteredSales = reportSales();
+  const sales = filteredSales.slice().reverse();
   const activeSales = sales.filter(isFinancialSale);
+  const grossReceived = activeSales.reduce((sum, sale) => sum + saleGrossReceivedAmount(sale), 0);
+  const estimatedFees = activeSales.reduce((sum, sale) => sum + saleCardFeeAmount(sale), 0);
+  const netReceived = activeSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const fiadoTotal = activeSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
+  const paymentGrossTotals = salesPaymentGrossTotals(activeSales);
+  const paymentFeeTotals = salesPaymentFeeTotals(activeSales);
+  const paymentNetTotals = salesPaymentTotals(activeSales);
   const byPayment = paymentMethods.map((method) => ({
     method,
-    total: activeSales.reduce(
-      (sum, sale) =>
-        sum +
-        salePaymentParts(sale)
-          .filter((part) => part.method === method)
-          .reduce((partSum, part) => partSum + Number(part.amount || 0), 0),
-      0,
-    ),
+    gross: paymentGrossTotals[method] || 0,
+    fee: paymentFeeTotals[method] || 0,
+    net: paymentNetTotals[method] || 0,
   }));
-  const byCategory = categoryTotals(reportSales());
-  const profitability = productProfitability(reportSales()).slice(0, 8);
-  const operatorRows = operatorReport(reportSales());
+  const byCategory = categoryTotals(filteredSales);
+  const profitability = productProfitability(filteredSales).slice(0, 8);
+  const operatorRows = operatorReport(filteredSales);
 
   return `
     <div class="section-title">
@@ -9567,21 +9756,33 @@ function renderReports() {
             <option value="monthly" ${reportFilter.mode === "monthly" ? "selected" : ""}>Mes atual</option>
             <option value="semester" ${reportFilter.mode === "semester" ? "selected" : ""}>Semestre atual</option>
             <option value="annual" ${reportFilter.mode === "annual" ? "selected" : ""}>Ano atual</option>
+            <option value="day" ${reportFilter.mode === "day" ? "selected" : ""}>Dia especifico</option>
             <option value="period" ${reportFilter.mode === "period" ? "selected" : ""}>Periodo personalizado</option>
           </select>
         </label>
         <label class="field">
-          <span>Inicio</span>
-          <input name="start" type="datetime-local" value="${reportFilter.start || ""}" />
+          <span>Data inicial / dia</span>
+          <input name="start" type="date" value="${reportFilter.start || ""}" />
         </label>
         <label class="field">
-          <span>Fim</span>
-          <input name="end" type="datetime-local" value="${reportFilter.end || ""}" />
+          <span>Data final do periodo</span>
+          <input name="end" type="date" value="${reportFilter.end || ""}" />
         </label>
         <div class="field-actions">
           <button class="btn primary" type="submit">Aplicar filtro</button>
+          <button class="btn secondary" type="submit" data-download-filtered-report>${icon("download")} Baixar PDF deste periodo</button>
         </div>
       </form>
+    </section>
+    <section class="card pad" style="margin-bottom: 16px;">
+      <div class="card-head"><h2 class="card-title">Resumo financeiro: ${escapeHtml(reportPeriodLabel())}</h2></div>
+      <div class="summary-list">
+        <div class="summary-row"><span>Vendido bruto</span><strong>${money(activeSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0))}</strong></div>
+        <div class="summary-row"><span>Recebido bruto (sem fiado)</span><strong>${money(grossReceived)}</strong></div>
+        <div class="summary-row"><span>Taxas estimadas das maquininhas</span><strong>${money(estimatedFees)}</strong></div>
+        <div class="summary-row total"><span>Recebido líquido</span><strong>${money(netReceived)}</strong></div>
+        <div class="summary-row"><span>Fiado separado</span><strong>${money(fiadoTotal)}</strong></div>
+      </div>
     </section>
     ${typeof renderPaymentReconciliationPanel === "function" ? renderPaymentReconciliationPanel() : ""}
     ${typeof renderCashFlowForecastPanel === "function" ? renderCashFlowForecastPanel() : ""}
@@ -9589,12 +9790,13 @@ function renderReports() {
     <div class="grid two-col">
       <section class="card">
         <div class="card-head">
-          <h2 class="card-title">Por pagamento</h2>
+          <div><h2 class="card-title">Por pagamento</h2><p>O valor líquido já desconta a taxa configurada.</p></div>
           <button class="btn compact secondary" type="button" data-print-cash-report>${icon("print")} PDF</button>
         </div>
-        <div class="summary-list">
-          ${byPayment.map((entry) => `<div class="summary-row"><span>${entry.method}</span><strong>${money(entry.total)}</strong></div>`).join("")}
-        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Forma</th><th>Bruto</th><th>Taxa</th><th>Líquido</th></tr></thead>
+          <tbody>${byPayment.map((entry) => `<tr><td>${entry.method}</td><td>${money(entry.gross)}</td><td>${money(entry.fee)}</td><td><strong>${money(entry.net)}</strong></td></tr>`).join("")}</tbody>
+        </table></div>
       </section>
       <section class="card">
         <div class="card-head">
@@ -9703,7 +9905,7 @@ function renderSettings() {
             <input name="closingDifferenceLimit" type="number" min="0" step="0.01" value="${state.settings.closingDifferenceLimit ?? 5}" />
           </label>
           <label class="field">
-            <span>Taxa de cartao padrao (%)</span>
+            <span>Taxa de cartao no simulador de preco (%)</span>
             <input name="pricingCardFee" type="number" min="0" max="50" step="0.01" value="${state.settings.pricingDefaults?.cardFee ?? 3.5}" />
           </label>
           <label class="field">
@@ -10045,6 +10247,7 @@ function renderModal() {
     priceSimulator: renderPriceSimulatorModal,
     reconciliationReview: renderReconciliationReviewModal,
     paymentRecovery: renderPaymentRecoveryModal,
+    paymentFees: renderPaymentFeesModal,
     mfaSetup: renderMfaSetupModal,
     inventoryIntelligence: renderInventoryIntelligenceModal,
   };
@@ -10065,6 +10268,44 @@ function renderModal() {
         ${renderers[currentModal.type]()}
       </section>
     </div>
+  `;
+}
+
+function renderPaymentFeesModal() {
+  const fees = paymentFeesSettings();
+  const terminals = paymentFeeTerminalOptions();
+  const rateFields = (scope, rates) => `
+    <label class="field"><span>Pix (%)</span><input type="number" min="0" max="50" step="0.01" value="${rates.pix}" data-fee-scope="${escapeHtml(scope)}" data-fee-method="pix" /></label>
+    <label class="field"><span>Débito (%)</span><input type="number" min="0" max="50" step="0.01" value="${rates.debit}" data-fee-scope="${escapeHtml(scope)}" data-fee-method="debit" /></label>
+    <label class="field"><span>Crédito à vista (%)</span><input type="number" min="0" max="50" step="0.01" value="${rates.credit}" data-fee-scope="${escapeHtml(scope)}" data-fee-method="credit" /></label>
+    <label class="field"><span>Crédito parcelado (%)</span><input type="number" min="0" max="50" step="0.01" value="${rates.creditInstallment}" data-fee-scope="${escapeHtml(scope)}" data-fee-method="creditInstallment" /></label>
+  `;
+
+  return `
+    <form id="payment-fees-form">
+      <div class="modal-head">
+        <div><h2>Taxas das maquininhas</h2><p>Configure uma vez; o app calcula automaticamente nos relatórios.</p></div>
+        <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
+      </div>
+      <div class="modal-body">
+        <div class="notice compact">Informe as taxas percentuais cobradas pela operadora. Isso não altera o valor enviado à maquininha nem cobra taxa extra do cliente. Quando houver taxa específica da máquina, ela prevalece sobre a taxa padrão.</div>
+        <section class="payment-fee-settings-group">
+          <h3>Taxa padrão para máquinas sem configuração própria</h3>
+          <div class="form-grid">${rateFields("default", fees.defaultRates)}</div>
+        </section>
+        ${terminals.map((terminal) => `
+          <section class="payment-fee-settings-group">
+            <h3>${escapeHtml(terminal.label)}</h3>
+            <div class="form-grid">${rateFields(terminal.key, normalizedPaymentFeeRates(fees.byTerminal[terminal.key]))}</div>
+          </section>
+        `).join("")}
+        ${terminals.length ? "" : '<p class="hint">Nenhuma maquininha identificada agora. A taxa padrão será usada; as taxas por máquina podem ser preenchidas quando os terminais estiverem disponíveis.</p>'}
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
+        <button class="btn primary" type="submit">Salvar taxas</button>
+      </div>
+    </form>
   `;
 }
 
@@ -12311,6 +12552,7 @@ function bindModalForms() {
   document.querySelector("#movement-form")?.addEventListener("submit", saveMovement);
   document.querySelector("#manual-charge-form")?.addEventListener("submit", saveManualCharge);
   document.querySelector("#external-payment-form")?.addEventListener("submit", saveExternalPayment);
+  document.querySelector("#payment-fees-form")?.addEventListener("submit", savePaymentFees);
   document.querySelector("#order-form")?.addEventListener("submit", saveOrder);
   document.querySelector("#sale-payment-form")?.addEventListener("submit", confirmSalePayment);
   const tableCountInput = document.querySelector("[data-table-count]");
@@ -15231,7 +15473,7 @@ function bindExternalPaymentTotal() {
 
 function buildManualChargeSale({ description, amount, payment, installments, terminalLabel, providerReferences = [], syncStatus }) {
   const date = new Date().toISOString();
-  return {
+  const sale = {
     id: uuid(),
     date,
     cashierId: session.id,
@@ -15258,6 +15500,8 @@ function buildManualChargeSale({ description, amount, payment, installments, ter
       },
     ],
   };
+  sale.paymentFeeSnapshot = buildPaymentFeeSnapshot(sale);
+  return sale;
 }
 
 function storeManualChargeLocally(sale, queueForSync = false) {
@@ -15292,6 +15536,7 @@ async function recordManualCharge({ description, amount, payment, installments, 
     manualReference: description,
     terminalLabel,
     providerReferences: sale.providerReferences,
+    paymentFeeSnapshot: sale.paymentFeeSnapshot,
   });
   const saleResult = await supabaseClient
     .from("sales")
@@ -15454,13 +15699,21 @@ async function saveExternalPayment(event) {
   const externalReferences = isPointPayment(payment)
     ? [{ provider: externalProvider, reference: note, terminalLabel, amount: saleTotal, method: payment, status: "operator_confirmed", checkedAt: new Date().toISOString() }]
     : [];
+  const externalPaymentBreakdown = [{ method: payment, amount: saleTotal }];
+  const externalFeeSnapshot = buildPaymentFeeSnapshot({
+    payment,
+    paymentBreakdown: externalPaymentBreakdown,
+    total: saleTotal,
+    providerReferences: externalReferences,
+  });
   const encodedExternalPayment = encodePaymentDetails({
     payment,
-    breakdown: [{ method: payment, amount: saleTotal }],
+    breakdown: externalPaymentBreakdown,
     paymentOrigin: "external_terminal",
     manualReference: note,
     terminalLabel,
     providerReferences: externalReferences,
+    paymentFeeSnapshot: externalFeeSnapshot,
   });
 
   if (!saleTotal || saleTotal <= 0) {
@@ -15557,7 +15810,8 @@ async function saveExternalPayment(event) {
     clientId: null,
     tableId: null,
     payment,
-    paymentBreakdown: [{ method: payment, amount: saleTotal }],
+    paymentBreakdown: externalPaymentBreakdown,
+    paymentFeeSnapshot: externalFeeSnapshot,
     paymentOrigin: "external_terminal",
     manualReference: note,
     providerReferences: externalReferences,
@@ -15621,6 +15875,7 @@ async function saveSettings(event) {
         closingDifferenceLimit: payload.closingDifferenceLimit,
         pricingDefaults: payload.pricingDefaults,
         anomalySettings: payload.anomalySettings,
+        paymentFees: payload.paymentFees,
       },
     };
     let { error } = await supabaseClient.from("app_settings").upsert(settingsRow);
@@ -15649,6 +15904,67 @@ async function saveSettings(event) {
   logAudit("Configuracoes salvas", state.settings.barName);
   saveState();
   notify("Configuracoes salvas.");
+  renderApp();
+}
+
+async function savePaymentFees(event) {
+  event.preventDefault();
+  if (session?.role !== "admin") {
+    notify("Somente o administrador pode alterar as taxas das maquininhas.");
+    return;
+  }
+
+  const form = event.currentTarget;
+  const currentFees = paymentFeesSettings();
+  const nextFees = {
+    defaultRates: { ...currentFees.defaultRates },
+    byTerminal: { ...currentFees.byTerminal },
+  };
+
+  form.querySelectorAll("[data-fee-scope][data-fee-method]").forEach((input) => {
+    const scope = input.dataset.feeScope;
+    const method = input.dataset.feeMethod;
+    const value = Math.min(50, Math.max(0, Number(input.value || 0)));
+    if (scope === "default") {
+      nextFees.defaultRates[method] = value;
+      return;
+    }
+    nextFees.byTerminal[scope] = {
+      ...normalizedPaymentFeeRates(nextFees.byTerminal[scope]),
+      [method]: value,
+    };
+  });
+
+  if (isOnlineSession()) {
+    const { data, error: readError } = await supabaseClient
+      .from("app_settings")
+      .select("advanced_settings")
+      .eq("id", "main")
+      .maybeSingle();
+    if (readError) {
+      notify(`Nao foi possivel ler as configuracoes online: ${readError.message}`);
+      return;
+    }
+
+    const advancedSettings = {
+      ...(data?.advanced_settings || {}),
+      paymentFees: nextFees,
+    };
+    const { error } = await supabaseClient
+      .from("app_settings")
+      .update({ advanced_settings: advancedSettings })
+      .eq("id", "main");
+    if (error) {
+      notify(`Erro ao salvar as taxas online: ${error.message}`);
+      return;
+    }
+  }
+
+  state.settings.paymentFees = nextFees;
+  logAudit("Taxas das maquininhas atualizadas", "Configuracao aplicada automaticamente aos relatorios.");
+  saveState();
+  currentModal = null;
+  notify(isOnlineSession() ? "Taxas salvas e sincronizadas entre computadores." : "Taxas salvas neste computador.");
   renderApp();
 }
 
@@ -16032,16 +16348,31 @@ function parseSaleMixerLines(text) {
 
 function applyReportFilter(event) {
   event.preventDefault();
+  const shouldDownload = event.submitter?.hasAttribute("data-download-filtered-report") || false;
   const form = new FormData(event.currentTarget);
-  reportFilter = {
+  const nextFilter = {
     mode: form.get("mode"),
-    start: form.get("start"),
-    end: form.get("end"),
+    start: String(form.get("start") || ""),
+    end: String(form.get("end") || ""),
   };
+  if (nextFilter.mode === "day" && !nextFilter.start) {
+    notify("Escolha a data que deseja consultar.");
+    return;
+  }
+  if (nextFilter.mode === "period" && (!nextFilter.start || !nextFilter.end)) {
+    notify("Escolha a data inicial e a data final do relatorio.");
+    return;
+  }
+  if (nextFilter.mode === "period" && nextFilter.start > nextFilter.end) {
+    notify("A data inicial nao pode ser posterior a data final.");
+    return;
+  }
+  reportFilter = nextFilter;
   renderApp();
+  if (shouldDownload) void downloadFilteredSalesReportPdf();
 }
 
-function reportSales() {
+function reportFilterRange() {
   const now = Date.now();
   let start = now - 24 * 60 * 60 * 1000;
   let end = now;
@@ -16053,24 +16384,59 @@ function reportSales() {
     start = range.start.getTime();
     end = range.end.getTime();
   }
-  if (reportFilter.mode === "period") {
-    start = reportFilter.start ? new Date(reportFilter.start).getTime() : 0;
-    end = reportFilter.end ? new Date(reportFilter.end).getTime() : now;
+  if (reportFilter.mode === "day") {
+    if (!reportFilter.start) return null;
+    const [year, month, day] = reportFilter.start.split("-").map(Number);
+    start = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
+    end = new Date(year, month - 1, day, 23, 59, 59, 999).getTime();
   }
+  if (reportFilter.mode === "period") {
+    if (!reportFilter.start || !reportFilter.end) return null;
+    const [startYear, startMonth, startDay] = reportFilter.start.split("-").map(Number);
+    const [endYear, endMonth, endDay] = reportFilter.end.split("-").map(Number);
+    start = new Date(startYear, startMonth - 1, startDay, 0, 0, 0, 0).getTime();
+    end = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999).getTime();
+  }
+  return { start, end };
+}
 
+function reportSales() {
+  const range = reportFilterRange();
+  if (!range) return [];
   return state.sales.filter((sale) => {
     const saleTime = new Date(sale.date).getTime();
-    return saleTime >= start && saleTime <= end;
+    return saleTime >= range.start && saleTime <= range.end;
   });
 }
 
 function reportPeriodLabel() {
   if (reportFilter.mode === "7d") return "Ultimos 7 dias";
   if (["monthly", "semester", "annual"].includes(reportFilter.mode)) return salesReportPeriodRange(reportFilter.mode).label;
+  if (reportFilter.mode === "day") return reportFilter.start ? formatDateKeyBr(reportFilter.start) : "Selecione um dia";
   if (reportFilter.mode === "period") {
-    return `${reportFilter.start || "inicio"} ate ${reportFilter.end || "agora"}`;
+    return `${formatDateKeyBr(reportFilter.start)} ate ${formatDateKeyBr(reportFilter.end)}`;
   }
   return "Ultimas 24 horas";
+}
+
+async function downloadFilteredSalesReportPdf() {
+  const range = reportFilterRange();
+  if (!range) {
+    notify(reportFilter.mode === "day" ? "Escolha a data antes de gerar o relatorio." : "Escolha as datas inicial e final antes de gerar o relatorio.");
+    return;
+  }
+  if (range.start > range.end) {
+    notify("A data inicial nao pode ser posterior a data final.");
+    return;
+  }
+  const periodInfo = {
+    start: new Date(range.start),
+    end: new Date(range.end),
+    title: "Relatorio personalizado de vendas",
+    label: reportPeriodLabel(),
+    filePart: "personalizado",
+  };
+  return downloadSalesPeriodReportPdf("custom", periodInfo);
 }
 
 function categoryTotals(sales = state.sales) {
@@ -16300,6 +16666,8 @@ function salesReportEmailData(sales, period) {
   const financialSales = sales.filter(isFinancialSale);
   const receivedSales = financialSales.filter(isReceivedSale);
   const fiadoSales = financialSales.filter((sale) => saleFiadoAmount(sale) > 0);
+  const grossReceived = receivedSales.reduce((sum, sale) => sum + saleGrossReceivedAmount(sale), 0);
+  const estimatedFees = receivedSales.reduce((sum, sale) => sum + saleCardFeeAmount(sale), 0);
   const received = receivedSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
   const fiado = fiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
   return {
@@ -16307,15 +16675,19 @@ function salesReportEmailData(sales, period) {
     generatedAt: dateTime(new Date().toISOString()),
     operator: session?.name || "Usuario",
     summary: {
+      grossReceived,
+      estimatedFees,
       received,
       fiado,
-      launched: received + fiado,
+      launched: financialSales.reduce((sum, sale) => sum + Number(sale.total || 0), 0),
       count: financialSales.length,
     },
     paymentTotals: {
       ...cashSalesPaymentTotals(receivedSales),
       Fiado: fiado,
     },
+    paymentGrossTotals: salesPaymentGrossTotals(receivedSales),
+    paymentFeeTotals: salesPaymentFeeTotals(receivedSales),
     sales: financialSales.slice(-300).map((sale) => ({
       date: dateTime(sale.date),
       items: saleItemsDescription(sale) || saleItemsLabel(sale),

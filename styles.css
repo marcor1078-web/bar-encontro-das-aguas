@@ -3646,6 +3646,18 @@ body[data-theme="dark"] .offline-payment-panel {
   grid-column: 1 / -1;
 }
 
+.payment-fee-settings-group {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.payment-fee-settings-group h3 {
+  margin: 0 0 12px;
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
 .expense-recurrence input[type="checkbox"] {
   width: 20px;
   height: 20px;
