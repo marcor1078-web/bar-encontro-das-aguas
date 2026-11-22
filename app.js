@@ -7987,6 +7987,31 @@ function salesPaymentFeeTotals(sales) {
   return Object.fromEntries(Object.entries(totals).map(([method, amount]) => [method, Number(amount.toFixed(2))]));
 }
 
+function salesChannelSummary(sales) {
+  const gross = salesPaymentGrossTotals(sales);
+  const fees = salesPaymentFeeTotals(sales);
+  const machineMethods = ["Pix", "Debito", "Credito"];
+  const machineGross = machineMethods.reduce((sum, method) => sum + Number(gross[method] || 0), 0);
+  const machineFees = machineMethods.reduce((sum, method) => sum + Number(fees[method] || 0), 0);
+  return {
+    cash: Number(gross.Dinheiro || 0),
+    machineGross: Number(machineGross.toFixed(2)),
+    machineFees: Number(machineFees.toFixed(2)),
+    machineNet: Number((machineGross - machineFees).toFixed(2)),
+  };
+}
+
+function salesEstimatedProfit(sales) {
+  return Number(sales
+    .filter((sale) => isFinancialSale(sale) && !isManualChargeSale(sale) && (sale.items || []).length > 0)
+    .reduce((sum, sale) => {
+      const itemCost = (sale.items || []).reduce((itemSum, item) => itemSum + Number(item.qty || 0) * Number(item.cost || 0), 0);
+      const cost = Number(sale.cost || itemCost);
+      return sum + Number(sale.total || 0) - cost - saleCardFeeAmount(sale);
+    }, 0)
+    .toFixed(2));
+}
+
 function isExternalPaymentSale(sale) {
   return sale?.status === "Pagamento externo";
 }
@@ -8306,6 +8331,8 @@ async function downloadSalesPeriodReportPdf(period = "daily", customPeriodInfo =
   const paymentGrossTotals = salesPaymentGrossTotals(receivedSales);
   const paymentFeeTotals = salesPaymentFeeTotals(receivedSales);
   const paymentTotals = cashSalesPaymentTotals(receivedSales);
+  const channelSummary = salesChannelSummary(financialSales);
+  const estimatedProfit = salesEstimatedProfit(financialSales);
   const topProducts = topProductsFromSales(sales);
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
   const generatedAt = dateTime(new Date().toISOString());
@@ -8337,9 +8364,12 @@ async function downloadSalesPeriodReportPdf(period = "daily", customPeriodInfo =
     body: [
       ["Recebido bruto", money(grossReceived), "Taxas estimadas", money(fees)],
       ["Recebido liquido", money(total), "Fiado separado", money(fiadoTotal)],
-      ["Total geral vendido", money(totalLaunched), "Lucro liquido recebido", money(profit)],
-      ["Vendas recebidas", receivedSales.length, "Vendas fiado", fiadoSales.length],
-      ["Vendas zeradas", zeroedSales.length, "Canceladas", cancelledSales.length],
+      ["Dinheiro recebido", money(channelSummary.cash), "Maquininha bruto", money(channelSummary.machineGross)],
+      ["Taxas da maquininha", money(channelSummary.machineFees), "Maquininha liquido", money(channelSummary.machineNet)],
+      ["Total geral vendido", money(totalLaunched), "Lucro estimado apos custos e taxas", money(estimatedProfit)],
+      ["Lucro liquido recebido", money(profit), "Vendas recebidas", receivedSales.length],
+      ["Vendas fiado", fiadoSales.length, "Vendas zeradas", zeroedSales.length],
+      ["Canceladas", cancelledSales.length, "", ""],
     ],
     startY: 126,
     margin: { left: 40, right: 40 },
@@ -9724,6 +9754,8 @@ function renderReports() {
   const paymentGrossTotals = salesPaymentGrossTotals(activeSales);
   const paymentFeeTotals = salesPaymentFeeTotals(activeSales);
   const paymentNetTotals = salesPaymentTotals(activeSales);
+  const channelSummary = salesChannelSummary(activeSales);
+  const estimatedProfit = salesEstimatedProfit(activeSales);
   const byPayment = paymentMethods.map((method) => ({
     method,
     gross: paymentGrossTotals[method] || 0,
@@ -9781,8 +9813,14 @@ function renderReports() {
         <div class="summary-row"><span>Recebido bruto (sem fiado)</span><strong>${money(grossReceived)}</strong></div>
         <div class="summary-row"><span>Taxas estimadas das maquininhas</span><strong>${money(estimatedFees)}</strong></div>
         <div class="summary-row total"><span>Recebido líquido</span><strong>${money(netReceived)}</strong></div>
+        <div class="summary-row"><span>Recebido em dinheiro</span><strong>${money(channelSummary.cash)}</strong></div>
+        <div class="summary-row"><span>Maquininha: bruto (Pix, débito e crédito)</span><strong>${money(channelSummary.machineGross)}</strong></div>
+        <div class="summary-row"><span>Taxas da maquininha</span><strong>${money(channelSummary.machineFees)}</strong></div>
+        <div class="summary-row"><span>Maquininha: líquido</span><strong>${money(channelSummary.machineNet)}</strong></div>
         <div class="summary-row"><span>Fiado separado</span><strong>${money(fiadoTotal)}</strong></div>
+        <div class="summary-row total"><span>Lucro estimado após custos e taxas</span><strong>${money(estimatedProfit)}</strong></div>
       </div>
+      <p class="hint">Estimativa sobre vendas com produtos: total vendido menos custo cadastrado e taxas estimadas. Não desconta despesas fixas; fiado continua separado como valor a receber.</p>
     </section>
     ${typeof renderPaymentReconciliationPanel === "function" ? renderPaymentReconciliationPanel() : ""}
     ${typeof renderCashFlowForecastPanel === "function" ? renderCashFlowForecastPanel() : ""}
