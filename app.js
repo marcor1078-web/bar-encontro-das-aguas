@@ -39,27 +39,6 @@ const MERCADO_PAGO_TERMINAL_REGISTRY = [
   { serial: "N95NCC704082234", number: 3, label: "Nova Point 1", expected: true },
   { serial: "N95NCC704084376", number: 4, label: "Nova Point 2", expected: true },
 ];
-const STONE_TERMINAL_REGISTRY = [
-  {
-    id: "stone:1",
-    number: 5,
-    model: "Stone",
-    serialLabel: "anterior",
-    label: "Maquininha 5 - Stone anterior (preservada)",
-    enabled: false,
-    integrationMode: "pending",
-  },
-  {
-    id: "stone:p2b-73149",
-    number: 6,
-    model: "Sunmi P2-B",
-    serialLabel: "final 73149",
-    label: "Maquininha 6 - Stone P2-B - final 73149 (manual)",
-    enabled: true,
-    integrationMode: "manual",
-  },
-];
-
 const roles = {
   admin: {
     label: "Administrador",
@@ -1821,11 +1800,6 @@ function paymentTerminalOptions() {
   return [
     ...mpTerminals,
     ...expectedTerminals,
-    ...STONE_TERMINAL_REGISTRY.map((terminal) => ({
-      ...terminal,
-      provider: "stone",
-      terminalId: terminal.id,
-    })),
   ];
 }
 
@@ -10063,17 +10037,6 @@ function renderOnline() {
       </tr>
     `)
     .join("");
-  const stoneTerminalRows = STONE_TERMINAL_REGISTRY.map(
-    (terminal) => `
-      <tr>
-        <td>Maquininha ${terminal.number}</td>
-        <td>${escapeHtml(terminal.model)}</td>
-        <td>${escapeHtml(terminal.serialLabel)}</td>
-        <td>${terminal.integrationMode === "manual" ? "Confirmacao no app" : "Aguardando configuracao"}</td>
-        <td><span class="status ${terminal.enabled ? "green" : "amber"}">${terminal.enabled ? "Disponivel" : "Preservada"}</span></td>
-      </tr>
-    `,
-  ).join("");
   return `
     <div class="section-title">
       <div>
@@ -10115,11 +10078,6 @@ function renderOnline() {
       ${onlineCard("Uso da Point", "Depois de enviar a cobranca pelo app, abra Inserir valor na maquininha para concluir.", "Operacao")}
       ${onlineCard("Impressao", "A Point imprime comprovante simples. As fichas individuais saem pelo app no Balcao ou em Vendas > Ficha.", "Ativa")}
       ${onlineCard(
-        "Stone",
-        "Maquininha 6 Sunmi P2-B, final 73149, cadastrada para cobranca manual com confirmacao do operador. A Maquininha 5 permanece preservada.",
-        "Disponivel",
-      )}
-      ${onlineCard(
         "Fila da Point",
         pendingPointOrder
           ? `${pendingPointOrders.length} cobranca(s) acompanhada(s). Ultima: ${pendingPointOrder.id}. Status: ${pendingPointOrder.status || "created"}${
@@ -10159,28 +10117,6 @@ function renderOnline() {
               `<tr><td colspan="6">Clique em Testar Mercado Pago Point para carregar as maquininhas.</td></tr>`
             }
           </tbody>
-        </table>
-      </div>
-    </section>
-    <section class="card" style="margin-top: 16px;">
-      <div class="section-title compact">
-        <div>
-          <h3>Maquininhas Stone</h3>
-          <p>A P2-B final 73149 ja pode ser selecionada no Balcao. A cobranca e feita na Stone e confirmada no app apos a aprovacao.</p>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Numero</th>
-              <th>Modelo</th>
-              <th>Identificacao</th>
-              <th>Operacao</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>${stoneTerminalRows}</tbody>
         </table>
       </div>
     </section>
