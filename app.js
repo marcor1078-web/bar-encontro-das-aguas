@@ -1091,7 +1091,7 @@ function setView(view) {
   categoryFilter = "Todos";
   if (view !== "stock") stockSortMode = "default";
   renderApp();
-  if (["sales", "cash"].includes(view) && isOnlineSession()) void refreshSalesFromCloud({ silent: true });
+  if (["sales", "cash", "reports"].includes(view) && isOnlineSession()) void refreshSalesFromCloud({ silent: true });
   if (["pos", "sales", "cash"].includes(view) && !mercadoPagoPointStatus.checked) {
     loadMercadoPagoPointStatus(true).then(() => renderApp());
   }
