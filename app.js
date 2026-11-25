@@ -67,8 +67,6 @@ const roles = {
       "dashboard",
       "pos",
       "tables",
-      "waiter",
-      "kitchen",
       "sales",
       "cash",
       "stock",
@@ -84,7 +82,7 @@ const roles = {
   },
   manager: {
     label: "Gerente",
-    permissions: ["pos", "tables", "waiter", "kitchen", "sales", "cash", "stock", "suppliers", "clients", "catalog", "reports"],
+    permissions: ["pos", "tables", "sales", "cash", "stock", "suppliers", "clients", "catalog", "reports"],
   },
   cashier: {
     label: "Caixa",
@@ -92,7 +90,7 @@ const roles = {
   },
   stock: {
     label: "Estoque",
-    permissions: ["kitchen", "stock", "suppliers", "catalog"],
+    permissions: ["stock", "suppliers", "catalog"],
   },
 };
 
@@ -100,8 +98,6 @@ const navItems = [
   { id: "dashboard", label: "Painel admin", icon: "dashboard" },
   { id: "pos", label: "Balcao", icon: "cart" },
   { id: "tables", label: "Mesas", icon: "tables" },
-  { id: "waiter", label: "Garcom", icon: "waiter" },
-  { id: "kitchen", label: "Cozinha/Bar", icon: "kitchen" },
   { id: "sales", label: "Vendas", icon: "chart" },
   { id: "cash", label: "Caixa", icon: "cash" },
   { id: "stock", label: "Estoque", icon: "boxes" },
@@ -119,8 +115,6 @@ const permissionDescriptions = {
   dashboard: "Painel executivo do administrador",
   pos: "Venda rapida de balcao",
   tables: "Mesas e comandas abertas",
-  waiter: "Comandas no celular",
-  kitchen: "Fila de preparo",
   sales: "Consultar historico",
   cash: "Caixa completo",
   stock: "Estoque, produtos e inventario",
@@ -640,7 +634,6 @@ let connectionState = {
 };
 const REALTIME_TABLE_AREAS = {
   bar_tables: "tables",
-  kitchen_orders: "kitchen",
   products: "stock",
   ingredients: "stock",
   product_recipes: "stock",
@@ -660,9 +653,8 @@ const REALTIME_TABLE_AREAS = {
   profiles: "profiles",
 };
 const REALTIME_VIEW_AREAS = {
-  tables: ["tables", "waiter", "pos"],
-  kitchen: ["kitchen"],
-  stock: ["stock", "catalog", "pos", "waiter", "tables"],
+  tables: ["tables", "pos"],
+  stock: ["stock", "catalog", "pos", "tables"],
   clients: ["clients", "pos", "tables"],
   sales: ["dashboard", "sales", "reports"],
   cash: ["dashboard", "cash", "sales"],
@@ -1121,7 +1113,7 @@ function setView(view) {
   if (view !== "stock") stockSortMode = "default";
   renderApp();
   if (["sales", "cash"].includes(view) && isOnlineSession()) void refreshSalesFromCloud({ silent: true });
-  if (["pos", "waiter", "sales", "cash"].includes(view) && !mercadoPagoPointStatus.checked) {
+  if (["pos", "sales", "cash"].includes(view) && !mercadoPagoPointStatus.checked) {
     loadMercadoPagoPointStatus(true).then(() => renderApp());
   }
 }
@@ -2926,7 +2918,7 @@ async function restoreOnlineSession() {
       : preferredView && hasPermission(preferredView)
         ? preferredView
         : getUserPermissions(session)[0] || "pos";
-    if (["pos", "waiter", "sales", "cash"].includes(currentView)) await loadMercadoPagoPointStatus(true);
+    if (["pos", "sales", "cash"].includes(currentView)) await loadMercadoPagoPointStatus(true);
     renderApp();
     startRealtimeSync();
     return true;
@@ -4332,8 +4324,6 @@ function topbarSubtitle(view) {
     dashboard: "Resumo do turno e alertas importantes.",
     pos: "Venda de balcao com botoes grandes e categorias.",
     tables: "Mapa de mesas, comandas abertas e fechamento.",
-    waiter: "Comanda rapida para usar no celular.",
-    kitchen: "Fila de preparo para cozinha e bar.",
     sales: "Historico de vendas e formas de pagamento.",
     cash: "Abertura, movimentacoes e fechamento do caixa.",
     stock: "Controle de saldo e reposicao.",
@@ -4356,8 +4346,6 @@ function renderView() {
     dashboard: renderDashboard,
     pos: renderPos,
     tables: renderTables,
-    waiter: renderWaiter,
-    kitchen: renderKitchen,
     sales: renderSales,
     cash: renderCash,
     stock: renderStock,
