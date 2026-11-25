@@ -591,6 +591,7 @@ let assistantMessages = [
 let assistantPendingAction = null;
 let assistantBusy = false;
 let onlineSalesRefreshInProgress = false;
+let cashCloseInProgress = false;
 let automaticCashOpeningInProgress = false;
 let automaticCashLastCloudRefreshAt = 0;
 let storageWarningShown = false;
@@ -2766,7 +2767,7 @@ function mutatePendingKitchenOrder(orderId, updater) {
   return false;
 }
 
-async function syncPendingOfflineSales({ manual = false, silent = false } = {}) {
+async function syncPendingOfflineSales({ manual = false, silent = false, render = true } = {}) {
   const operations = pendingOfflineOperations();
   if (!operations.length || connectionState.syncing) {
     if (manual && !operations.length) notify("Nao ha vendas offline pendentes.");
@@ -2824,7 +2825,7 @@ async function syncPendingOfflineSales({ manual = false, silent = false } = {}) 
     const missingMigration = /sync_offline_sale|schema cache|function/i.test(connectionState.lastError);
     notify(missingMigration ? "Falta executar a migracao do modo offline no Supabase." : `Sincronizacao pendente: ${connectionState.lastError}`);
   }
-  if (!currentModal) renderApp();
+  if (render && !currentModal) renderApp();
   else updateConnectionIndicators();
 }
 
@@ -3721,15 +3722,21 @@ async function loadRecentOnlineSalesRows(days = 21) {
   return { ...result, since };
 }
 
-async function loadOnlineSalesData({ recent = false } = {}) {
+async function loadOnlineSalesData({ recent = false, includeKitchen = true } = {}) {
   if (!isOnlineSession()) return false;
   const pendingLocalSales = state.sales.filter((sale) => sale.syncStatus === "pending");
   const salesResult = recent ? await loadRecentOnlineSalesRows() : await loadAllOnlineRows("sales", "created_at");
   const saleItemsResult = salesResult.error
     ? { data: [], error: salesResult.error }
     : await loadSaleItemsForSaleIds((salesResult.data || []).map((sale) => sale.id));
-  const kitchenQuery = supabaseClient.from("kitchen_orders").select("*").order("created_at", { ascending: false });
-  const kitchenResult = recent ? await kitchenQuery.limit(500) : await kitchenQuery;
+  const kitchenQuery = includeKitchen
+    ? supabaseClient.from("kitchen_orders").select("*").order("created_at", { ascending: false })
+    : null;
+  const kitchenResult = !includeKitchen
+    ? { data: [], error: null }
+    : recent
+      ? await kitchenQuery.limit(500)
+      : await kitchenQuery;
 
   const error = salesResult.error || saleItemsResult.error || kitchenResult.error;
   if (error) {
@@ -3749,12 +3756,14 @@ async function loadOnlineSalesData({ recent = false } = {}) {
     : [];
   state.sales = [...preservedSales, ...onlineSales, ...pendingLocalSales.filter((sale) => !onlineSaleIds.has(sale.id))]
     .sort((a, b) => Date.parse(a.date || 0) - Date.parse(b.date || 0));
-  const onlineKitchenOrders = (kitchenResult.data || []).map(mapKitchenOrderFromDb);
-  const onlineKitchenIds = new Set(onlineKitchenOrders.map((order) => order.id));
-  const pendingKitchenOrders = pendingOfflineSalePayloads()
-    .flatMap((payload) => payload.kitchenOrders || [])
-    .filter((order) => !onlineKitchenIds.has(order.id));
-  state.kitchenOrders = [...onlineKitchenOrders, ...pendingKitchenOrders];
+  if (includeKitchen) {
+    const onlineKitchenOrders = (kitchenResult.data || []).map(mapKitchenOrderFromDb);
+    const onlineKitchenIds = new Set(onlineKitchenOrders.map((order) => order.id));
+    const pendingKitchenOrders = pendingOfflineSalePayloads()
+      .flatMap((payload) => payload.kitchenOrders || [])
+      .filter((order) => !onlineKitchenIds.has(order.id));
+    state.kitchenOrders = [...onlineKitchenOrders, ...pendingKitchenOrders];
+  }
   if (!recent) rebuildDailySalesTotalsFromSales("sincronizacao Supabase");
   saveState();
   return true;
@@ -7777,8 +7786,56 @@ function expectedCountedForCash(openCash) {
 
 function cashCountedValueForMethod(openCash, summary, method) {
   const paymentValue = Number(summary.payments[method] || 0);
-  if (method !== "Dinheiro") return paymentValue;
-  return paymentValue + Number(openCash?.openingAmount || 0) + Number(summary.movements || 0);
+  if (method !== "Dinheiro") return Number(paymentValue.toFixed(2));
+  return Number((paymentValue + Number(openCash?.openingAmount || 0) + Number(summary.movements || 0)).toFixed(2));
+}
+
+async function prepareCashClosing(openCashId) {
+  if (!session?.online) return true;
+  const previousCash = getOpenCash();
+  const previousExpected = previousCash?.id === openCashId ? expectedCountedForCash(previousCash) : null;
+  if (!isSupabaseReady()) {
+    notify("Fechamento online pausado: a conexao com o banco nao esta configurada.");
+    return false;
+  }
+  if (!(await checkCloudConnection())) {
+    notify("Fechamento online pausado: conecte-se ao Supabase para sincronizar as vendas e evitar diferencas.");
+    return false;
+  }
+
+  if (pendingOfflineOperations().length) {
+    await syncPendingOfflineSales({ silent: true, render: false });
+    if (pendingOfflineOperations().length) {
+      notify("Fechamento pausado: ainda ha vendas pendentes de sincronizacao. Sincronize-as e tente novamente.");
+      return false;
+    }
+  }
+
+  const [salesLoaded, cashLoaded] = await Promise.all([
+    loadOnlineSalesData({ includeKitchen: false }),
+    loadOnlineCashData(),
+  ]);
+  if (!salesLoaded || !cashLoaded) {
+    notify("Fechamento pausado: nao foi possivel atualizar vendas e caixa do Supabase.");
+    return false;
+  }
+
+  const refreshedCash = getOpenCash();
+  if (!refreshedCash || refreshedCash.id !== openCashId) {
+    notify("O caixa mudou em outro computador. Atualizei os dados; confira o caixa antes de continuar.");
+    renderApp();
+    return false;
+  }
+  const refreshedExpected = expectedCountedForCash(refreshedCash);
+  const changedMethods = cashPaymentMethods.filter(
+    (method) => Math.abs(Number(refreshedExpected[method] || 0) - Number(previousExpected?.[method] || 0)) > 0.009,
+  );
+  if (changedMethods.length) {
+    notify(`Entraram novos dados em ${changedMethods.join(", ")} desde a ultima conferencia. Revise os valores atualizados e feche novamente.`);
+    renderApp();
+    return false;
+  }
+  return true;
 }
 
 async function closeOpenCash({ counted, notes = "", authorization = null } = {}) {
@@ -7803,10 +7860,8 @@ async function closeOpenCash({ counted, notes = "", authorization = null } = {})
     difference: closingReconciliation.totalDifference,
     notes,
   };
-  storeDailySalesTotal(localDateKey(closedAt), "fechamento caixa");
-
   if (isOnlineSession()) {
-    const { error } = await supabaseClient
+    const { data: updatedCash, error } = await supabaseClient
       .from("cash_sessions")
       .update({
         closed_at: closedAt,
@@ -7816,14 +7871,23 @@ async function closeOpenCash({ counted, notes = "", authorization = null } = {})
         difference: closedCash.difference,
         notes,
       })
-      .eq("id", openCash.id);
+      .eq("id", openCash.id)
+      .is("closed_at", null)
+      .select("id")
+      .maybeSingle();
 
     if (error) {
       notify(`Erro ao fechar caixa online: ${error.message}`);
       return null;
     }
+    if (!updatedCash) {
+      notify("Este caixa ja foi fechado em outro computador. Atualize os dados antes de gerar o relatorio.");
+      await loadOnlineCashData();
+      return null;
+    }
 
     await loadOnlineCashData();
+    storeDailySalesTotal(localDateKey(closedAt), "fechamento caixa");
     saveState();
     logAudit("Caixa fechado online", `${closedCash.cashCode}: diferenca ${money(closedCash.difference)}.`);
     notify("Caixa fechado no Supabase.");
@@ -7831,6 +7895,7 @@ async function closeOpenCash({ counted, notes = "", authorization = null } = {})
   }
 
   Object.assign(openCash, closedCash);
+  storeDailySalesTotal(localDateKey(closedAt), "fechamento caixa");
   logAudit("Caixa fechado", `${closedCash.cashCode}: diferenca ${money(openCash.difference)}.`);
   saveState();
   notify("Caixa fechado.");
@@ -8096,6 +8161,7 @@ function topProductsTable(products, days = 7) {
 }
 
 async function closeCashAndDownloadSalesReport(useFormValues = false) {
+  if (cashCloseInProgress) return;
   const openCash = getOpenCash();
   if (!openCash) {
     notify("Nao ha caixa aberto para fechar.");
@@ -8103,19 +8169,31 @@ async function closeCashAndDownloadSalesReport(useFormValues = false) {
   }
   if (!confirm("Fechar o caixa agora e baixar o relatorio de vendas?")) return;
 
-  const formElement = document.querySelector("#cash-form");
-  const form = formElement ? new FormData(formElement) : null;
-  const counted = useFormValues && form ? countedFromCashForm(form) : expectedCountedForCash(openCash);
-  const notes =
-    useFormValues && form
-      ? form.get("notes").trim()
+  cashCloseInProgress = true;
+  try {
+    const formElement = document.querySelector("#cash-form");
+    const form = formElement ? new FormData(formElement) : null;
+    const notes = useFormValues && form
+      ? String(form.get("notes") || "").trim()
       : "Fechamento automatico com relatorio de vendas gerado pelo app.";
-  const closedCash = await closeOpenCash({ counted, notes });
-  if (!closedCash) return;
+    if (!(await prepareCashClosing(openCash.id))) return;
 
-  await downloadSalesReportPdf(closedCash);
-  await emailCashClosingReport(closedCash);
-  renderApp();
+    const refreshedCash = getOpenCash();
+    const counted = useFormValues && form ? countedFromCashForm(form) : expectedCountedForCash(refreshedCash);
+    const authorization = useFormValues && form
+      ? await authorizeCashClosingDifference(refreshedCash, counted, notes, formElement)
+      : null;
+    if (authorization === false) return;
+
+    const closedCash = await closeOpenCash({ counted, notes, authorization });
+    if (!closedCash) return;
+
+    await downloadSalesReportPdf(closedCash);
+    await emailCashClosingReport(closedCash);
+    renderApp();
+  } finally {
+    cashCloseInProgress = false;
+  }
 }
 
 async function downloadSalesReportPdf(cash) {
@@ -8135,10 +8213,22 @@ async function downloadSalesReportPdf(cash) {
   const sales = salesForCashPeriod(cash);
   const activeSales = sales.filter(isReceivedSale);
   const fiadoSales = sales.filter((sale) => saleFiadoAmount(sale) > 0);
-  const total = activeSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
+  const grossTotal = activeSales.reduce((sum, sale) => sum + saleGrossReceivedAmount(sale), 0);
+  const fees = activeSales.reduce((sum, sale) => sum + saleCardFeeAmount(sale), 0);
+  const netTotal = activeSales.reduce((sum, sale) => sum + saleReceivedAmount(sale), 0);
   const profit = activeSales.reduce((sum, sale) => sum + saleReceivedProfit(sale), 0);
   const fiadoTotal = fiadoSales.reduce((sum, sale) => sum + saleFiadoAmount(sale), 0);
-  const paymentTotals = cashSalesPaymentTotals(activeSales);
+  const paymentTotals = salesPaymentGrossTotals(activeSales);
+  const closingBreakdown = normalizedClosingBreakdown(cash) || {};
+  const closingExpected = closingBreakdown.expected || {};
+  const closingCounted = closingBreakdown.counted || {};
+  const closingDifferences = closingBreakdown.differences || {};
+  const closedCashSummary = cashSummary(cash);
+  const expectedCash = Number(closingExpected.Dinheiro ?? cashCountedValueForMethod(cash, closedCashSummary, "Dinheiro"));
+  const countedCash = closingCounted.Dinheiro === undefined ? null : Number(closingCounted.Dinheiro);
+  const cashDifference = closingDifferences.Dinheiro === undefined && countedCash === null
+    ? null
+    : Number(closingDifferences.Dinheiro ?? countedCash - expectedCash);
   const businessName = state.settings.barName || APP_DISPLAY_NAME;
   const generatedAt = dateTime(new Date().toISOString());
   const title = "Relatorio de vendas do caixa";
@@ -8168,10 +8258,12 @@ async function downloadSalesReportPdf(cash) {
 
   doc.autoTable({
     body: [
-      ["Total vendido", money(total), "Lucro estimado", money(profit)],
-      ["Vendas recebidas", activeSales.length, "Valor esperado", money(cash.expectedAmount)],
-      ["Valor contado", money(cash.closingAmount), "Diferenca", money(cash.difference)],
-      ["Fiado no periodo", money(fiadoTotal), "Vendas fiado", fiadoSales.length],
+      ["Recebido bruto (sem fiado)", money(grossTotal), "Taxas estimadas", money(fees)],
+      ["Recebido liquido", money(netTotal), "Lucro estimado", money(profit)],
+      ["Dinheiro esperado no caixa", money(expectedCash), "Dinheiro contado", countedCash === null ? "Sem detalhe" : money(countedCash)],
+      ["Diferenca em dinheiro", cashDifference === null ? "Sem detalhe" : money(cashDifference), "Fiado no periodo", money(fiadoTotal)],
+      ["Esperado (todas as formas)", money(cash.expectedAmount ?? closedCashSummary.expected), "Contado total", cash.closingAmount === null ? "Sem detalhe" : money(cash.closingAmount)],
+      ["Diferenca total", money(cash.difference), "Vendas recebidas / fiado", `${activeSales.length} / ${fiadoSales.length}`],
     ],
     startY: 138,
     margin: { left: 40, right: 40 },
@@ -8184,7 +8276,7 @@ async function downloadSalesReportPdf(cash) {
   });
 
   doc.autoTable({
-    head: [["Forma de pagamento", "Total"]],
+    head: [["Forma de pagamento", "Valor bruto"]],
     body: cashPaymentMethods.map((method) => [method, money(paymentTotals[method] || 0)]),
     startY: (doc.lastAutoTable?.finalY || 138) + 18,
     margin: { left: 40, right: 520 },
@@ -8194,7 +8286,7 @@ async function downloadSalesReportPdf(cash) {
   });
 
   doc.autoTable({
-    head: [["Data", "Itens", "Pagamento", "Operador", "Desc.", "Total", "Lucro"]],
+    head: [["Data", "Itens", "Pagamento", "Operador", "Desc.", "Liquido", "Lucro"]],
     body: activeSales.length
       ? activeSales.map((sale) => [
           dateTime(sale.date),
@@ -8415,58 +8507,72 @@ async function downloadSalesPeriodReportPdf(period = "daily", customPeriodInfo =
 async function bindCashForm() {
   document.querySelector("#cash-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const amount = Number(form.get("amount"));
-    const notes = form.get("notes").trim();
-    const openCash = getOpenCash();
+    if (cashCloseInProgress) return;
+    cashCloseInProgress = true;
+    try {
+      const formElement = event.currentTarget;
+      const form = new FormData(formElement);
+      const amount = Number(form.get("amount"));
+      const notes = String(form.get("notes") || "").trim();
+      const openCash = getOpenCash();
 
-    if (openCash) {
-      const counted = countedFromCashForm(form);
-      const authorization = await authorizeCashClosingDifference(openCash, counted, notes, form);
-      if (authorization === false) return;
-      const closedCash = await closeOpenCash({ counted, notes, authorization });
-      if (closedCash) {
-        renderApp();
-        void emailCashClosingReport(closedCash);
-      }
-    } else {
-      if (isOnlineSession()) {
-        const { error } = await supabaseClient.from("cash_sessions").insert({
-          user_id: session.id,
-          opening_amount: amount,
-          notes,
-        });
+      if (openCash) {
+        if (!(await prepareCashClosing(openCash.id))) return;
+        const refreshedCash = getOpenCash();
+        if (!refreshedCash || refreshedCash.id !== openCash.id) {
+          notify("O caixa mudou em outro computador. Confira os dados atualizados antes de fechar.");
+          renderApp();
+          return;
+        }
+        const counted = countedFromCashForm(form);
+        const authorization = await authorizeCashClosingDifference(refreshedCash, counted, notes, formElement);
+        if (authorization === false) return;
+        const closedCash = await closeOpenCash({ counted, notes, authorization });
+        if (closedCash) {
+          renderApp();
+          void emailCashClosingReport(closedCash);
+        }
+      } else {
+        if (isOnlineSession()) {
+          const { error } = await supabaseClient.from("cash_sessions").insert({
+            user_id: session.id,
+            opening_amount: amount,
+            notes,
+          });
 
-        if (error) {
-          notify(`Erro ao abrir caixa online: ${error.message}`);
+          if (error) {
+            notify(`Erro ao abrir caixa online: ${error.message}`);
+            return;
+          }
+
+          await loadOnlineCashData();
+          logAudit("Caixa aberto online", `Abertura com ${money(amount)}.`);
+          notify("Caixa aberto no Supabase.");
+          renderApp();
           return;
         }
 
-        await loadOnlineCashData();
-        logAudit("Caixa aberto online", `Abertura com ${money(amount)}.`);
-        notify("Caixa aberto no Supabase.");
+        const cashCode = nextCashSessionCode();
+        state.cashSessions.push({
+          id: id("cash"),
+          cashCode,
+          openedAt: new Date().toISOString(),
+          closedAt: null,
+          userId: session.id,
+          openingAmount: amount,
+          closingAmount: null,
+          closingBreakdown: null,
+          expectedAmount: null,
+          difference: null,
+          notes,
+        });
+        logAudit("Caixa aberto", `${cashCode}: abertura com ${money(amount)}.`);
+        notify("Caixa aberto.");
+        saveState();
         renderApp();
-        return;
       }
-
-      const cashCode = nextCashSessionCode();
-      state.cashSessions.push({
-        id: id("cash"),
-        cashCode,
-        openedAt: new Date().toISOString(),
-        closedAt: null,
-        userId: session.id,
-        openingAmount: amount,
-        closingAmount: null,
-        closingBreakdown: null,
-        expectedAmount: null,
-        difference: null,
-        notes,
-      });
-      logAudit("Caixa aberto", `${cashCode}: abertura com ${money(amount)}.`);
-      notify("Caixa aberto.");
-      saveState();
-      renderApp();
+    } finally {
+      cashCloseInProgress = false;
     }
   });
 }
@@ -15968,7 +16074,11 @@ function alertsList() {
 function cashSummary(openCash = getOpenCash()) {
   const payments = Object.fromEntries(cashPaymentMethods.map((method) => [method, 0]));
   const since = openCash ? new Date(openCash.openedAt) : startOfToday();
-  const sales = state.sales.filter((sale) => new Date(sale.date) >= since && isReceivedSale(sale));
+  const until = openCash?.closedAt ? new Date(openCash.closedAt) : new Date();
+  const sales = state.sales.filter((sale) => {
+    const saleDate = new Date(sale.date);
+    return saleDate >= since && saleDate <= until && isReceivedSale(sale);
+  });
 
   sales.forEach((sale) => {
     salePaymentParts(sale).forEach((part) => {
@@ -15979,14 +16089,23 @@ function cashSummary(openCash = getOpenCash()) {
   });
 
   const movements = state.cashMovements
-    .filter((movement) => new Date(movement.date) >= since)
+    .filter((movement) => {
+      const movementDate = new Date(movement.date);
+      return movementDate >= since && movementDate <= until;
+    })
     .reduce((sum, movement) => {
       if (movement.type === "suprimento" || movement.type === "entrada") return sum + movement.amount;
       return sum - movement.amount;
     }, 0);
 
-  const expected = Number(openCash?.openingAmount || 0) + Object.values(payments).reduce((sum, value) => sum + value, 0) + movements;
-  return { payments, movements, expected };
+  const normalizedPayments = Object.fromEntries(
+    Object.entries(payments).map(([method, amount]) => [method, Number(amount.toFixed(2))]),
+  );
+  const normalizedMovements = Number(movements.toFixed(2));
+  const expected = Number(
+    (Number(openCash?.openingAmount || 0) + Object.values(normalizedPayments).reduce((sum, value) => sum + value, 0) + normalizedMovements).toFixed(2),
+  );
+  return { payments: normalizedPayments, movements: normalizedMovements, expected };
 }
 
 function cashSummaryPanel(openCash) {
