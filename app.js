@@ -1803,9 +1803,10 @@ function pointTicketPrinterOptions() {
       id: `mp:${terminal.id}`,
       terminalId: terminal.id,
       accountKey: terminal.account_key || "primary",
+      operatingMode: terminal.operating_mode || "",
       label: mercadoPagoTerminalName(terminal, mercadoPagoTerminalNumber(terminal, index)),
     }))
-    .filter((terminal) => terminal.terminalId)
+    .filter((terminal) => terminal.terminalId && terminal.operatingMode === "PDV")
     .sort((a, b) => a.label.localeCompare(b.label, "pt-BR"));
 }
 
@@ -1832,10 +1833,9 @@ function savePointTicketJob(saleId, printer, job) {
   localStorage.setItem(pointTicketJobKey(saleId, printer), JSON.stringify(job));
 }
 
-function acceptedPointTicketCount(sale, printer = selectedPointTicketPrinter()) {
-  if (!sale || !printer) return 0;
-  const job = loadPointTicketJob(sale.id, printer);
-  return Object.values(job.units || {}).filter((unit) => unit.status === "on_terminal").length;
+function pointReceiptPrintRecord(sale, printer = selectedPointTicketPrinter()) {
+  if (!sale || !printer) return null;
+  return loadPointTicketJob(sale.id, printer).receipt || null;
 }
 
 function getSelectedPaymentTerminal() {
@@ -2220,20 +2220,147 @@ function buildMercadoPagoCustomTicket({ sale, item, ticketNumber, ticketCount })
   return content.length < 100 ? `${content}{br}${"-".repeat(100 - content.length)}` : content.slice(0, 4096);
 }
 
-async function printMercadoPagoCustomTicket({ terminalId, accountKey = "primary", sale, item, ticketNumber, ticketCount, idempotencyKey, accessToken }) {
+function wrapPointReceiptText(context, value, maxWidth) {
+  const words = String(value || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  words.forEach((word) => {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && context.measureText(candidate).width > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  });
+  if (line) lines.push(line);
+  return lines.length ? lines : [""];
+}
+
+async function buildPointReceiptImage(sale) {
+  const width = 384;
+  const padding = 22;
+  const maxTextWidth = width - padding * 2;
+  const measurementCanvas = document.createElement("canvas");
+  const measure = measurementCanvas.getContext("2d");
+  if (!measure) throw new Error("Este navegador nao conseguiu preparar a imagem do recibo.");
+
+  const blocks = [];
+  const addText = (text, font = "16px Arial", align = "left", gap = 5) => {
+    blocks.push({ type: "text", text: String(text || ""), font, align, gap });
+  };
+  const addRule = () => blocks.push({ type: "rule", gap: 8 });
+  const logo = await new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = BRAND_LOGO_URL;
+  });
+
+  addText(state.settings.barName || APP_DISPLAY_NAME, "bold 21px Arial", "center", 6);
+  if (state.settings.cnpj) addText(`CNPJ: ${state.settings.cnpj}`, "14px Arial", "center", 10);
+  addRule();
+  addText("RECIBO DE VENDA", "bold 20px Arial", "center", 7);
+  addText(`Venda: ${sale.id.slice(-8)}`, "14px Arial");
+  addText(`Data: ${dateTime(sale.date)}`, "14px Arial");
+  addText(`Operador: ${userName(sale.cashierId)}`, "14px Arial");
+  if (sale.tableName) addText(`Mesa: ${sale.tableName}`, "14px Arial");
+  if (sale.customerName) addText(`Cliente: ${sale.customerName}`, "14px Arial");
+  addRule();
+  addText("PRODUTOS", "bold 16px Arial", "left", 4);
+  (sale.items || []).forEach((item) => {
+    addText(`${qty(item.qty)} x ${item.name}`, "bold 15px Arial", "left", 2);
+    addText(money(Number(item.qty || 0) * Number(item.price || 0)), "15px Arial", "right", 7);
+  });
+  addRule();
+  if (saleDiscountAmount(sale)) addText(`Desconto: -${money(saleDiscountAmount(sale))}`, "15px Arial", "right", 5);
+  addText(`Pagamento: ${paymentDisplay(sale)}`, "14px Arial", "left", 6);
+  if (Number(sale.cashChange || 0) > 0) {
+    addText(`Recebido: ${money(sale.cashReceived)}`, "14px Arial", "right", 2);
+    addText(`Troco: ${money(sale.cashChange)}`, "14px Arial", "right", 6);
+  }
+  addText(`TOTAL: ${money(sale.total)}`, "bold 21px Arial", "center", 9);
+  addRule();
+  addText("Obrigado pela preferencia!", "bold 17px Arial", "center", 3);
+  addText("Volte sempre!", "bold 17px Arial", "center", 6);
+  addText("COMPROVANTE NAO FISCAL", "12px Arial", "center", 4);
+
+  const measuredBlocks = blocks.map((block) => {
+    if (block.type === "rule") return { ...block, height: 18 + block.gap };
+    measure.font = block.font;
+    const lines = wrapPointReceiptText(measure, block.text, maxTextWidth);
+    const lineHeight = Math.ceil(Number(block.font.match(/(\d+)px/)?.[1] || 14) * 1.35);
+    return { ...block, lines, lineHeight, height: lines.length * lineHeight + block.gap };
+  });
+  const logoHeight = logo ? 96 : 0;
+  const height = padding * 2 + logoHeight + (logo ? 12 : 0) + measuredBlocks.reduce((sum, block) => sum + block.height, 0);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Este navegador nao conseguiu preparar a imagem do recibo.");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = "#000000";
+  context.textBaseline = "top";
+  let y = padding;
+  if (logo) {
+    const scale = Math.min(120 / logo.naturalWidth, logoHeight / logo.naturalHeight);
+    const logoWidth = Math.round(logo.naturalWidth * scale);
+    const drawnHeight = Math.round(logo.naturalHeight * scale);
+    context.drawImage(logo, (width - logoWidth) / 2, y + (logoHeight - drawnHeight) / 2, logoWidth, drawnHeight);
+    y += logoHeight + 12;
+  }
+  measuredBlocks.forEach((block) => {
+    y += block.gap || 0;
+    if (block.type === "rule") {
+      context.save();
+      context.setLineDash([5, 4]);
+      context.beginPath();
+      context.moveTo(padding, y + 4);
+      context.lineTo(width - padding, y + 4);
+      context.strokeStyle = "#111111";
+      context.stroke();
+      context.restore();
+      y += 18;
+      return;
+    }
+    context.font = block.font;
+    context.textAlign = block.align;
+    const x = block.align === "center" ? width / 2 : block.align === "right" ? width - padding : padding;
+    block.lines.forEach((line) => {
+      context.fillText(line, x, y, maxTextWidth);
+      y += block.lineHeight;
+    });
+  });
+  return canvas.toDataURL("image/png").split(",")[1];
+}
+
+async function createMercadoPagoPrintActions({ terminalId, accountKey = "primary", tickets, accessToken }) {
   const { response, data } = await fetchJsonWithTimeout("/api/mercadopago/print-ticket", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({
       terminalId,
       accountKey,
-      idempotencyKey,
-      externalReference: `ticket-${sale.id}-${ticketNumber}`,
-      content: buildMercadoPagoCustomTicket({ sale, item, ticketNumber, ticketCount }),
+      tickets,
     }),
   });
   if (!response.ok) throw new Error(describeMercadoPagoError(data));
-  return data;
+  if (!Array.isArray(data.results)) throw new Error("O Mercado Pago nao retornou o resultado do lote de impressoes.");
+  return data.results;
+}
+
+async function createMercadoPagoPrintAction({ terminalId, accountKey = "primary", subtype, content, ticketNumber = 1, externalReference, idempotencyKey, accessToken }) {
+  const results = await createMercadoPagoPrintActions({
+    terminalId,
+    accountKey,
+    accessToken,
+    tickets: [{ subtype, content, ticketNumber, externalReference, idempotencyKey }],
+  });
+  const result = results[0];
+  if (!result?.ok) throw new Error(result?.message || "O Mercado Pago recusou a impressao.");
+  return result;
 }
 
 async function getMercadoPagoCustomPrintStatus(actionId, accountKey, accessToken) {
@@ -4604,6 +4731,9 @@ function bindViewEvents() {
   });
   document.querySelectorAll("[data-send-point-tickets]").forEach((button) => {
     button.addEventListener("click", () => void sendSaleTicketsToPoint(button.dataset.sendPointTickets));
+  });
+  document.querySelectorAll("[data-send-point-receipt]").forEach((button) => {
+    button.addEventListener("click", () => void sendSaleReceiptToPoint(button.dataset.sendPointReceipt));
   });
   document.querySelectorAll("[data-print-ticket]").forEach((button) => {
     button.addEventListener("click", () => openSaleTicketModal(button.dataset.printTicket));
@@ -10353,9 +10483,15 @@ function renderPrintTicketsModal() {
   const ticketCount = ticketUnitList(sale).length;
   const printers = pointTicketPrinterOptions();
   const selectedPrinter = selectedPointTicketPrinter();
-  const acceptedCount = acceptedPointTicketCount(sale, selectedPrinter);
+  const ticketJob = selectedPrinter ? loadPointTicketJob(sale.id, selectedPrinter) : {};
+  const acceptedCount = Object.values(ticketJob.units || {}).filter((unit) => unit.status === "on_terminal").length;
+  const pendingCount = Object.values(ticketJob.units || {}).filter((unit) => unit.actionId && unit.status !== "on_terminal" && !isTerminalPrintFailure(unit.status)).length;
+  const receiptRecord = pointReceiptPrintRecord(sale, selectedPrinter);
+  const receiptAccepted = receiptRecord?.status === "on_terminal";
   const pointBatchLimit = 30;
-  const pointPrintDisabled = !ticketCount || !printers.length || !isOnlineSession() || pointTicketPrintInProgress || acceptedCount >= ticketCount || ticketCount > pointBatchLimit;
+  const pointActionsDisabled = !printers.length || !isOnlineSession() || pointTicketPrintInProgress;
+  const pointTicketDisabled = !ticketCount || pointActionsDisabled || acceptedCount >= ticketCount || ticketCount > pointBatchLimit;
+  const pointReceiptDisabled = pointActionsDisabled || receiptAccepted;
   return `
     <div class="modal-head">
       <h2>Imprimir fichas</h2>
@@ -10370,7 +10506,7 @@ function renderPrintTicketsModal() {
       </div>
       <p>${
         ticketCount
-          ? "Escolha onde imprimir. Na Point, cada unidade gera uma ficha individual; o app informa quando o terminal recebe cada uma."
+          ? "Na Point, as fichas individuais sao enviadas juntas em um lote. O app acompanha quando o terminal recebe cada acao."
           : "Este rateio nao possui uma ficha individual de produto. Use o recibo para entregar o comprovante desta pessoa."
       }</p>
       <label class="field">
@@ -10389,7 +10525,8 @@ function renderPrintTicketsModal() {
             ? `Este lote tem mais de ${pointBatchLimit} unidades. Use a impressao pelo navegador para evitar uma fila longa na Point.`
             : acceptedCount
               ? `${acceptedCount} de ${ticketCount} ficha(s) ja recebida(s) pela Point selecionada.`
-              : "A Point Smart precisa estar habilitada pelo Mercado Pago para receber impressões personalizadas."}</p>
+              : "A Point Smart precisa estar habilitada pelo Mercado Pago para receber impressoes personalizadas."}</p>
+      ${receiptAccepted ? '<p class="hint">O recibo desta venda ja foi recebido pela Point selecionada.</p>' : ""}
       <div class="notice compact" data-point-ticket-progress role="status" aria-live="polite" ${pointTicketPrintSaleId === sale.id && pointTicketPrintMessage ? "" : "hidden"}>${pointTicketPrintSaleId === sale.id ? escapeHtml(pointTicketPrintMessage) : ""}</div>
     </div>
     <div class="modal-actions">
@@ -10397,8 +10534,9 @@ function renderPrintTicketsModal() {
       <button class="btn secondary" type="button" data-share-sale-whatsapp="${sale.id}">${icon("message")} WhatsApp</button>
       <button class="btn secondary" type="button" data-email-sale="${sale.id}">${icon("mail")} E-mail</button>
       <button class="btn secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
+      <button class="btn secondary" type="button" data-send-point-receipt="${sale.id}" ${pointReceiptDisabled ? "disabled" : ""}>${icon("print")} ${receiptAccepted ? "Recibo enviado" : receiptRecord?.actionId ? "Consultar recibo" : "Recibo na Point"}</button>
       <button class="btn secondary" type="button" data-print-last-tickets="${sale.id}" ${ticketCount ? "" : "disabled"}>${icon("print")} Imprimir pelo navegador</button>
-      <button class="btn primary" type="button" data-send-point-tickets="${sale.id}" ${pointPrintDisabled ? "disabled" : ""}>${icon("print")} ${acceptedCount ? "Enviar restantes" : "Enviar para a Point"}</button>
+      <button class="btn primary" type="button" data-send-point-tickets="${sale.id}" ${pointTicketDisabled ? "disabled" : ""}>${icon("print")} ${pendingCount ? "Consultar fila" : acceptedCount ? "Enviar restantes" : "Enviar fichas em lote"}</button>
     </div>
   `;
 }
@@ -16557,6 +16695,39 @@ async function waitForPointPrintAction(actionId, accountKey, accessToken, saleId
   return { accepted: false, pending: true, status: record.status || "created" };
 }
 
+function isTerminalPrintFailure(status) {
+  return ["error", "canceled", "cancelled", "abandoned"].includes(String(status || "").toLowerCase());
+}
+
+async function pollPointPrintBatch(saleId, printer, accessToken, job, unitIndexes) {
+  let pendingIndexes = [...unitIndexes];
+  for (let attempt = 0; attempt < 12 && pendingIndexes.length; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, MP_POLL_INTERVAL_MS));
+    setPointTicketProgress(`A Point esta processando ${pendingIndexes.length} ficha(s) do lote...`);
+    const results = await Promise.allSettled(pendingIndexes.map((index) => {
+      const record = job.units[index];
+      return getMercadoPagoCustomPrintStatus(record.actionId, printer.accountKey, accessToken);
+    }));
+    results.forEach((result, resultIndex) => {
+      const index = pendingIndexes[resultIndex];
+      const record = job.units[index];
+      if (result.status === "rejected") {
+        record.statusCheckError = result.reason?.message || "Falha ao consultar o status.";
+        return;
+      }
+      record.status = pointPrintActionStatus(result.value) || "created";
+      record.updatedAt = new Date().toISOString();
+      delete record.statusCheckError;
+    });
+    savePointTicketJob(saleId, printer, job);
+    pendingIndexes = pendingIndexes.filter((index) => {
+      const status = job.units[index]?.status;
+      return status !== "on_terminal" && !isTerminalPrintFailure(status);
+    });
+  }
+  return pendingIndexes;
+}
+
 function setPointTicketProgress(message) {
   pointTicketPrintMessage = message;
   const status = document.querySelector("[data-point-ticket-progress]");
@@ -16599,71 +16770,68 @@ async function sendSaleTicketsToPoint(saleId) {
   try {
     accessToken = await onlineAccessToken();
     if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
-    let accepted = Object.values(job.units).filter((record) => record?.status === "on_terminal").length;
-    if (accepted >= units.length) {
-      problem = `A Point ja recebeu as ${units.length} fichas desta venda. Confira a impressao fisica antes de reenviar.`;
-    } else {
-      for (let index = 0; index < units.length; index += 1) {
-        if (job.units[index]?.status === "on_terminal") continue;
-        let record = job.units[index];
-        if (["error", "canceled", "cancelled", "abandoned"].includes(String(record?.status || "").toLowerCase())) record = null;
-        if (!record) {
-          record = { idempotencyKey: uuid(), status: "creating" };
-          job.units[index] = record;
-          savePointTicketJob(saleId, printer, job);
-        }
-
-        setPointTicketProgress(`Enviando ficha ${index + 1} de ${units.length} para ${printer.label}...`);
-        let actionId = record.actionId;
-        let actionStatus = record.status;
-        if (!actionId) {
-          const created = await printMercadoPagoCustomTicket({
-            terminalId: printer.terminalId,
-            accountKey: printer.accountKey,
-            sale,
-            item: units[index],
-            ticketNumber: index + 1,
-            ticketCount: units.length,
-            idempotencyKey: record.idempotencyKey,
-            accessToken,
-          });
-          actionId = String(created.id || created.action_id || "");
-          actionStatus = pointPrintActionStatus(created);
-          if (!actionId) throw new Error("O Mercado Pago aceitou a chamada, mas nao retornou o codigo da impressao. Confira a Point antes de tentar novamente.");
-          record.actionId = actionId;
-          record.status = actionStatus || "created";
-          record.updatedAt = new Date().toISOString();
-          savePointTicketJob(saleId, printer, job);
-        }
-
-        if (actionStatus !== "on_terminal") {
-          const result = await waitForPointPrintAction(actionId, printer.accountKey, accessToken, saleId, printer, record, job);
-          actionStatus = result.status;
-          if (!result.accepted) {
-            if (result.failed) {
-              record.status = result.status;
-              savePointTicketJob(saleId, printer, job);
-              problem = `A Point recusou a ficha ${index + 1} (status ${result.status}). As fichas seguintes nao foram enviadas.`;
-            } else {
-              problem = `A ficha ${index + 1} continua aguardando a Point (status ${result.status || "created"}). Ela nao foi reenviada; tente consultar novamente em instantes.`;
-            }
-            break;
-          }
-        }
-
-        record.status = "on_terminal";
-        record.updatedAt = new Date().toISOString();
-        savePointTicketJob(saleId, printer, job);
-        accepted += 1;
-        setPointTicketProgress(`A Point recebeu ${accepted} de ${units.length} ficha(s). Confirme a saida do papel.`);
+    const ticketsToCreate = [];
+    for (let index = 0; index < units.length; index += 1) {
+      let record = job.units[index];
+      if (record?.status === "on_terminal") continue;
+      if (isTerminalPrintFailure(record?.status)) record = null;
+      if (!record) {
+        record = { idempotencyKey: uuid(), status: "creating" };
+        job.units[index] = record;
       }
-      const accepted = Object.values(job.units).filter((record) => record?.status === "on_terminal").length;
-      if (!problem && accepted === units.length) {
-        problem = `A Point recebeu ${accepted} ficha(s). Confira se todas sairam no papel.`;
-      } else if (problem && accepted > 0) {
-        problem = `${accepted} de ${units.length} ficha(s) chegaram à Point. ${problem}`;
+      if (!record.actionId) {
+        ticketsToCreate.push({
+          ticketNumber: index + 1,
+          subtype: "custom",
+          content: buildMercadoPagoCustomTicket({ sale, item: units[index], ticketNumber: index + 1, ticketCount: units.length }),
+          idempotencyKey: record.idempotencyKey,
+          externalReference: `ticket-${sale.id}-${index + 1}`,
+        });
       }
     }
+    savePointTicketJob(saleId, printer, job);
+
+    if (ticketsToCreate.length) {
+      setPointTicketProgress(`Enviando ${ticketsToCreate.length} ficha(s) juntas para ${printer.label}...`);
+      const results = await createMercadoPagoPrintActions({
+        terminalId: printer.terminalId,
+        accountKey: printer.accountKey,
+        tickets: ticketsToCreate,
+        accessToken,
+      });
+      results.forEach((result) => {
+        const index = Number(result.ticketNumber) - 1;
+        const record = job.units[index];
+        if (!record) return;
+        const actionId = result.id || result.action_id;
+        if (!result.ok || !actionId) {
+          record.status = "error";
+          record.error = result.message || "A impressao nao foi aceita pelo Mercado Pago.";
+          return;
+        }
+        record.actionId = String(actionId);
+        record.status = pointPrintActionStatus(result) || "created";
+        record.updatedAt = new Date().toISOString();
+        delete record.error;
+      });
+      savePointTicketJob(saleId, printer, job);
+    }
+
+    const indexesToPoll = units
+      .map((_, index) => index)
+      .filter((index) => job.units[index]?.actionId && job.units[index]?.status !== "on_terminal" && !isTerminalPrintFailure(job.units[index]?.status));
+    const pendingIndexes = await pollPointPrintBatch(saleId, printer, accessToken, job, indexesToPoll);
+    const accepted = units.filter((_, index) => job.units[index]?.status === "on_terminal").length;
+    const failed = units.filter((_, index) => isTerminalPrintFailure(job.units[index]?.status) || (!job.units[index]?.actionId && job.units[index]?.status === "error")).length;
+    const pending = pendingIndexes.length;
+    const failedDetails = units
+      .map((item, index) => ({ item, record: job.units[index], index }))
+      .filter(({ record }) => isTerminalPrintFailure(record?.status) || (!record?.actionId && record?.status === "error"))
+      .map(({ item, record, index }) => `Ficha ${index + 1} (${item.name}): ${record.error || record.status}`)
+      .join("; ");
+    problem = accepted === units.length
+      ? `A Point recebeu as ${accepted} fichas enviadas juntas. Confira a saida do papel.`
+      : `${accepted} de ${units.length} fichas recebidas pela Point; ${pending} aguardando e ${failed} com falha.${failedDetails ? ` Falhas: ${failedDetails}.` : ""} ${pending ? "Consulte novamente em instantes; o app nao duplicara as acoes pendentes." : "Reenvie apenas as fichas que falharam."}`;
   } catch (error) {
     const accepted = Object.values(job.units).filter((record) => record?.status === "on_terminal").length;
     problem = accepted
@@ -16675,6 +16843,83 @@ async function sendSaleTicketsToPoint(saleId) {
     if (currentModal?.type === "printTickets" && currentModal.id === saleId) renderApp();
   }
   if (problem) notify(problem, 6500);
+}
+
+async function sendSaleReceiptToPoint(saleId) {
+  if (pointTicketPrintInProgress) return;
+  const sale = state.sales.find((entry) => entry.id === saleId);
+  const printer = selectedPointTicketPrinter();
+  if (!sale || !printer) {
+    notify("Escolha uma Point conectada antes de enviar o recibo.");
+    return;
+  }
+  if (!isOnlineSession()) {
+    notify("O recibo direto na Point exige uma sessao online.");
+    return;
+  }
+
+  pointTicketPrintInProgress = true;
+  pointTicketPrintSaleId = saleId;
+  const job = loadPointTicketJob(saleId, printer);
+  let record = job.receipt || null;
+  let accessToken = "";
+  let message = "";
+  try {
+    accessToken = await onlineAccessToken();
+    if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
+    if (record?.status === "on_terminal") {
+      message = "O recibo desta venda ja foi recebido pela Point. Confira o papel antes de reenviar.";
+    } else {
+      if (isTerminalPrintFailure(record?.status)) record = null;
+      if (!record) record = { idempotencyKey: uuid(), status: "creating" };
+      job.receipt = record;
+      savePointTicketJob(saleId, printer, job);
+
+      if (!record.actionId) {
+        setPointTicketProgress("Montando e enviando o recibo com a logo para a Point...");
+        const content = await buildPointReceiptImage(sale);
+        const result = await createMercadoPagoPrintAction({
+          terminalId: printer.terminalId,
+          accountKey: printer.accountKey,
+          subtype: "image",
+          content,
+          ticketNumber: 1,
+          externalReference: `receipt-${sale.id}`,
+          idempotencyKey: record.idempotencyKey,
+          accessToken,
+        });
+        const actionId = result.id || result.action_id;
+        record.actionId = actionId ? String(actionId) : "";
+        record.status = pointPrintActionStatus(result) || "created";
+        record.updatedAt = new Date().toISOString();
+        if (!record.actionId) throw new Error("O Mercado Pago nao retornou o codigo do recibo. Confira a Point antes de tentar novamente.");
+        savePointTicketJob(saleId, printer, job);
+      }
+
+      if (record.status !== "on_terminal") {
+        const result = await waitForPointPrintAction(record.actionId, printer.accountKey, accessToken, saleId, printer, record, job);
+        if (result.accepted) {
+          record.status = "on_terminal";
+          message = "A Point recebeu o recibo com a logo. Confira a saida do papel.";
+        } else if (result.failed) {
+          message = `A Point recusou o recibo (status ${result.status}).`;
+        } else {
+          message = `O recibo continua aguardando a Point (status ${result.status || "created"}). Consulte novamente em instantes; o app nao o reenviou.`;
+        }
+      } else {
+        message = "A Point recebeu o recibo com a logo. Confira a saida do papel.";
+      }
+      record.updatedAt = new Date().toISOString();
+      savePointTicketJob(saleId, printer, job);
+    }
+  } catch (error) {
+    message = error.message || "Falha ao enviar o recibo para a Point.";
+  } finally {
+    pointTicketPrintInProgress = false;
+    setPointTicketProgress(message);
+    if (currentModal?.type === "printTickets" && currentModal.id === saleId) renderApp();
+  }
+  if (message) notify(message, 6500);
 }
 
 function attachSalePrintDetails(saleId, details = {}) {
