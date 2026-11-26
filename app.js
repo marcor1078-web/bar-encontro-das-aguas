@@ -2255,7 +2255,7 @@ function wrapPointReceiptText(context, value, maxWidth) {
   return lines.length ? lines : [""];
 }
 
-async function buildPointReceiptImage(sale) {
+async function buildPointReceiptImage(sale, { includeLogo = true } = {}) {
   const width = 384;
   const padding = 22;
   const maxTextWidth = width - padding * 2;
@@ -2268,12 +2268,12 @@ async function buildPointReceiptImage(sale) {
     blocks.push({ type: "text", text: String(text || ""), font, align, gap });
   };
   const addRule = () => blocks.push({ type: "rule", gap: 8 });
-  const logo = await new Promise((resolve) => {
+  const logo = includeLogo ? await new Promise((resolve) => {
     const image = new Image();
     image.onload = () => resolve(image);
     image.onerror = () => resolve(null);
     image.src = BRAND_LOGO_URL;
-  });
+  }) : null;
 
   addText(state.settings.barName || APP_DISPLAY_NAME, "bold 21px Arial", "center", 6);
   if (state.settings.cnpj) addText(`CNPJ: ${state.settings.cnpj}`, "14px Arial", "center", 10);
@@ -4898,6 +4898,9 @@ function bindViewEvents() {
   });
   document.querySelectorAll("[data-send-point-receipt]").forEach((button) => {
     button.addEventListener("click", () => void sendSaleReceiptToPoint(button.dataset.sendPointReceipt));
+  });
+  document.querySelectorAll("[data-send-point-receipt-no-logo]").forEach((button) => {
+    button.addEventListener("click", () => void sendSaleReceiptToPoint(button.dataset.sendPointReceiptNoLogo, "no-logo"));
   });
   document.querySelectorAll("[data-print-ticket]").forEach((button) => {
     button.addEventListener("click", () => openSaleTicketModal(button.dataset.printTicket));
@@ -10795,6 +10798,8 @@ function renderPrintTicketsModal() {
   const pendingCount = Object.values(ticketJob.units || {}).filter((unit) => unit.actionId && unit.status !== "on_terminal" && !isTerminalPrintFailure(unit.status)).length;
   const receiptRecord = pointReceiptPrintRecord(sale, selectedPrinter);
   const receiptAccepted = receiptRecord?.status === "on_terminal";
+  const receiptNoLogoRecord = ticketJob.receiptNoLogo || null;
+  const receiptNoLogoAccepted = receiptNoLogoRecord?.status === "on_terminal";
   const pointBatchLimit = 30;
   const pointActionsDisabled = !printers.length || !isOnlineSession() || pointTicketPrintInProgress;
   const pointTicketDisabled = !ticketCount || pointActionsDisabled || acceptedCount >= ticketCount || ticketCount > pointBatchLimit;
@@ -10835,6 +10840,7 @@ function renderPrintTicketsModal() {
               : "A Point Smart precisa estar habilitada pelo Mercado Pago para receber impressoes personalizadas."}</p>
       ${!sale.isSimulation && receiptAccepted ? '<p class="hint">O recibo desta venda ja foi recebido pela Point selecionada.</p>' : ""}
       <div class="notice compact" data-point-ticket-progress role="status" aria-live="polite" ${pointTicketPrintSaleId === sale.id && pointTicketPrintMessage ? "" : "hidden"}>${pointTicketPrintSaleId === sale.id ? escapeHtml(pointTicketPrintMessage) : ""}</div>
+      ${!sale.isSimulation ? '<p class="hint">Teste sem logo: mantém o mesmo formato de imagem e altera apenas a presença da marca.</p>' : ""}
     </div>
     <div class="modal-actions">
       <button class="btn secondary" type="button" data-close-modal>Fechar</button>
@@ -10843,6 +10849,7 @@ function renderPrintTicketsModal() {
         <button class="btn secondary" type="button" data-email-sale="${sale.id}">${icon("mail")} E-mail</button>
         <button class="btn secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
         <button class="btn secondary" type="button" data-send-point-receipt="${sale.id}" ${pointReceiptDisabled ? "disabled" : ""}>${icon("print")} ${receiptAccepted ? "Recibo enviado" : receiptRecord?.actionId ? "Consultar recibo" : "Recibo na Point"}</button>
+        <button class="btn secondary" type="button" data-send-point-receipt-no-logo="${sale.id}" ${pointActionsDisabled || receiptNoLogoAccepted ? "disabled" : ""}>${icon("print")} ${receiptNoLogoAccepted ? "Teste sem logo recebido" : receiptNoLogoRecord?.actionId ? "Consultar teste sem logo" : "Testar recibo sem logo"}</button>
       `}
       <button class="btn secondary" type="button" data-print-last-tickets="${sale.id}" ${ticketCount ? "" : "disabled"}>${icon("print")} Imprimir pelo navegador</button>
       ${acceptedCount ? `<button class="btn secondary" type="button" data-reprint-point-tickets="${sale.id}" ${pointActionsDisabled ? "disabled" : ""}>${icon("print")} Reimprimir todas na Point</button>` : ""}
@@ -17194,7 +17201,7 @@ async function reprintSaleTicketsToPoint(saleId) {
   await sendSaleTicketsToPoint(saleId);
 }
 
-async function sendSaleReceiptToPoint(saleId) {
+async function sendSaleReceiptToPoint(saleId, format = "image") {
   if (pointTicketPrintInProgress) return;
   if (simulationResult?.sale?.id === saleId) {
     notify("O simulador so permite testar as fichas; nenhum recibo de venda e gerado.");
@@ -17214,30 +17221,36 @@ async function sendSaleReceiptToPoint(saleId) {
   pointTicketPrintInProgress = true;
   pointTicketPrintSaleId = saleId;
   const job = loadPointTicketJob(saleId, printer);
-  let record = job.receipt || null;
+  const isNoLogo = format === "no-logo";
+  const recordKey = isNoLogo ? "receiptNoLogo" : "receipt";
+  let record = job[recordKey] || null;
   let accessToken = "";
   let message = "";
   try {
     accessToken = await onlineAccessToken();
     if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
     if (record?.status === "on_terminal") {
-      message = "O recibo desta venda ja foi recebido pela Point. Confira o papel antes de reenviar.";
+      message = isNoLogo
+        ? "O teste sem logo desta venda ja foi recebido pela Point. Confira o papel antes de reenviar."
+        : "O recibo desta venda ja foi recebido pela Point. Confira o papel antes de reenviar.";
     } else {
       if (isTerminalPrintFailure(record?.status)) record = null;
       if (!record) record = { idempotencyKey: uuid(), status: "creating" };
-      job.receipt = record;
+      job[recordKey] = record;
       savePointTicketJob(saleId, printer, job);
 
       if (!record.actionId) {
-        setPointTicketProgress("Montando e enviando o recibo com a logo para a Point...");
-        const content = await buildPointReceiptImage(sale);
+        setPointTicketProgress(isNoLogo
+          ? "Montando recibo em imagem sem logo para a Point..."
+          : "Montando e enviando o recibo com a logo para a Point...");
+        const content = await buildPointReceiptImage(sale, { includeLogo: !isNoLogo });
         const result = await createMercadoPagoPrintAction({
           terminalId: printer.terminalId,
           accountKey: printer.accountKey,
           subtype: "image",
           content,
           ticketNumber: 1,
-          externalReference: `receipt-${sale.id}`,
+          externalReference: `${isNoLogo ? "receipt-no-logo" : "receipt"}-${sale.id}`,
           idempotencyKey: record.idempotencyKey,
           accessToken,
         });
@@ -17253,14 +17266,18 @@ async function sendSaleReceiptToPoint(saleId) {
         const result = await waitForPointPrintAction(record.actionId, printer.accountKey, accessToken, saleId, printer, record, job);
         if (result.accepted) {
           record.status = "on_terminal";
-          message = "A Point recebeu o recibo com a logo. Confira a saida do papel.";
+          message = isNoLogo
+            ? "A Point recebeu o recibo em imagem sem logo. Confira a impressao fisica."
+            : "A Point recebeu o recibo com a logo. Confira a saida do papel.";
         } else if (result.failed) {
           message = `A Point recusou o recibo (status ${result.status}).`;
         } else {
           message = `O recibo continua aguardando a Point (status ${result.status || "created"}). Consulte novamente em instantes; o app nao o reenviou.`;
         }
       } else {
-        message = "A Point recebeu o recibo com a logo. Confira a saida do papel.";
+        message = isNoLogo
+          ? "A Point recebeu o recibo em imagem sem logo. Confira a impressao fisica."
+          : "A Point recebeu o recibo com a logo. Confira a saida do papel.";
       }
       record.updatedAt = new Date().toISOString();
       savePointTicketJob(saleId, printer, job);
