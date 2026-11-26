@@ -1,5 +1,11 @@
 const MP_API_BASE = "https://api.mercadopago.com";
 const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://cuwzzrxstaxmzzzidzqv.supabase.co";
+const SUPABASE_PUBLIC_KEY = String(
+  process.env.SUPABASE_PUBLIC_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    "sb_publishable_2tj3Ss6dNdlWJkDutRvZfQ_xdRKoR_t",
+).trim();
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -139,11 +145,10 @@ function mercadoPagoErrorMessage(data) {
 }
 
 async function requireOnlineStaff(req, res, allowedPermissions = ["pos", "sales"]) {
-  const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
-  if (!serviceRoleKey) {
+  if (!SUPABASE_PUBLIC_KEY) {
     json(res, 501, {
-      error: "supabase_service_role_not_configured",
-      message: "Configure SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente da Vercel.",
+      error: "supabase_public_key_not_configured",
+      message: "A chave publicavel do Supabase nao esta configurada.",
     });
     return null;
   }
@@ -159,7 +164,7 @@ async function requireOnlineStaff(req, res, allowedPermissions = ["pos", "sales"
   let authUser;
   try {
     authResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: { apikey: serviceRoleKey, Authorization: `Bearer ${accessToken}` },
+      headers: { apikey: SUPABASE_PUBLIC_KEY, Authorization: `Bearer ${accessToken}` },
     });
     authUser = await authResponse.json().catch(() => ({}));
   } catch (error) {
@@ -177,8 +182,8 @@ async function requireOnlineStaff(req, res, allowedPermissions = ["pos", "sales"
     const query = new URLSearchParams({ id: `eq.${authUser.id}`, select: "role,permissions,active", limit: "1" });
     profileResponse = await fetch(`${SUPABASE_URL}/rest/v1/profiles?${query}`, {
       headers: {
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
+        apikey: SUPABASE_PUBLIC_KEY,
+        Authorization: `Bearer ${accessToken}`,
       },
     });
     profiles = await profileResponse.json().catch(() => []);
