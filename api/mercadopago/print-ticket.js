@@ -5,6 +5,7 @@ const {
   requireMercadoPagoConfig,
   mercadoPagoFetch,
   mercadoPagoErrorMessage,
+  requireOnlineStaff,
 } = require("./_helpers");
 const { randomUUID } = require("crypto");
 
@@ -16,6 +17,7 @@ function safeReference(value) {
 
 module.exports = async function handler(req, res) {
   if (!methodAllowed(req, res, ["POST"])) return;
+  if (!await requireOnlineStaff(req, res)) return;
   const body = await readJson(req);
   const accountKey = body.accountKey === "secondary" ? "secondary" : "primary";
   const env = requireMercadoPagoConfig(res, accountKey);
@@ -32,6 +34,10 @@ module.exports = async function handler(req, res) {
       error: "invalid_print_content",
       message: "A ficha personalizada precisa ter entre 100 e 4096 caracteres.",
     });
+    return;
+  }
+  if (String(body.accountKey || "primary") === "secondary" && !process.env.MP_SECONDARY_ACCESS_TOKEN) {
+    json(res, 501, { error: "mercado_pago_not_configured", message: "A conta secundaria do Mercado Pago nao esta configurada." });
     return;
   }
 
@@ -60,5 +66,8 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  json(res, 200, result.data);
+  json(res, 200, {
+    ...result.data,
+    message: "Acao de impressao criada. A ficha so foi recebida pela Point quando o status chegar a on_terminal.",
+  });
 };

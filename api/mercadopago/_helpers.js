@@ -1,4 +1,5 @@
 const MP_API_BASE = "https://api.mercadopago.com";
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "https://cuwzzrxstaxmzzzidzqv.supabase.co";
 
 function json(res, status, data) {
   res.statusCode = status;
@@ -137,6 +138,69 @@ function mercadoPagoErrorMessage(data) {
   return JSON.stringify(details).slice(0, 600);
 }
 
+async function requireOnlineStaff(req, res, allowedPermissions = ["pos", "sales"]) {
+  const serviceRoleKey = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  if (!serviceRoleKey) {
+    json(res, 501, {
+      error: "supabase_service_role_not_configured",
+      message: "Configure SUPABASE_SERVICE_ROLE_KEY nas variaveis de ambiente da Vercel.",
+    });
+    return null;
+  }
+
+  const authorization = String(req.headers.authorization || "");
+  const accessToken = authorization.toLowerCase().startsWith("bearer ") ? authorization.slice(7).trim() : "";
+  if (!accessToken) {
+    json(res, 401, { error: "missing_session", message: "Entre no app com uma conta online autorizada." });
+    return null;
+  }
+
+  let authResponse;
+  let authUser;
+  try {
+    authResponse = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: serviceRoleKey, Authorization: `Bearer ${accessToken}` },
+    });
+    authUser = await authResponse.json().catch(() => ({}));
+  } catch (error) {
+    json(res, 502, { error: "session_check_failed", message: "Nao foi possivel validar a sessao online." });
+    return null;
+  }
+  if (!authResponse.ok || !authUser?.id) {
+    json(res, 401, { error: "invalid_session", message: "Sessao online invalida. Entre novamente no app." });
+    return null;
+  }
+
+  let profileResponse;
+  let profiles;
+  try {
+    const query = new URLSearchParams({ id: `eq.${authUser.id}`, select: "role,permissions,active", limit: "1" });
+    profileResponse = await fetch(`${SUPABASE_URL}/rest/v1/profiles?${query}`, {
+      headers: {
+        apikey: serviceRoleKey,
+        Authorization: `Bearer ${serviceRoleKey}`,
+      },
+    });
+    profiles = await profileResponse.json().catch(() => []);
+  } catch (error) {
+    json(res, 502, { error: "profile_check_failed", message: "Nao foi possivel validar as permissoes da conta." });
+    return null;
+  }
+  if (!profileResponse.ok) {
+    json(res, 502, { error: "profile_check_failed", message: "Nao foi possivel validar as permissoes da conta." });
+    return null;
+  }
+
+  const profile = Array.isArray(profiles) ? profiles[0] : null;
+  const permissions = Array.isArray(profile?.permissions) ? profile.permissions : [];
+  const allowed = profile?.role === "admin" || allowedPermissions.some((permission) => permissions.includes(permission));
+  if (!profile || profile.active === false || !allowed) {
+    json(res, 403, { error: "permission_denied", message: "Sua conta nao tem permissao para imprimir fichas na Point." });
+    return null;
+  }
+  return { userId: authUser.id, profile };
+}
+
 module.exports = {
   json,
   methodAllowed,
@@ -148,4 +212,5 @@ module.exports = {
   mercadoPagoFetch,
   publicTerminalInfo,
   mercadoPagoErrorMessage,
+  requireOnlineStaff,
 };

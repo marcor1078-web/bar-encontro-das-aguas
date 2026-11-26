@@ -46,5 +46,7 @@ Depois de salvar as variaveis, faca um novo deploy na Vercel.
 - Nunca coloque `MP_ACCESS_TOKEN` dentro de `app.js`, `supabase-config.js` ou qualquer arquivo publico.
 - Tokens e chaves privadas ficam apenas nas variaveis de ambiente da Vercel.
 - `MP_PRINT_ON_TERMINAL=seller_ticket` imprime o comprovante simples do vendedor na maquininha depois do pagamento. As fichas personalizadas ficam no app, em formato de bobina.
-- A ficha personalizada deve ser impressa pelo app depois da venda. A rota `/api/mercadopago/print-ticket` fica reservada para testes futuros de impressao direta na Point.
+- Depois da venda, a janela de fichas permite imprimir pelo navegador ou enviar fichas individuais para uma Point Smart. O envio direto exige sessao online e permissao de Balcao ou Vendas.
+- A impressao personalizada usa a API de Terminals. O Mercado Pago pode exigir uma atualizacao/liberacao do terminal antes que ele receba essas acoes; o status `created` significa que a acao esta na fila e `on_terminal` significa que a Point a recebeu. Confira a impressao fisica antes de entregar o produto.
+- A selecao da Point usada para imprimir e independente da Point usada para cobrar. O app guarda o andamento por venda e terminal para evitar reenviar fichas que ja chegaram ao dispositivo.
 - Se o pagamento ficar pendente, confira a maquininha antes de tentar novamente.
