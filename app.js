@@ -79,6 +79,7 @@ const navItems = [
   { id: "pos", label: "Balcao", icon: "cart" },
   { id: "tables", label: "Mesas", icon: "tables" },
   { id: "sales", label: "Vendas", icon: "chart" },
+  { id: "simulation", label: "Simulador", icon: "simulation", permission: "sales" },
   { id: "cash", label: "Caixa", icon: "cash" },
   { id: "stock", label: "Estoque", icon: "boxes" },
   { id: "suppliers", label: "Fornecedores", icon: "suppliers" },
@@ -113,6 +114,8 @@ const iconPaths = {
     '<circle cx="9" cy="20" r="1.5"></circle><circle cx="18" cy="20" r="1.5"></circle><path d="M3 4h2l2.2 10.5a2 2 0 0 0 2 1.6h7.9a2 2 0 0 0 1.9-1.4L21 8H7"></path>',
   chart:
     '<path d="M4 19V5"></path><path d="M4 19h16"></path><path d="M8 16v-5"></path><path d="M12 16V8"></path><path d="M16 16v-3"></path>',
+  simulation:
+    '<rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 7h8"></path><path d="M8 11h2"></path><path d="M14 11h2"></path><path d="M8 15h2"></path><path d="M14 15h2"></path><path d="M8 19h8"></path>',
   cash:
     '<rect x="3" y="6" width="18" height="12" rx="2"></rect><circle cx="12" cy="12" r="3"></circle><path d="M6 9h2"></path><path d="M16 15h2"></path>',
   boxes:
@@ -566,6 +569,10 @@ let state = loadState();
 let session = null;
 let currentView = "dashboard";
 let cart = [];
+let simulationCart = [];
+let simulationSearchTerm = "";
+let simulationPayment = "";
+let simulationResult = null;
 let tableCheckout = null;
 let selectedTableId = null;
 let lastSaleForTicketsId = null;
@@ -1034,7 +1041,7 @@ function supabaseAuthUsersUrl() {
 }
 
 function normalizePermissions(permissions) {
-  const valid = navItems.map((item) => item.id);
+  const valid = navItems.filter((item) => !item.permission).map((item) => item.id);
   const normalized = [...new Set((permissions || []).filter((permission) => valid.includes(permission)))].filter(
     (permission) => !["dashboard", "settings", "online"].includes(permission),
   );
@@ -1058,7 +1065,7 @@ function icon(name) {
 function permissionSummary(user) {
   const permissions = getUserPermissions(user);
   return navItems
-    .filter((item) => permissions.includes(item.id))
+    .filter((item) => permissions.includes(item.permission || item.id))
     .map((item) => item.label)
     .join(", ");
 }
@@ -1066,7 +1073,8 @@ function permissionSummary(user) {
 function hasPermission(view) {
   if (!session) return false;
   if (["dashboard", "settings", "online"].includes(view) && session.role !== "admin") return false;
-  return getUserPermissions(session).includes(view);
+  const requiredPermission = navItems.find((item) => item.id === view)?.permission || view;
+  return getUserPermissions(session).includes(requiredPermission);
 }
 
 function visibleNav() {
@@ -2336,15 +2344,128 @@ async function buildPointReceiptImage(sale) {
   return canvas.toDataURL("image/png").split(",")[1];
 }
 
+async function loadPointThermalLogo() {
+  const image = await new Promise((resolve) => {
+    const logo = new Image();
+    logo.onload = () => resolve(logo);
+    logo.onerror = () => resolve(null);
+    logo.src = BRAND_LOGO_URL;
+  });
+  if (!image) return null;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 176;
+  canvas.height = 132;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return null;
+  context.fillStyle = "#000";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const scale = Math.min(132 / image.naturalWidth, 132 / image.naturalHeight);
+  const width = Math.round(image.naturalWidth * scale);
+  const height = Math.round(image.naturalHeight * scale);
+  context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+  for (let index = 0; index < pixels.data.length; index += 4) {
+    const brightness = Math.max(pixels.data[index], pixels.data[index + 1], pixels.data[index + 2]);
+    const thermal = brightness < 38 ? 255 : Math.round(255 - ((brightness - 38) / 217) * 255);
+    pixels.data[index] = thermal;
+    pixels.data[index + 1] = thermal;
+    pixels.data[index + 2] = thermal;
+    pixels.data[index + 3] = 255;
+  }
+  context.putImageData(pixels, 0, 0);
+  return canvas;
+}
+
+async function buildPointTicketImage({ sale, item, ticketNumber, ticketCount }) {
+  const width = 384;
+  const padding = 22;
+  const maxTextWidth = width - padding * 2;
+  const measure = document.createElement("canvas").getContext("2d");
+  if (!measure) throw new Error("Este navegador nao conseguiu preparar a imagem da ficha.");
+  const logo = await loadPointThermalLogo();
+  if (!logo) throw new Error("Nao foi possivel carregar o logotipo. A ficha nao foi enviada sem a marca.");
+  const blocks = [];
+  const addText = (text, font = "15px Arial", align = "left", gap = 4) => {
+    blocks.push({ type: "text", text: String(text || ""), font, align, gap });
+  };
+  const addRule = () => blocks.push({ type: "rule", gap: 7 });
+
+  addText(state.settings.barName || APP_DISPLAY_NAME, "bold 18px Arial", "center", 5);
+  if (state.settings.cnpj) addText(`CNPJ: ${state.settings.cnpj}`, "13px Arial", "center", 7);
+  addRule();
+  addText("FICHA DE CONSUMO", "bold 18px Arial", "center", 6);
+  addText(`Venda: ${sale.id.slice(-8)}`, "13px Arial");
+  addText(`Data: ${dateTime(sale.date)}`, "13px Arial");
+  addText(`Operador: ${userName(sale.cashierId)}`, "13px Arial");
+  if (sale.tableName) addText(`Mesa: ${sale.tableName}`, "13px Arial");
+  if (sale.customerName) addText(`Cliente: ${sale.customerName}`, "13px Arial");
+  addRule();
+  addText(item.name, "bold 22px Arial", "center", 4);
+  addText(`Unidade ${item.unitIndex} de ${item.qty}`, "bold 14px Arial", "center", 5);
+  addText(money(item.unitTotal), "bold 20px Arial", "center", 7);
+  addRule();
+  addText("ENTREGAR MEDIANTE ESTA FICHA", "bold 14px Arial", "center", 4);
+  addText(`Ficha ${ticketNumber} de ${ticketCount}`, "13px Arial", "center", 5);
+  addText("Ficha sem valor fiscal", "12px Arial", "center", 2);
+
+  const measured = blocks.map((block) => {
+    if (block.type === "rule") return { ...block, height: 14 + block.gap };
+    measure.font = block.font;
+    const lines = wrapPointReceiptText(measure, block.text, maxTextWidth);
+    const lineHeight = Math.ceil(Number(block.font.match(/(\d+)px/)?.[1] || 14) * 1.35);
+    return { ...block, lines, lineHeight, height: lines.length * lineHeight + block.gap };
+  });
+  const logoTop = logo ? 132 : 0;
+  const height = padding * 2 + logoTop + (logo ? 8 : 0) + measured.reduce((sum, block) => sum + block.height, 0);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Este navegador nao conseguiu preparar a imagem da ficha.");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = "#000";
+  context.textBaseline = "top";
+  let y = padding;
+  if (logo) {
+    context.drawImage(logo, (width - logo.width) / 2, y, logo.width, logo.height);
+    y += logo.height + 8;
+  }
+  measured.forEach((block) => {
+    y += block.gap || 0;
+    if (block.type === "rule") {
+      context.save();
+      context.setLineDash([5, 4]);
+      context.beginPath();
+      context.moveTo(padding, y + 3);
+      context.lineTo(width - padding, y + 3);
+      context.strokeStyle = "#111";
+      context.stroke();
+      context.restore();
+      y += 14;
+      return;
+    }
+    context.font = block.font;
+    context.textAlign = block.align;
+    const x = block.align === "center" ? width / 2 : block.align === "right" ? width - padding : padding;
+    block.lines.forEach((line) => {
+      context.fillText(line, x, y, maxTextWidth);
+      y += block.lineHeight;
+    });
+  });
+  return canvas.toDataURL("image/png").split(",")[1];
+}
+
 async function createMercadoPagoPrintActions({ terminalId, accountKey = "primary", tickets, accessToken }) {
+  const body = JSON.stringify({ terminalId, accountKey, tickets });
+  if (body.length > 3_800_000) {
+    throw new Error("As imagens das fichas ultrapassam o limite seguro de envio conjunto. Use a impressao pelo navegador para este lote.");
+  }
   const { response, data } = await fetchJsonWithTimeout("/api/mercadopago/print-ticket", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-    body: JSON.stringify({
-      terminalId,
-      accountKey,
-      tickets,
-    }),
+    body,
   });
   if (!response.ok) throw new Error(describeMercadoPagoError(data));
   if (!Array.isArray(data.results)) throw new Error("O Mercado Pago nao retornou o resultado do lote de impressoes.");
@@ -4483,6 +4604,7 @@ function topbarSubtitle(view) {
     pos: "Venda de balcao com botoes grandes e categorias.",
     tables: "Mapa de mesas, comandas abertas e fechamento.",
     sales: "Historico de vendas e formas de pagamento.",
+    simulation: "Teste produtos e valores sem movimentar vendas ou estoque.",
     cash: "Abertura, movimentacoes e fechamento do caixa.",
     stock: "Controle de saldo e reposicao.",
     inventory: "Contagem fisica e divergencias.",
@@ -4504,6 +4626,7 @@ function renderView() {
     pos: renderPos,
     tables: renderTables,
     sales: renderSales,
+    simulation: renderSalesSimulation,
     cash: renderCash,
     stock: renderStock,
     inventory: renderInventory,
@@ -4586,6 +4709,34 @@ function bindViewEvents() {
 
   document.querySelectorAll("[data-add-product]").forEach((button) => {
     button.addEventListener("click", () => addToCart(button.dataset.addProduct));
+  });
+
+  document.querySelectorAll("[data-simulation-add]").forEach((button) => {
+    button.addEventListener("click", () => requestProductSelection(button.dataset.simulationAdd, "simulation"));
+  });
+  document.querySelectorAll("[data-simulation-minus]").forEach((button) => {
+    button.addEventListener("click", () => changeSimulationQty(button.dataset.simulationMinus, -1));
+  });
+  document.querySelectorAll("[data-simulation-plus]").forEach((button) => {
+    button.addEventListener("click", () => changeSimulationQty(button.dataset.simulationPlus, 1));
+  });
+  document.querySelector("[data-simulation-payment]")?.addEventListener("change", (event) => {
+    simulationPayment = event.currentTarget.value;
+  });
+  document.querySelector("[data-complete-simulation]")?.addEventListener("click", completeSaleSimulation);
+  document.querySelector("[data-clear-simulation]")?.addEventListener("click", resetSaleSimulation);
+  document.querySelector("[data-new-simulation]")?.addEventListener("click", resetSaleSimulation);
+  document.querySelector("[data-simulation-search]")?.addEventListener("input", (event) => {
+    simulationSearchTerm = event.currentTarget.value;
+    const cursor = event.currentTarget.selectionStart ?? simulationSearchTerm.length;
+    clearTimeout(searchRenderTimer);
+    searchRenderTimer = setTimeout(() => {
+      if (currentView !== "simulation") return;
+      renderApp();
+      const next = document.querySelector("[data-simulation-search]");
+      next?.focus();
+      next?.setSelectionRange(cursor, cursor);
+    }, 120);
   });
 
   document.querySelectorAll("[data-add-table-product]").forEach((button) => {
@@ -4731,6 +4882,9 @@ function bindViewEvents() {
   });
   document.querySelectorAll("[data-send-point-tickets]").forEach((button) => {
     button.addEventListener("click", () => void sendSaleTicketsToPoint(button.dataset.sendPointTickets));
+  });
+  document.querySelectorAll("[data-reprint-point-tickets]").forEach((button) => {
+    button.addEventListener("click", () => void reprintSaleTicketsToPoint(button.dataset.reprintPointTickets));
   });
   document.querySelectorAll("[data-send-point-receipt]").forEach((button) => {
     button.addEventListener("click", () => void sendSaleReceiptToPoint(button.dataset.sendPointReceipt));
@@ -4992,7 +5146,8 @@ function renderPos() {
             <div class="toolbar">
               <button class="btn secondary" type="button" data-share-sale-whatsapp="${lastSaleForTickets.id}">${icon("message")} WhatsApp</button>
               <button class="btn secondary" type="button" data-email-sale="${lastSaleForTickets.id}">${icon("mail")} E-mail</button>
-              <button class="btn primary" type="button" ${lastSaleTicketCount ? `data-print-last-tickets="${lastSaleForTickets.id}"` : `data-print-sale="${lastSaleForTickets.id}"`}>${icon("print")} ${lastSaleTicketCount ? "Imprimir fichas" : "Imprimir recibo"}</button>
+              <button class="btn secondary" type="button" data-print-ticket="${lastSaleForTickets.id}">${icon("print")} ${lastSaleTicketCount ? "Fichas na Point" : "Recibo na Point"}</button>
+              <button class="btn primary" type="button" ${lastSaleTicketCount ? `data-print-last-tickets="${lastSaleForTickets.id}"` : `data-print-sale="${lastSaleForTickets.id}"`}>${icon("print")} ${lastSaleTicketCount ? "Fichas no PC" : "Recibo no PC"}</button>
             </div>
           </section>`
         : ""
@@ -5444,6 +5599,7 @@ function requestProductSelection(productId, destination = "cart", tableId = "") 
   }
   const item = buildConfiguredSaleItem(product);
   if (destination === "table") addConfiguredItemToTable(tableId, item);
+  else if (destination === "simulation") addConfiguredItemToSimulation(item);
   else addConfiguredItemToCart(item);
 }
 
@@ -7596,6 +7752,129 @@ function renderSales() {
   `;
 }
 
+function renderSalesSimulation() {
+  const activeProducts = state.products.filter((product) => product.active);
+  const term = simulationSearchTerm.trim().toLocaleLowerCase("pt-BR");
+  const products = activeProducts
+    .filter((product) => {
+      if (!term) return product.favorite;
+      return `${product.name} ${product.productCode || ""} ${productBarcodeCodes(product).join(" ")} ${product.category}`
+        .toLocaleLowerCase("pt-BR")
+        .includes(term);
+    })
+    .slice(0, 40);
+  const simulationTotal = simulationCart.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
+
+  return `
+    <div class="section-title">
+      <div>
+        <h2>Simulador de vendas</h2>
+        <p>Use os produtos e precos reais para conferir uma comanda antes de vender.</p>
+      </div>
+      <div class="toolbar">
+        <button class="btn secondary" type="button" data-clear-simulation ${simulationCart.length ? "" : "disabled"}>Limpar simulacao</button>
+      </div>
+    </div>
+    <div class="notice warning simulation-safety-notice">
+      Simulacao isolada: nada sera enviado a maquininha, salvo no historico, somado ao caixa ou baixado do estoque.
+    </div>
+    ${simulationResult ? `
+      <section class="card pad simulation-result" role="status">
+        <div class="card-head">
+          <div><h2 class="card-title">Simulacao concluida</h2><p>Nao foi criada uma venda real.</p></div>
+          <button class="btn compact secondary" type="button" data-new-simulation>Nova simulacao</button>
+        </div>
+        <div class="summary-list">
+          <div class="summary-row"><span>Produtos</span><strong>${simulationResult.items.reduce((sum, item) => sum + Number(item.qty || 0), 0)}</strong></div>
+          <div class="summary-row"><span>Pagamento de teste</span><strong>${escapeHtml(simulationResult.payment || "Nao selecionado")}</strong></div>
+          <div class="summary-row total"><span>Total calculado</span><strong>${money(simulationResult.total)}</strong></div>
+        </div>
+        <p class="simulation-result-items">${simulationResult.items.map((item) => `${qty(item.qty)} x ${escapeHtml(item.name)}`).join(" · ")}</p>
+      </section>` : ""}
+    <div class="simulation-layout">
+      <section class="card pad simulation-products">
+        <div class="card-head"><h2 class="card-title">Produtos</h2></div>
+        <label class="field">
+          <span>Buscar produto</span>
+          <input class="field-input search" data-simulation-search type="search" value="${escapeHtml(simulationSearchTerm)}" placeholder="Nome, codigo ou codigo de barras" />
+        </label>
+        <p class="hint">${term ? `${products.length} resultado(s)${activeProducts.length > products.length ? ", mostrando ate 40" : ""}.` : "Itens do menu rapido. Pesquise para localizar qualquer produto ativo."}</p>
+        <div class="quick-product-grid simulation-product-grid">
+          ${products.length ? products.map((product) => `
+            <button class="quick-product-tile" type="button" data-simulation-add="${escapeHtml(product.id)}">
+              ${productImageMarkup(product, "quick-product-photo")}
+              <span class="quick-product-copy"><strong>${escapeHtml(product.name)}</strong><span class="price">${money(product.price)}</span></span>
+            </button>
+          `).join("") : `<div class="empty">${term ? "Nenhum produto ativo encontrado." : "Nenhum produto do menu rapido. Use a busca para encontrar produtos."}</div>`}
+        </div>
+      </section>
+      <aside class="card simulation-cart">
+        <div class="card-head"><h2 class="card-title">Comanda de teste</h2><span class="status blue">${simulationCart.reduce((sum, item) => sum + Number(item.qty || 0), 0)} item(ns)</span></div>
+        <div class="cart-list simulation-cart-list">
+          ${simulationCart.length ? simulationCart.map((item) => `
+            <div class="cart-item">
+              <div><strong>${escapeHtml(item.name)}</strong><span>${money(item.price)} cada</span></div>
+              <div class="qty-stepper">
+                <button type="button" data-simulation-minus="${escapeHtml(cartItemKey(item))}" aria-label="Diminuir quantidade">-</button>
+                <output>${qty(item.qty)}</output>
+                <button type="button" data-simulation-plus="${escapeHtml(cartItemKey(item))}" aria-label="Aumentar quantidade">+</button>
+              </div>
+            </div>
+          `).join("") : '<div class="empty">Adicione produtos para calcular o total.</div>'}
+        </div>
+        <div class="simulation-checkout">
+          <label class="field"><span>Forma de pagamento para o teste</span><select data-simulation-payment>
+            <option value="" ${!simulationPayment ? "selected" : ""}>Nao selecionada</option>
+            ${["Pix", "Debito", "Credito", "Dinheiro", "Fiado"].map((method) => `<option value="${method}" ${simulationPayment === method ? "selected" : ""}>${method}</option>`).join("")}
+          </select></label>
+          <div class="summary-row total"><span>Total</span><strong>${money(simulationTotal)}</strong></div>
+          <button class="btn primary" type="button" data-complete-simulation ${simulationCart.length ? "" : "disabled"}>Concluir simulacao</button>
+        </div>
+      </aside>
+    </div>
+  `;
+}
+
+function addConfiguredItemToSimulation(item) {
+  if (!item) return;
+  const next = structuredClone(simulationCart);
+  const existing = next.find((entry) => cartItemKey(entry) === cartItemKey(item));
+  if (existing) existing.qty += 1;
+  else next.push({ ...item });
+  simulationCart = next;
+  simulationResult = null;
+  currentModal = null;
+  renderApp();
+}
+
+function changeSimulationQty(itemKey, change) {
+  const next = structuredClone(simulationCart);
+  const item = next.find((entry) => cartItemKey(entry) === itemKey);
+  if (!item) return;
+  item.qty = Number(item.qty || 0) + change;
+  simulationCart = item.qty <= 0 ? next.filter((entry) => cartItemKey(entry) !== itemKey) : next;
+  renderApp();
+}
+
+function completeSaleSimulation() {
+  if (!simulationCart.length) return;
+  simulationResult = {
+    items: structuredClone(simulationCart),
+    total: simulationCart.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0),
+    payment: simulationPayment,
+    completedAt: new Date().toISOString(),
+  };
+  simulationCart = [];
+  renderApp();
+}
+
+function resetSaleSimulation() {
+  simulationCart = [];
+  simulationPayment = "";
+  simulationResult = null;
+  renderApp();
+}
+
 function salesTable(sales) {
   if (!sales.length) return '<div class="empty">Nenhuma venda registrada.</div>';
 
@@ -7636,7 +7915,7 @@ function salesTable(sales) {
                       <button class="btn compact secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
                       <button class="btn compact secondary" type="button" data-share-sale-whatsapp="${sale.id}">${icon("message")} WhatsApp</button>
                       <button class="btn compact secondary" type="button" data-email-sale="${sale.id}">${icon("mail")} E-mail</button>
-                      ${(sale.items || []).length && !isManualChargeSale(sale) ? `<button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} Ficha</button>` : ""}
+                      <button class="btn compact secondary" type="button" data-print-ticket="${sale.id}">${icon("print")} ${(sale.items || []).length && !isManualChargeSale(sale) ? "Fichas / Point" : "Point"}</button>
                       ${
                         !isFinancialSale(sale)
                           ? ""
@@ -10494,7 +10773,7 @@ function renderPrintTicketsModal() {
   const pointReceiptDisabled = pointActionsDisabled || receiptAccepted;
   return `
     <div class="modal-head">
-      <h2>Imprimir fichas</h2>
+      <h2>Imprimir na Point ou no computador</h2>
       <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
     </div>
     <div class="modal-body">
@@ -10507,10 +10786,10 @@ function renderPrintTicketsModal() {
       <p>${
         ticketCount
           ? "Na Point, as fichas individuais sao enviadas juntas em um lote. O app acompanha quando o terminal recebe cada acao."
-          : "Este rateio nao possui uma ficha individual de produto. Use o recibo para entregar o comprovante desta pessoa."
+          : "Esta venda nao possui ficha individual de produto. Envie o recibo para a Point ou imprima uma copia no computador."
       }</p>
       <label class="field">
-        <span>Imprimir as fichas na Point</span>
+        <span>Maquininha Point</span>
         <select data-point-ticket-printer ${printers.length ? "" : "disabled"}>
           ${printers.length
             ? printers.map((printer) => `<option value="${escapeHtml(printer.id)}" ${printer.id === selectedPrinter?.id ? "selected" : ""}>${escapeHtml(printer.label)}</option>`).join("")
@@ -10536,6 +10815,7 @@ function renderPrintTicketsModal() {
       <button class="btn secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
       <button class="btn secondary" type="button" data-send-point-receipt="${sale.id}" ${pointReceiptDisabled ? "disabled" : ""}>${icon("print")} ${receiptAccepted ? "Recibo enviado" : receiptRecord?.actionId ? "Consultar recibo" : "Recibo na Point"}</button>
       <button class="btn secondary" type="button" data-print-last-tickets="${sale.id}" ${ticketCount ? "" : "disabled"}>${icon("print")} Imprimir pelo navegador</button>
+      ${acceptedCount ? `<button class="btn secondary" type="button" data-reprint-point-tickets="${sale.id}" ${pointActionsDisabled ? "disabled" : ""}>${icon("print")} Reimprimir todas na Point</button>` : ""}
       <button class="btn primary" type="button" data-send-point-tickets="${sale.id}" ${pointTicketDisabled ? "disabled" : ""}>${icon("print")} ${pendingCount ? "Consultar fila" : acceptedCount ? "Enviar restantes" : "Enviar fichas em lote"}</button>
     </div>
   `;
@@ -10956,7 +11236,9 @@ function renderProductSelectionModal() {
   const initialVariant = combinations.length
     ? variants.find((variant) => combinations.some((combination) => combination.brandId === initialBrandId && combination.variantId === variant.id))
     : variants[0];
-  const destinationLabel = currentModal.destination === "table" ? "Adicionar a mesa" : "Adicionar a comanda";
+  const destinationLabel = currentModal.destination === "table"
+    ? "Adicionar a mesa"
+    : currentModal.destination === "simulation" ? "Adicionar a simulacao" : "Adicionar a comanda";
   return `
     <form id="product-selection-form">
       <input type="hidden" name="productId" value="${product.id}" />
@@ -11066,7 +11348,9 @@ function renderProductSelectionModal() {
               </fieldset>`
             : ""
         }
-        <div class="notice compact">O carrinho exibira tamanho, bebida, energetico e gelo. O app baixara do estoque somente os produtos e insumos escolhidos.</div>
+        <div class="notice compact">${currentModal.destination === "simulation"
+          ? "Esta escolha vai apenas para o simulador. Nenhum estoque sera baixado e nenhuma venda sera registrada."
+          : "O carrinho exibira tamanho, bebida, energetico e gelo. O app baixara do estoque somente os produtos e insumos escolhidos."}</div>
       </div>
       <div class="modal-actions">
         <button class="btn secondary" type="button" data-close-modal>Cancelar</button>
@@ -12149,7 +12433,7 @@ function renderUserModal() {
               <button class="btn compact secondary" type="button" data-apply-role>Aplicar padrao</button>
             </div>
             <div class="permission-grid">
-              ${navItems
+              ${navItems.filter((item) => !item.permission)
                 .map(
                   (item) => `
                     <label class="check-tile ${isAdminRole ? "locked" : ""}">
@@ -12810,6 +13094,7 @@ async function saveProductSelection(event) {
     return;
   }
   if (destination === "table") await addConfiguredItemToTable(tableId, item);
+  else if (destination === "simulation") addConfiguredItemToSimulation(item);
   else addConfiguredItemToCart(item);
 }
 
@@ -16764,6 +17049,7 @@ async function sendSaleTicketsToPoint(saleId) {
   const sendButton = document.querySelector(`[data-send-point-tickets="${CSS.escape(saleId)}"]`);
   if (sendButton) sendButton.disabled = true;
   const job = loadPointTicketJob(saleId, printer);
+  job.batchId = job.batchId || uuid();
   job.units = job.units && typeof job.units === "object" ? job.units : {};
   let accessToken = "";
   let problem = "";
@@ -16782,10 +17068,10 @@ async function sendSaleTicketsToPoint(saleId) {
       if (!record.actionId) {
         ticketsToCreate.push({
           ticketNumber: index + 1,
-          subtype: "custom",
-          content: buildMercadoPagoCustomTicket({ sale, item: units[index], ticketNumber: index + 1, ticketCount: units.length }),
+          subtype: "image",
+          content: await buildPointTicketImage({ sale, item: units[index], ticketNumber: index + 1, ticketCount: units.length }),
           idempotencyKey: record.idempotencyKey,
-          externalReference: `ticket-${sale.id}-${index + 1}`,
+          externalReference: `ticket-${sale.id.slice(-8)}-${job.batchId.slice(0, 12)}-${index + 1}`,
         });
       }
     }
@@ -16843,6 +17129,28 @@ async function sendSaleTicketsToPoint(saleId) {
     if (currentModal?.type === "printTickets" && currentModal.id === saleId) renderApp();
   }
   if (problem) notify(problem, 6500);
+}
+
+async function reprintSaleTicketsToPoint(saleId) {
+  const sale = state.sales.find((entry) => entry.id === saleId);
+  const printer = selectedPointTicketPrinter();
+  if (!sale || !printer || pointTicketPrintInProgress) return;
+  const job = loadPointTicketJob(saleId, printer);
+  const acceptedCount = Object.values(job.units || {}).filter((unit) => unit.status === "on_terminal").length;
+  const count = ticketUnitList(sale).length;
+  if (!acceptedCount || !count) {
+    notify("Nao ha fichas desta venda ja recebidas pela Point para reimprimir.");
+    return;
+  }
+  if (!confirm(`Enviar novamente todas as ${count} ficha(s) desta venda para ${printer.label}? Isso pode imprimir fichas repetidas.`)) return;
+
+  const previousRuns = Array.isArray(job.previousRuns) ? job.previousRuns : [];
+  previousRuns.push({ batchId: job.batchId || "anterior", sentAt: new Date().toISOString(), units: structuredClone(job.units || {}) });
+  job.previousRuns = previousRuns.slice(-10);
+  job.batchId = uuid();
+  job.units = {};
+  savePointTicketJob(saleId, printer, job);
+  await sendSaleTicketsToPoint(saleId);
 }
 
 async function sendSaleReceiptToPoint(saleId) {

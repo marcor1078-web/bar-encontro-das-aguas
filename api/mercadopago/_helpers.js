@@ -25,7 +25,7 @@ function readJson(req) {
     let body = "";
     req.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 1_500_000) {
+      if (body.length > 3_800_000) {
         reject(new Error("Payload muito grande."));
         req.destroy();
       }
