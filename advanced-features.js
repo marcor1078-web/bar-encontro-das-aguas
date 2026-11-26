@@ -381,11 +381,10 @@ function renderDailyManagerPanel() {
     <section class="card daily-manager-panel">
       <div class="daily-manager-head">
         <div>
-          <span class="eyebrow">GERENTE DIARIO IA</span>
+          <span class="eyebrow">RESUMO GERENCIAL AUTOMÁTICO</span>
           <h2>${high ? `${high} ponto(s) exigem sua atencao` : "Operacao acompanhada e sem alerta critico"}</h2>
           <p>Recebido hoje ${money(summary.today.received)}, ${summary.variation >= 0 ? "+" : ""}${summary.variation.toFixed(1)}% contra a media dos 7 dias anteriores.</p>
         </div>
-        <button class="btn primary compact" type="button" data-view="assistant">Conversar com a IA</button>
       </div>
       <div class="manager-actions">
         ${summary.suggestions.slice(0, 3).map((suggestion) => `<span>${escapeHtml(suggestion)}</span>`).join("")}
@@ -1228,40 +1227,6 @@ logAudit = function advancedLogAudit(action, details = "") {
       if (error && !advancedMissingMigration(error)) console.warn("Falha ao registrar auditoria online", error.message);
     });
   }
-};
-
-const advancedOriginalAssistantBusinessContext = assistantBusinessContext;
-assistantBusinessContext = function advancedAssistantBusinessContext() {
-  const context = advancedOriginalAssistantBusinessContext();
-  const manager = dailyManagerSummary();
-  return {
-    ...context,
-    management_briefing: {
-      received_today: manager.today.received,
-      seven_day_daily_average: manager.averageReceived,
-      variation_percent: Number(manager.variation.toFixed(2)),
-      open_expenses: manager.openExpenseBalance,
-      suggestions: manager.suggestions,
-    },
-    inventory_intelligence: manager.inventory.slice(0, 80).map((row) => ({
-      product_id: row.product.id,
-      product: row.product.name,
-      abc_class: row.abc,
-      stock: row.stock,
-      sold_last_30_days: row.soldQty,
-      daily_velocity: Number(row.dailyVelocity.toFixed(3)),
-      coverage_days: row.coverageDays === null ? null : Number(row.coverageDays.toFixed(1)),
-      suggested_reorder: row.reorderQty,
-      dead_stock: row.deadStock,
-      inventory_loss: row.loss,
-    })),
-    cash_flow_forecast: cashFlowForecast(),
-    anomalies: manager.anomalies,
-    payment_reconciliation: reconciliationRows().reduce((summary, row) => {
-      summary[row.reconciliation.status] = Number(summary[row.reconciliation.status] || 0) + 1;
-      return summary;
-    }, {}),
-  };
 };
 
 const advancedOriginalBindModalForms = bindModalForms;

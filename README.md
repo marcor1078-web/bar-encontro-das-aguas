@@ -46,7 +46,7 @@ Sistema para distribuidora com operacao local e integracao online via Supabase:
 - Relatorios de vendas enviados por e-mail no fechamento do caixa
 - 2FA e central de aparelhos
 - Auditoria imutavel
-- Gerente diario com alertas de anomalias
+- Resumo gerencial automatico com alertas de anomalias
 - Paletas da marca, classica e rubro-negra
 - Divisao de contas por partes iguais, produtos ou valores personalizados
 
