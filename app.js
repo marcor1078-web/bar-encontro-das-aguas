@@ -573,6 +573,7 @@ let simulationCart = [];
 let simulationSearchTerm = "";
 let simulationPayment = "";
 let simulationResult = null;
+let simulationPointPrintJobs = {};
 let tableCheckout = null;
 let selectedTableId = null;
 let lastSaleForTicketsId = null;
@@ -1829,8 +1830,12 @@ function pointTicketJobKey(saleId, printer) {
 }
 
 function loadPointTicketJob(saleId, printer) {
+  const key = pointTicketJobKey(saleId, printer);
+  if (String(saleId).startsWith("simulation-")) {
+    return structuredClone(simulationPointPrintJobs[key] || {});
+  }
   try {
-    const parsed = JSON.parse(localStorage.getItem(pointTicketJobKey(saleId, printer)) || "{}");
+    const parsed = JSON.parse(localStorage.getItem(key) || "{}");
     return parsed && typeof parsed === "object" ? parsed : {};
   } catch {
     return {};
@@ -1838,7 +1843,12 @@ function loadPointTicketJob(saleId, printer) {
 }
 
 function savePointTicketJob(saleId, printer, job) {
-  localStorage.setItem(pointTicketJobKey(saleId, printer), JSON.stringify(job));
+  const key = pointTicketJobKey(saleId, printer);
+  if (String(saleId).startsWith("simulation-")) {
+    simulationPointPrintJobs[key] = structuredClone(job);
+    return;
+  }
+  localStorage.setItem(key, JSON.stringify(job));
 }
 
 function pointReceiptPrintRecord(sale, printer = selectedPointTicketPrinter()) {
@@ -7768,20 +7778,20 @@ function renderSalesSimulation() {
   return `
     <div class="section-title">
       <div>
-        <h2>Simulador de vendas</h2>
-        <p>Use os produtos e precos reais para conferir uma comanda antes de vender.</p>
+        <h2>Simulador de vendas e fichas</h2>
+        <p>Teste o lancamento de produtos e imprima fichas sem registrar uma venda real.</p>
       </div>
       <div class="toolbar">
         <button class="btn secondary" type="button" data-clear-simulation ${simulationCart.length ? "" : "disabled"}>Limpar simulacao</button>
       </div>
     </div>
     <div class="notice warning simulation-safety-notice">
-      Simulacao isolada: nada sera enviado a maquininha, salvo no historico, somado ao caixa ou baixado do estoque.
+      A simulacao nao cobra o cliente nem altera vendas, caixa ou estoque. Ao concluir, voce pode testar as fichas na Point ou no computador.
     </div>
     ${simulationResult ? `
       <section class="card pad simulation-result" role="status">
         <div class="card-head">
-          <div><h2 class="card-title">Simulacao concluida</h2><p>Nao foi criada uma venda real.</p></div>
+          <div><h2 class="card-title">Simulacao pronta para imprimir</h2><p>Nao foi criada uma venda real. Use estas fichas apenas para testar a impressao.</p></div>
           <button class="btn compact secondary" type="button" data-new-simulation>Nova simulacao</button>
         </div>
         <div class="summary-list">
@@ -7790,6 +7800,10 @@ function renderSalesSimulation() {
           <div class="summary-row total"><span>Total calculado</span><strong>${money(simulationResult.total)}</strong></div>
         </div>
         <p class="simulation-result-items">${simulationResult.items.map((item) => `${qty(item.qty)} x ${escapeHtml(item.name)}`).join(" · ")}</p>
+        <div class="toolbar simulation-print-actions">
+          <button class="btn primary" type="button" data-print-ticket="${escapeHtml(simulationResult.sale.id)}">${icon("print")} Fichas de teste na Point</button>
+          <button class="btn secondary" type="button" data-print-last-tickets="${escapeHtml(simulationResult.sale.id)}">${icon("print")} Imprimir fichas no computador</button>
+        </div>
       </section>` : ""}
     <div class="simulation-layout">
       <section class="card pad simulation-products">
@@ -7858,11 +7872,24 @@ function changeSimulationQty(itemKey, change) {
 
 function completeSaleSimulation() {
   if (!simulationCart.length) return;
+  const total = simulationCart.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0);
+  const items = structuredClone(simulationCart);
+  const date = new Date().toISOString();
+  const sale = {
+    id: `simulation-${uuid()}`,
+    date,
+    cashierId: session?.id || "",
+    total,
+    payment: simulationPayment || "Nao selecionada",
+    items,
+    isSimulation: true,
+  };
   simulationResult = {
-    items: structuredClone(simulationCart),
-    total: simulationCart.reduce((sum, item) => sum + Number(item.qty || 0) * Number(item.price || 0), 0),
+    sale,
+    items,
+    total,
     payment: simulationPayment,
-    completedAt: new Date().toISOString(),
+    completedAt: date,
   };
   simulationCart = [];
   renderApp();
@@ -7872,6 +7899,7 @@ function resetSaleSimulation() {
   simulationCart = [];
   simulationPayment = "";
   simulationResult = null;
+  simulationPointPrintJobs = {};
   renderApp();
 }
 
@@ -10746,7 +10774,7 @@ function renderSalePaymentModal() {
 }
 
 function renderPrintTicketsModal() {
-  const sale = state.sales.find((item) => item.id === currentModal.id);
+  const sale = ticketSaleById(currentModal.id);
   if (!sale) {
     return `
       <div class="modal-head">
@@ -10773,21 +10801,21 @@ function renderPrintTicketsModal() {
   const pointReceiptDisabled = pointActionsDisabled || receiptAccepted;
   return `
     <div class="modal-head">
-      <h2>Imprimir na Point ou no computador</h2>
+      <h2>${sale.isSimulation ? "Imprimir fichas de teste" : "Imprimir na Point ou no computador"}</h2>
       <button class="icon-btn" type="button" data-close-modal title="Fechar">${icon("close")}</button>
     </div>
     <div class="modal-body">
       <div class="summary-list">
-        <div class="summary-row"><span>Venda</span><strong>${sale.id.slice(-8)}</strong></div>
+        <div class="summary-row"><span>${sale.isSimulation ? "Teste" : "Venda"}</span><strong>${sale.id.slice(-8)}</strong></div>
         <div class="summary-row"><span>Total</span><strong>${money(sale.total)}</strong></div>
         <div class="summary-row"><span>Pagamento</span><strong>${paymentDisplay(sale)}</strong></div>
         <div class="summary-row total"><span>Fichas</span><strong>${ticketCount}</strong></div>
       </div>
-      <p>${
+      ${sale.isSimulation ? '<div class="notice warning">Fichas de teste: nenhuma venda sera salva e nenhum produto sera baixado do estoque. A Point recebe uma ficha por vez; o app aguarda a liberacao da fila antes de enviar a proxima.</div>' : `<p>${
         ticketCount
-          ? "Na Point, as fichas individuais sao enviadas juntas em um lote. O app acompanha quando o terminal recebe cada acao."
+          ? "As fichas sao enviadas uma por vez. O app espera a Point concluir a impressao antes de mandar a seguinte."
           : "Esta venda nao possui ficha individual de produto. Envie o recibo para a Point ou imprima uma copia no computador."
-      }</p>
+      }</p>`}
       <label class="field">
         <span>Maquininha Point</span>
         <select data-point-ticket-printer ${printers.length ? "" : "disabled"}>
@@ -10805,18 +10833,20 @@ function renderPrintTicketsModal() {
             : acceptedCount
               ? `${acceptedCount} de ${ticketCount} ficha(s) ja recebida(s) pela Point selecionada.`
               : "A Point Smart precisa estar habilitada pelo Mercado Pago para receber impressoes personalizadas."}</p>
-      ${receiptAccepted ? '<p class="hint">O recibo desta venda ja foi recebido pela Point selecionada.</p>' : ""}
+      ${!sale.isSimulation && receiptAccepted ? '<p class="hint">O recibo desta venda ja foi recebido pela Point selecionada.</p>' : ""}
       <div class="notice compact" data-point-ticket-progress role="status" aria-live="polite" ${pointTicketPrintSaleId === sale.id && pointTicketPrintMessage ? "" : "hidden"}>${pointTicketPrintSaleId === sale.id ? escapeHtml(pointTicketPrintMessage) : ""}</div>
     </div>
     <div class="modal-actions">
       <button class="btn secondary" type="button" data-close-modal>Fechar</button>
-      <button class="btn secondary" type="button" data-share-sale-whatsapp="${sale.id}">${icon("message")} WhatsApp</button>
-      <button class="btn secondary" type="button" data-email-sale="${sale.id}">${icon("mail")} E-mail</button>
-      <button class="btn secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
-      <button class="btn secondary" type="button" data-send-point-receipt="${sale.id}" ${pointReceiptDisabled ? "disabled" : ""}>${icon("print")} ${receiptAccepted ? "Recibo enviado" : receiptRecord?.actionId ? "Consultar recibo" : "Recibo na Point"}</button>
+      ${sale.isSimulation ? "" : `
+        <button class="btn secondary" type="button" data-share-sale-whatsapp="${sale.id}">${icon("message")} WhatsApp</button>
+        <button class="btn secondary" type="button" data-email-sale="${sale.id}">${icon("mail")} E-mail</button>
+        <button class="btn secondary" type="button" data-print-sale="${sale.id}">${icon("print")} Recibo</button>
+        <button class="btn secondary" type="button" data-send-point-receipt="${sale.id}" ${pointReceiptDisabled ? "disabled" : ""}>${icon("print")} ${receiptAccepted ? "Recibo enviado" : receiptRecord?.actionId ? "Consultar recibo" : "Recibo na Point"}</button>
+      `}
       <button class="btn secondary" type="button" data-print-last-tickets="${sale.id}" ${ticketCount ? "" : "disabled"}>${icon("print")} Imprimir pelo navegador</button>
       ${acceptedCount ? `<button class="btn secondary" type="button" data-reprint-point-tickets="${sale.id}" ${pointActionsDisabled ? "disabled" : ""}>${icon("print")} Reimprimir todas na Point</button>` : ""}
-      <button class="btn primary" type="button" data-send-point-tickets="${sale.id}" ${pointTicketDisabled ? "disabled" : ""}>${icon("print")} ${pendingCount ? "Consultar fila" : acceptedCount ? "Enviar restantes" : "Enviar fichas em lote"}</button>
+      <button class="btn primary" type="button" data-send-point-tickets="${sale.id}" ${pointTicketDisabled ? "disabled" : ""}>${icon("print")} ${pendingCount ? "Consultar fila" : acceptedCount ? "Enviar restantes" : sale.isSimulation ? "Enviar fichas de teste" : "Enviar fichas em lote"}</button>
     </div>
   `;
 }
@@ -16951,6 +16981,11 @@ function ticketUnitList(sale) {
   );
 }
 
+function ticketSaleById(saleId) {
+  if (simulationResult?.sale?.id === saleId) return simulationResult.sale;
+  return state.sales.find((item) => item.id === saleId) || null;
+}
+
 function openSaleTicketModal(saleId) {
   pointTicketPrintSaleId = saleId;
   pointTicketPrintMessage = "";
@@ -16984,35 +17019,6 @@ function isTerminalPrintFailure(status) {
   return ["error", "canceled", "cancelled", "abandoned"].includes(String(status || "").toLowerCase());
 }
 
-async function pollPointPrintBatch(saleId, printer, accessToken, job, unitIndexes) {
-  let pendingIndexes = [...unitIndexes];
-  for (let attempt = 0; attempt < 12 && pendingIndexes.length; attempt += 1) {
-    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, MP_POLL_INTERVAL_MS));
-    setPointTicketProgress(`A Point esta processando ${pendingIndexes.length} ficha(s) do lote...`);
-    const results = await Promise.allSettled(pendingIndexes.map((index) => {
-      const record = job.units[index];
-      return getMercadoPagoCustomPrintStatus(record.actionId, printer.accountKey, accessToken);
-    }));
-    results.forEach((result, resultIndex) => {
-      const index = pendingIndexes[resultIndex];
-      const record = job.units[index];
-      if (result.status === "rejected") {
-        record.statusCheckError = result.reason?.message || "Falha ao consultar o status.";
-        return;
-      }
-      record.status = pointPrintActionStatus(result.value) || "created";
-      record.updatedAt = new Date().toISOString();
-      delete record.statusCheckError;
-    });
-    savePointTicketJob(saleId, printer, job);
-    pendingIndexes = pendingIndexes.filter((index) => {
-      const status = job.units[index]?.status;
-      return status !== "on_terminal" && !isTerminalPrintFailure(status);
-    });
-  }
-  return pendingIndexes;
-}
-
 function setPointTicketProgress(message) {
   pointTicketPrintMessage = message;
   const status = document.querySelector("[data-point-ticket-progress]");
@@ -17024,7 +17030,7 @@ function setPointTicketProgress(message) {
 
 async function sendSaleTicketsToPoint(saleId) {
   if (pointTicketPrintInProgress) return;
-  const sale = state.sales.find((entry) => entry.id === saleId);
+  const sale = ticketSaleById(saleId);
   const printer = selectedPointTicketPrinter();
   const units = ticketUnitList(sale);
   if (!sale || !units.length) {
@@ -17053,10 +17059,11 @@ async function sendSaleTicketsToPoint(saleId) {
   job.units = job.units && typeof job.units === "object" ? job.units : {};
   let accessToken = "";
   let problem = "";
+  let blockedAt = -1;
+  let blockedByPending = false;
   try {
     accessToken = await onlineAccessToken();
     if (!accessToken) throw new Error("Sessao online ausente. Entre novamente no app.");
-    const ticketsToCreate = [];
     for (let index = 0; index < units.length; index += 1) {
       let record = job.units[index];
       if (record?.status === "on_terminal") continue;
@@ -17066,58 +17073,92 @@ async function sendSaleTicketsToPoint(saleId) {
         job.units[index] = record;
       }
       if (!record.actionId) {
-        ticketsToCreate.push({
+        record.status = "creating";
+        savePointTicketJob(saleId, printer, job);
+        setPointTicketProgress(`Preparando ficha ${index + 1} de ${units.length}...`);
+        const ticket = {
           ticketNumber: index + 1,
           subtype: "image",
           content: await buildPointTicketImage({ sale, item: units[index], ticketNumber: index + 1, ticketCount: units.length }),
           idempotencyKey: record.idempotencyKey,
           externalReference: `ticket-${sale.id.slice(-8)}-${job.batchId.slice(0, 12)}-${index + 1}`,
-        });
-      }
-    }
-    savePointTicketJob(saleId, printer, job);
-
-    if (ticketsToCreate.length) {
-      setPointTicketProgress(`Enviando ${ticketsToCreate.length} ficha(s) juntas para ${printer.label}...`);
-      const results = await createMercadoPagoPrintActions({
-        terminalId: printer.terminalId,
-        accountKey: printer.accountKey,
-        tickets: ticketsToCreate,
-        accessToken,
-      });
-      results.forEach((result) => {
-        const index = Number(result.ticketNumber) - 1;
-        const record = job.units[index];
-        if (!record) return;
-        const actionId = result.id || result.action_id;
-        if (!result.ok || !actionId) {
+        };
+        let result = null;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          try {
+            const results = await createMercadoPagoPrintActions({
+              terminalId: printer.terminalId,
+              accountKey: printer.accountKey,
+              tickets: [ticket],
+              accessToken,
+            });
+            result = results[0];
+            if (result?.ok || !/already\s+a\s+queued order|queued order on the terminal/i.test(result?.message || "")) break;
+          } catch (error) {
+            if (!/already\s+a\s+queued order|queued order on the terminal/i.test(error.message || "")) throw error;
+            if (attempt === 7) {
+              result = { ok: false, message: error.message };
+              break;
+            }
+          }
+          if (attempt < 7) {
+            setPointTicketProgress(`A Point esta ocupada com outro pedido. Aguardando para enviar a ficha ${index + 1}...`);
+            await new Promise((resolve) => setTimeout(resolve, MP_POLL_INTERVAL_MS));
+          }
+        }
+        const actionId = result?.id || result?.action_id;
+        if (!result?.ok || !actionId) {
           record.status = "error";
-          record.error = result.message || "A impressao nao foi aceita pelo Mercado Pago.";
-          return;
+          record.error = /already\s+a\s+queued order|queued order on the terminal/i.test(result?.message || "")
+            ? "A Point ainda tem outro pedido na fila. Aguarde a maquininha concluir a operacao e tente novamente."
+            : result?.message || "A impressao nao foi aceita pelo Mercado Pago.";
+          record.updatedAt = new Date().toISOString();
+          savePointTicketJob(saleId, printer, job);
+          blockedAt = index;
+          break;
         }
         record.actionId = String(actionId);
         record.status = pointPrintActionStatus(result) || "created";
         record.updatedAt = new Date().toISOString();
         delete record.error;
-      });
-      savePointTicketJob(saleId, printer, job);
+        savePointTicketJob(saleId, printer, job);
+      }
+
+      if (record.actionId && record.status !== "on_terminal") {
+        setPointTicketProgress(`Aguardando a Point imprimir a ficha ${index + 1} de ${units.length} antes de enviar a proxima...`);
+        const result = await waitForPointPrintAction(record.actionId, printer.accountKey, accessToken, saleId, printer, record, job);
+        if (result.accepted) {
+          record.status = "on_terminal";
+          record.updatedAt = new Date().toISOString();
+          savePointTicketJob(saleId, printer, job);
+          continue;
+        }
+        if (result.failed) {
+          record.status = result.status || "error";
+          record.error = `A Point recusou a ficha (status ${record.status}).`;
+          record.updatedAt = new Date().toISOString();
+          savePointTicketJob(saleId, printer, job);
+          blockedAt = index;
+          break;
+        }
+        blockedAt = index;
+        blockedByPending = true;
+        break;
+      }
     }
 
-    const indexesToPoll = units
-      .map((_, index) => index)
-      .filter((index) => job.units[index]?.actionId && job.units[index]?.status !== "on_terminal" && !isTerminalPrintFailure(job.units[index]?.status));
-    const pendingIndexes = await pollPointPrintBatch(saleId, printer, accessToken, job, indexesToPoll);
     const accepted = units.filter((_, index) => job.units[index]?.status === "on_terminal").length;
     const failed = units.filter((_, index) => isTerminalPrintFailure(job.units[index]?.status) || (!job.units[index]?.actionId && job.units[index]?.status === "error")).length;
-    const pending = pendingIndexes.length;
     const failedDetails = units
       .map((item, index) => ({ item, record: job.units[index], index }))
       .filter(({ record }) => isTerminalPrintFailure(record?.status) || (!record?.actionId && record?.status === "error"))
       .map(({ item, record, index }) => `Ficha ${index + 1} (${item.name}): ${record.error || record.status}`)
       .join("; ");
     problem = accepted === units.length
-      ? `A Point recebeu as ${accepted} fichas enviadas juntas. Confira a saida do papel.`
-      : `${accepted} de ${units.length} fichas recebidas pela Point; ${pending} aguardando e ${failed} com falha.${failedDetails ? ` Falhas: ${failedDetails}.` : ""} ${pending ? "Consulte novamente em instantes; o app nao duplicara as acoes pendentes." : "Reenvie apenas as fichas que falharam."}`;
+      ? `A Point recebeu as ${accepted} fichas, enviadas uma por vez. Confira a saida do papel.`
+      : blockedByPending
+        ? `${accepted} de ${units.length} fichas recebidas. A ficha ${blockedAt + 1} ainda esta na fila; as seguintes nao foram enviadas. Consulte a fila novamente quando a Point liberar a impressao.`
+        : `${accepted} de ${units.length} fichas recebidas pela Point; ${failed} com falha.${failedDetails ? ` Falhas: ${failedDetails}.` : ""} ${blockedAt >= 0 ? `A fila parou na ficha ${blockedAt + 1}; as seguintes nao foram enviadas. Aguarde a Point e tente novamente.` : "Reenvie as fichas que falharam."}`;
   } catch (error) {
     const accepted = Object.values(job.units).filter((record) => record?.status === "on_terminal").length;
     problem = accepted
@@ -17132,7 +17173,7 @@ async function sendSaleTicketsToPoint(saleId) {
 }
 
 async function reprintSaleTicketsToPoint(saleId) {
-  const sale = state.sales.find((entry) => entry.id === saleId);
+  const sale = ticketSaleById(saleId);
   const printer = selectedPointTicketPrinter();
   if (!sale || !printer || pointTicketPrintInProgress) return;
   const job = loadPointTicketJob(saleId, printer);
@@ -17155,6 +17196,10 @@ async function reprintSaleTicketsToPoint(saleId) {
 
 async function sendSaleReceiptToPoint(saleId) {
   if (pointTicketPrintInProgress) return;
+  if (simulationResult?.sale?.id === saleId) {
+    notify("O simulador so permite testar as fichas; nenhum recibo de venda e gerado.");
+    return;
+  }
   const sale = state.sales.find((entry) => entry.id === saleId);
   const printer = selectedPointTicketPrinter();
   if (!sale || !printer) {
@@ -17247,7 +17292,7 @@ function attachSalePrintDetails(saleId, details = {}) {
 }
 
 function printSaleTicketsIndividual(saleId) {
-  const sale = state.sales.find((entry) => entry.id === saleId);
+  const sale = ticketSaleById(saleId);
   if (!sale) return;
   const units = ticketUnitList(sale);
   if (!units.length) return;

@@ -46,10 +46,10 @@ Depois de salvar as variaveis, faca um novo deploy na Vercel.
 - Nunca coloque `MP_ACCESS_TOKEN` dentro de `app.js`, `supabase-config.js` ou qualquer arquivo publico.
 - Tokens e chaves privadas ficam apenas nas variaveis de ambiente da Vercel.
 - `MP_PRINT_ON_TERMINAL=seller_ticket` imprime o comprovante simples do vendedor na maquininha depois do pagamento. As fichas personalizadas ficam no app, em formato de bobina.
-- Depois da venda, a janela permite imprimir pelo navegador, enviar todas as fichas individuais juntas em um lote, reimprimir fichas ja recebidas pela Point ou enviar o recibo para uma Point Smart. O envio direto exige sessao online e permissao de Balcao ou Vendas.
+- Depois da venda, a janela permite imprimir pelo navegador, enviar as fichas individuais em sequencia (uma por vez, aguardando a Point liberar a fila), reimprimir fichas ja recebidas ou enviar o recibo para uma Point Smart. O envio direto exige sessao online e permissao de Balcao ou Vendas.
 - As fichas enviadas a Point usam imagem termica com a logo, nome da distribuidora, CNPJ cadastrado, produto e identificacao da venda. Cada unidade continua sendo uma impressao individual.
 - O recibo direto e enviado como imagem PNG pela API de Terminals e inclui a logo, o nome da distribuidora, o CNPJ cadastrado e a mensagem de agradecimento. A API aceita imagens PNG/JPEG em Base64 com limite de 1 MB.
 - A impressao personalizada usa a API de Terminals. O Mercado Pago pode exigir uma atualizacao/liberacao do terminal antes que ele receba essas acoes; o status `created` significa que a acao esta na fila e `on_terminal` significa que a Point a recebeu. Confira a impressao fisica antes de entregar o produto.
 - A selecao da Point usada para imprimir e independente da Point usada para cobrar. O app guarda o andamento por venda e terminal para evitar reenviar fichas que ja chegaram ao dispositivo.
-- A aba `Simulador` permite testar produtos e totais sem criar vendas, enviar cobrancas, alterar o caixa ou baixar estoque. Os testes nao entram no historico e ficam somente na memoria da tela.
+- A aba `Simulador` permite testar produtos e imprimir fichas na Point ou no computador sem criar vendas, enviar cobrancas, alterar o caixa ou baixar estoque. Os dados do teste e o controle temporario de impressao ficam somente na memoria da tela.
 - Se o pagamento ficar pendente, confira a maquininha antes de tentar novamente.
